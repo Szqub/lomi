@@ -238,3 +238,43 @@ test("macOS native close requests retain dirty editors on cancellation and save 
     )
     .toBe(true);
 });
+
+test("macOS Explorer supports Cmd+Backspace to Move to Trash and Opt+Cmd+Backspace to Delete Permanently", async ({
+  page,
+}) => {
+  await mockDesktop(page, true, undefined, undefined, {}, "macos");
+  await page.goto("/");
+  const file = page.getByRole("button", { name: "README.md", exact: true });
+  await file.focus();
+
+  // Cmd+Backspace should trigger Move to Trash
+  await page.keyboard.press("Meta+Backspace");
+  const trashDialog = page.getByRole("dialog", { name: "Move to Trash" });
+  await expect(trashDialog).toBeVisible();
+  await trashDialog
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(trashDialog).toHaveCount(0);
+
+  // Opt+Cmd+Backspace should trigger Delete Permanently
+  await file.focus();
+  await page.keyboard.press("Alt+Meta+Backspace");
+  const deleteDialog = page.getByRole("dialog", {
+    name: "Delete Permanently",
+  });
+  await expect(deleteDialog).toBeVisible();
+  await deleteDialog
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(deleteDialog).toHaveCount(0);
+
+  // Context menu should show macOS shortcuts
+  await file.click({ button: "right" });
+  const menu = page.locator(".menu");
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText("⌘⌫");
+  await expect(menu).toContainText("⌥⌘⌫");
+  await expect(menu).toContainText("⌘C");
+  await expect(menu).toContainText("⌘V");
+  await expect(menu).toContainText("⌘X");
+});

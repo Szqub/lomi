@@ -2,7 +2,7 @@ import { useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, MouseEvent } from "react";
 import ResourceIcon from "./ResourceIcon";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { api, errorMessage } from "./api";
+import { api, errorMessage, macOS } from "./api";
 import type { FileEntry, GitCommitSummary, GitStatus } from "./api";
 import { parentPath, repositoryForPath, gitFilePath } from "./explorer-model";
 import type { FileOperation } from "./explorer-model";
@@ -163,6 +163,8 @@ export function useExplorerActions(props: Props) {
     if (event.key === "F2" && !mod) action = () => ask(entry, "rename");
     if (event.key === "Delete")
       action = () => ask(entry, mod ? "delete" : "trash");
+    if (macOS && event.key === "Backspace" && event.metaKey)
+      action = () => ask(entry, event.altKey ? "delete" : "trash");
     if (mod && !event.altKey && !event.shiftKey) {
       if (event.key.toLowerCase() === "x") action = () => copy(entry, true);
       if (event.key.toLowerCase() === "c") action = () => copy(entry, false);
@@ -211,13 +213,13 @@ export function useExplorerActions(props: Props) {
         null,
         {
           label: "Cut",
-          shortcut: "Ctrl+X",
+          shortcut: macOS ? "⌘X" : "Ctrl+X",
           disabled: !entry.relativePath,
           run: () => copy(entry, true),
         },
         {
           label: "Copy",
-          shortcut: "Ctrl+C",
+          shortcut: macOS ? "⌘C" : "Ctrl+C",
           disabled: !entry.relativePath,
           run: () => copy(entry, false),
         },
@@ -229,7 +231,7 @@ export function useExplorerActions(props: Props) {
         },
         {
           label: "Paste",
-          shortcut: "Ctrl+V",
+          shortcut: macOS ? "⌘V" : "Ctrl+V",
           disabled: !clipboard,
           run: () => paste(entry),
         },
@@ -266,12 +268,12 @@ export function useExplorerActions(props: Props) {
               },
               {
                 label: "Move to Trash…",
-                shortcut: "Delete",
+                shortcut: macOS ? "⌘⌫" : "Delete",
                 run: () => ask(entry, "trash"),
               },
               {
                 label: "Delete Permanently…",
-                shortcut: "Ctrl+Delete",
+                shortcut: macOS ? "⌥⌘⌫" : "Ctrl+Delete",
                 danger: true,
                 run: () => ask(entry, "delete"),
               },
