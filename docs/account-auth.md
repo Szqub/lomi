@@ -25,10 +25,21 @@ front without opening or focusing Settings. The page uses bundled Lomi assets an
 makes no remote requests. The browser request is Lomi's first-party handshake and does not use
 GitHub's device flow.
 
-The release origin is `https://auth.lomi.dev`, client ID `lomi-desktop`. Debug
-builds use `http://localhost:4321` and `lomi-desktop-dev`. Compile-time
-`LOMI_AUTH_ORIGIN` and `LOMI_AUTH_CLIENT_ID` overrides support a separately
-configured staging environment. Origins are validated by native code; the renderer
+Debug and release builds default to the production origin `https://auth.lomi.dev`
+and client ID `lomi-desktop`. Release builds always use these production values.
+For local development only, compile-time `LOMI_AUTH_ORIGIN` and
+`LOMI_AUTH_CLIENT_ID` overrides are honored by debug builds. The local portal
+runs at `http://localhost:4321` and proxies API requests to the auth API on
+`http://127.0.0.1:3001`; start both local services before launching Lomi with:
+
+```sh
+LOMI_AUTH_ORIGIN=http://localhost:4321 \
+LOMI_AUTH_CLIENT_ID=lomi-desktop-dev \
+pnpm tauri dev
+```
+
+Origins and client IDs are validated by native code. Local HTTP is allowed only
+for the debug build and only on the loopback address and port above. The renderer
 cannot supply a server address, arbitrary browser URL, or Authorization header.
 
 ## Boundaries and persistence

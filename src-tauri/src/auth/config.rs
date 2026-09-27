@@ -1,9 +1,7 @@
 use reqwest::Url;
 
-const RELEASE_ORIGIN: &str = "https://auth.lomi.dev";
-const RELEASE_CLIENT_ID: &str = "lomi-desktop";
-const DEVELOPMENT_ORIGIN: &str = "http://localhost:4321";
-const DEVELOPMENT_CLIENT_ID: &str = "lomi-desktop-dev";
+const DEFAULT_ORIGIN: &str = "https://auth.lomi.dev";
+const DEFAULT_CLIENT_ID: &str = "lomi-desktop";
 
 #[derive(Clone)]
 pub(super) struct AuthConfig {
@@ -14,19 +12,27 @@ pub(super) struct AuthConfig {
 
 impl AuthConfig {
     pub fn from_build() -> Result<Self, String> {
-        let default_origin = if cfg!(debug_assertions) {
-            DEVELOPMENT_ORIGIN
+        Self::for_build(
+            cfg!(debug_assertions),
+            option_env!("LOMI_AUTH_ORIGIN"),
+            option_env!("LOMI_AUTH_CLIENT_ID"),
+        )
+    }
+
+    fn for_build(
+        is_debug: bool,
+        origin_override: Option<&str>,
+        client_id_override: Option<&str>,
+    ) -> Result<Self, String> {
+        let (origin, client_id) = if is_debug {
+            (
+                origin_override.unwrap_or(DEFAULT_ORIGIN),
+                client_id_override.unwrap_or(DEFAULT_CLIENT_ID),
+            )
         } else {
-            RELEASE_ORIGIN
+            (DEFAULT_ORIGIN, DEFAULT_CLIENT_ID)
         };
-        let default_client = if cfg!(debug_assertions) {
-            DEVELOPMENT_CLIENT_ID
-        } else {
-            RELEASE_CLIENT_ID
-        };
-        let origin = option_env!("LOMI_AUTH_ORIGIN").unwrap_or(default_origin);
-        let client_id = option_env!("LOMI_AUTH_CLIENT_ID").unwrap_or(default_client);
-        Self::new(origin, client_id, cfg!(debug_assertions))
+        Self::new(origin, client_id, is_debug)
     }
 
     fn new(origin: &str, client_id: &str, allow_local_http: bool) -> Result<Self, String> {
@@ -139,8 +145,38 @@ mod tests {
 
     #[test]
     fn accepts_the_confirmed_release_origin() {
-        let config = AuthConfig::new("https://auth.lomi.dev", "lomi-desktop", false).unwrap();
+        let config = AuthConfig::new(DEFAULT_ORIGIN, DEFAULT_CLIENT_ID, false).unwrap();
         assert_eq!(config.origin, "https://auth.lomi.dev");
+        assert_eq!(config.environment, "auth-lomi-dev");
+    }
+
+    #[test]
+    fn debug_build_defaults_to_production_but_allows_explicit_overrides() {
+        let defaults = AuthConfig::for_build(true, None, None).unwrap();
+        assert_eq!(defaults.origin, DEFAULT_ORIGIN);
+        assert_eq!(defaults.client_id, DEFAULT_CLIENT_ID);
+
+        let local = AuthConfig::for_build(
+            true,
+            Some("http://localhost:4321"),
+            Some("lomi-desktop-dev"),
+        )
+        .unwrap();
+        assert_eq!(local.origin, "http://localhost:4321");
+        assert_eq!(local.client_id, "lomi-desktop-dev");
+        assert_eq!(local.environment, "development");
+    }
+
+    #[test]
+    fn release_build_ignores_auth_overrides_and_uses_production() {
+        let config = AuthConfig::for_build(
+            false,
+            Some("http://localhost:4321"),
+            Some("lomi-desktop-dev"),
+        )
+        .unwrap();
+        assert_eq!(config.origin, DEFAULT_ORIGIN);
+        assert_eq!(config.client_id, DEFAULT_CLIENT_ID);
         assert_eq!(config.environment, "auth-lomi-dev");
     }
 
