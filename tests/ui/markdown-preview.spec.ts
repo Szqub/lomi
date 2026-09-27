@@ -34,7 +34,7 @@ const markdown = [
 async function openReadme(page: Page) {
   await mockDesktop(page, false);
   await page.goto("/");
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
 }
 
@@ -413,7 +413,7 @@ test("preview links and local images use scoped native access without running HT
       return invoke(command, args);
     };
   });
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await replaceText(
     page,
     "# Safe\n\n<script>window.markdownExecuted = true</script>\n\n[Unsafe](javascript:alert(1))\n\n[Website](https://example.com/docs)\n\n[Other file](docs/guide.md)\n\n![Local diagram](images/diagram.svg)\n\n![Remote diagram](https://example.com/private.png)",
@@ -579,7 +579,7 @@ test("Markdown controls also work in a file panel without restarting its neighbo
   ).toBe(1);
   await page
     .getByRole("button", { name: "it's a file.txt", exact: true })
-    .click();
+    .dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await expect(page.locator(".markdown-preview-toggle")).toHaveCount(0);
 });

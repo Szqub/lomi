@@ -92,7 +92,7 @@ test("system changes update both windows, hidden terminals, and an edited docume
     .getAttribute("data-pane-id"))!;
   expect(second).not.toBe(first);
   const secondBefore = await terminal(page, second);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   const content = page.locator(".cm-content");
   await expect(content).toContainText("A text file preview.");
   await content.click();

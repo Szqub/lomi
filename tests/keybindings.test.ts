@@ -289,8 +289,23 @@ test("invalid settings and duplicate bindings are rejected instead of discarded"
     { version: 1, bindings: { newTerminal: "Ctrl+KeyW" } },
     { version: 1, bindings: {}, focusFollowsPointer: "false" },
     { version: 1, bindings: {}, focusFollowsPointer: null },
+    { version: 1, bindings: {}, explorerOpenOnSingleClick: "true" },
+    { version: 1, bindings: {}, explorerOpenOnSingleClick: null },
+    { version: 1, bindings: {}, explorerOpenOnSingleClick: 1 },
   ])
     assert.throws(() => restoreKeybindings(data), /left intact/);
+});
+
+test("Explorer click mode accepts booleans and old settings without the field", () => {
+  assert.doesNotThrow(() => restoreKeybindings({ version: 1, bindings: {} }));
+  for (const explorerOpenOnSingleClick of [true, false])
+    assert.doesNotThrow(() =>
+      restoreKeybindings({
+        version: 1,
+        bindings: {},
+        explorerOpenOnSingleClick,
+      }),
+    );
 });
 
 test("pointer focus settings preserve shortcut overrides in either mode", () => {

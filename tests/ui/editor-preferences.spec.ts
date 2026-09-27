@@ -12,7 +12,7 @@ test("persisted editor defaults still apply to indentation and live buffers", as
   });
   await mockDesktop(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   const indentation = page.getByRole("button", {
     name: "Change indentation settings",
   });

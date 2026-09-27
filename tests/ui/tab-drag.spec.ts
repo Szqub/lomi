@@ -49,7 +49,7 @@ for (const title of ["Browser", "README.md"]) {
       await page.getByRole("button", { name: /^New tab/ }).click();
       await page.getByRole("menuitem", { name: "New browser" }).click();
     } else {
-      await page.getByRole("button", { name: title, exact: true }).click();
+      await page.getByRole("button", { name: title, exact: true }).dblclick();
       await expect(page.locator(".cm-content")).toBeVisible();
     }
     await page.getByRole("tab", { name: "Terminal 1", exact: true }).click();
@@ -400,7 +400,7 @@ test("reordering a modified file retains its buffer and undo history", async ({
   page,
 }) => {
   await setup(page, 2);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   const editor = page.locator(".cm-content");
   await expect(editor).toBeVisible();
   await editor.click();
@@ -518,7 +518,9 @@ for (const side of ["left", "right", "top", "bottom"] as const) {
     await page.keyboard.press("Control+d");
     await page.keyboard.press("Control+Shift+d");
     await expect(page.locator(".xterm-screen")).toHaveCount(3);
-    await page.getByRole("button", { name: "README.md", exact: true }).click();
+    await page
+      .getByRole("button", { name: "README.md", exact: true })
+      .dblclick();
     const editor = page.locator(".cm-content");
     await expect(editor).toBeVisible();
     await editor.fill("mixed panels 🦀");
@@ -568,7 +570,9 @@ for (const side of ["left", "right", "top", "bottom"] as const) {
     await expect(editor).toHaveText("mixed panels 🦀");
     await page.locator(".xterm-helper-textarea").first().focus();
     await expect(page.locator(".editor-status")).toHaveCount(0);
-    await page.getByRole("button", { name: "README.md", exact: true }).click();
+    await page
+      .getByRole("button", { name: "README.md", exact: true })
+      .dblclick();
     await expect(editor).toBeFocused();
     await expect(page.getByRole("tab")).toHaveCount(1);
     await expect(page.locator(".editor-status")).toBeVisible();
@@ -607,7 +611,7 @@ test("closing a file panel or its whole tab protects unsaved edits and failed sa
   page,
 }) => {
   await setup(page, 1);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.locator(".cm-content").fill("keep this file");
   await page.getByRole("tab", { name: "Terminal 1", exact: true }).click();
@@ -659,13 +663,13 @@ test("two file panels retain independent focus, positions and buffers when the l
   page,
 }) => {
   const workspace = await setup(page, 1);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.getByRole("tab", { name: "Terminal 1", exact: true }).click();
   await dockFile(page);
   await page
     .getByRole("button", { name: "it's a file.txt", exact: true })
-    .click();
+    .dblclick();
   await expect(
     page.getByRole("region", { name: "Editor for it's a file.txt" }),
   ).toBeVisible();
@@ -727,7 +731,7 @@ test("a docked editor remains usable at minimum window size", async ({
   page,
 }) => {
   await setup(page, 1);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.getByRole("tab", { name: "Terminal 1", exact: true }).click();
   await dockFile(page);

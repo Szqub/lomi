@@ -111,7 +111,9 @@ for (const platform of ["windows", "macos"] as const) {
     page,
   }, testInfo) => {
     await prepare(page, platform);
-    await page.getByRole("button", { name: "README.md", exact: true }).click();
+    await page
+      .getByRole("button", { name: "README.md", exact: true })
+      .dblclick();
     await page.locator(".cm-content").fill("unsaved update work");
     await page.evaluate(() => {
       const mock = (window as any).__nativeTest;
@@ -178,7 +180,7 @@ test("Windows download failures preserve the workspace and offer manual download
   page,
 }, testInfo) => {
   await prepare(page, "windows");
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await page.locator(".cm-content").fill("work during an interrupted download");
   await page.evaluate(() => {
     (window as any).__nativeTest.updateDownloadError =
@@ -253,7 +255,7 @@ test("signature and session-save failures prevent installation; restart failures
     "The update is installed",
   );
   await dialog.getByRole("button", { name: "Later" }).click();
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await page.locator(".cm-content").fill("work after a failed restart");
   await trigger(page);
   await dialog.getByRole("button", { name: "Restart now" }).click();

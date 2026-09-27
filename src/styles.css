@@ -1451,11 +1451,18 @@ svg {
   font-size: var(--font-size-12);
   font-weight: 600;
 }
-.project-tree-heading > span {
+.project-tree-entry {
+  height: auto;
+  min-height: 22px;
+}
+.project-tree-entry > span {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.project-tree-heading[data-selected="true"] {
+  background: var(--color-primary-container);
 }
 .file-tree {
   overflow: auto;
@@ -1471,6 +1478,34 @@ svg {
 .tree-row:hover,
 .tree-row:focus-within {
   background: var(--color-surface-variant);
+}
+.tree-row[data-selected="true"] {
+  background: var(--color-primary-container);
+}
+.tree-row[data-cut="true"] .tree-entry > :not(.tree-cut-mark) {
+  color: var(--color-muted-text);
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.tree-row[data-cut="true"] .tree-cut-mark {
+  flex-shrink: 0;
+  color: var(--color-muted-text);
+}
+.tree-toggle,
+.tree-toggle-space {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--color-surface-variant-text);
+}
+.tree-toggle {
+  border-radius: var(--radius-sm);
+}
+.tree-toggle:hover {
+  background: var(--color-outline);
 }
 .tree-entry {
   display: flex;
@@ -4622,7 +4657,7 @@ select {
   font-size: var(--font-size-11);
   margin-left: var(--space-16);
 }
-.project-tree-heading:focus-visible {
+.project-tree-entry:focus-visible {
   outline-offset: -2px;
 }
 .project-search[hidden] {
@@ -5353,7 +5388,7 @@ details[open] > .disclosure-summary > .disclosure-summary-icon {
 }
 
 /* Preserve folder expansion controls while respecting icon themes' twisties. */
-html[data-hide-explorer-arrows="true"] .tree-entry > .lucide:first-child {
+html[data-hide-explorer-arrows="true"] .tree-toggle > svg {
   visibility: hidden;
 }
 .resource-icon,

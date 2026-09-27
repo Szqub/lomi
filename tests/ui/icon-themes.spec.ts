@@ -130,6 +130,7 @@ test("file and interface selections are independent, survive color changes and e
   const main = await context.newPage();
   await install(main);
   await main.goto("/");
+  await main.getByRole("button", { name: "Open account menu" }).click();
   await expect(
     main.locator('[data-product-icon="gear"]').first(),
   ).toBeVisible();
@@ -184,12 +185,16 @@ test("resource icons follow Explorer folders, file tabs and appearance changes",
   ).toBeVisible();
   const folder = page.locator('.tree-entry[title="/project/src"]');
   await expect(folder.locator('[data-file-icon="folder"]')).toBeVisible();
-  await folder.click();
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
   await expect(folder.locator('[data-file-icon="open"]')).toBeVisible();
   const fileRow = page.locator('.tree-entry[title="/project/src/main.ts"]');
   await expect(fileRow.locator('[data-file-icon="ts"]')).toBeVisible();
-  await expect(folder.locator("svg").first()).toHaveCSS("visibility", "hidden");
-  await fileRow.click();
+  await expect(
+    page
+      .getByRole("button", { name: "Collapse src", exact: true })
+      .locator("svg"),
+  ).toHaveCSS("visibility", "hidden");
+  await fileRow.dblclick();
   await expect(page.locator('.tab [data-file-icon="ts"]')).toBeVisible();
   await expect(
     page.locator('.editor-heading [data-file-icon="ts"]'),

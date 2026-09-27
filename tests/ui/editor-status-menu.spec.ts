@@ -19,7 +19,7 @@ const editorText = (page: Page) =>
 async function openReadme(page: Page) {
   await mockDesktop(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
 }
 async function replaceText(page: Page, text: string) {
@@ -80,7 +80,7 @@ test("the footer changes indentation inline for the current buffer without chang
   );
   await page
     .getByRole("button", { name: "it's a file.txt", exact: true })
-    .click();
+    .dblclick();
   await expect(indentButton(page)).toHaveText("Spaces: 4");
   await page.getByRole("tab", { name: "README.md", exact: true }).click();
   await expect(indentButton(page)).toHaveText("Spaces: 2");

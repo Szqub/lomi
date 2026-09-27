@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { newProject, newSession } from "../../src/model";
 import { mockDesktop } from "./desktop";
 
 async function setup(
@@ -10,21 +11,42 @@ async function setup(
     { relative: "src/main.ts", directory: false },
     { relative: "README.md", directory: false },
   ],
+  explorerOpenOnSingleClick = false,
+  platform: "linux" | "macos" | "windows" = "linux",
+  saved?: unknown,
 ) {
-  await mockDesktop(page, git, undefined, undefined, {
-    "/project/src/main.ts": {
-      content: "first\n🦀 needle here\nneedle again\n",
-      revision: "initial",
-      encoding: "utf8",
-      readOnly: false,
+  await mockDesktop(
+    page,
+    git,
+    saved,
+    undefined,
+    {
+      "/project/src/main.ts": {
+        content: "first\n🦀 needle here\nneedle again\n",
+        revision: "initial",
+        encoding: "utf8",
+        readOnly: false,
+      },
+      "/project/README.md": {
+        content: "# Project\nneedle in readme\n",
+        revision: "initial",
+        encoding: "utf8",
+        readOnly: false,
+      },
     },
-    "/project/README.md": {
-      content: "# Project\nneedle in readme\n",
-      revision: "initial",
-      encoding: "utf8",
-      readOnly: false,
-    },
-  });
+    platform,
+  );
+  await page.addInitScript((enabled) => {
+    if (enabled)
+      localStorage.setItem(
+        "test-keybindings",
+        JSON.stringify({
+          version: 1,
+          bindings: {},
+          explorerOpenOnSingleClick: true,
+        }),
+      );
+  }, explorerOpenOnSingleClick);
   await page.addInitScript((initialEntries) => {
     const native = (window as any).__nativeTest;
     native.operationError = "";
@@ -77,18 +99,23 @@ async function setup(
           ++native.directoryReads,
         );
         const result = entries
-          .filter(
-            (entry) =>
-              entry.relative.split("/").slice(0, -1).join("/") ===
-              args.relative,
-          )
-          .map((entry) => ({
-            name: entry.relative.split("/").at(-1),
-            relativePath: entry.relative,
-            path: `${args.root}/${entry.relative}`,
-            isDirectory: entry.directory,
-            isSymlink: false,
-          }));
+          .filter((entry) => {
+            const relative = entry.relative.replaceAll("\\", "/");
+            return (
+              relative.split("/").slice(0, -1).join("/") ===
+              args.relative.replaceAll("\\", "/")
+            );
+          })
+          .map((entry) => {
+            const relative = entry.relative.replaceAll("\\", "/");
+            return {
+              name: relative.split("/").at(-1),
+              relativePath: entry.relative,
+              path: `${args.root}/${entry.relative}`,
+              isDirectory: entry.directory,
+              isSymlink: false,
+            };
+          });
         if (native.directoryDelay)
           await new Promise((resolve) =>
             setTimeout(resolve, native.directoryDelay),
@@ -201,13 +228,26 @@ async function setup(
             if (moving) delete native.editorFiles[path];
           }
       }
-      return { oldPath: moving ? oldPath : null, newPath: `${root}/${target}` };
+      return {
+        oldPath: moving ? oldPath : null,
+        newPath: `${root}/${target}`,
+      };
     };
   }, initialEntries);
   await page.goto("/");
   await expect(
     page.getByRole("button", { name: "Project folder project", exact: true }),
   ).toBeVisible();
+  if (explorerOpenOnSingleClick)
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as any).__nativeTest.calls.some(
+            (call: any) => call.command === "load_keybindings",
+          ),
+        ),
+      )
+      .toBe(true);
 }
 async function menu(page: Page, name: string, item: string) {
   await page
@@ -216,12 +256,599 @@ async function menu(page: Page, name: string, item: string) {
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
 
+async function dispatchClipboardEvent(
+  target: import("@playwright/test").Locator,
+  type: "copy" | "cut" | "paste",
+) {
+  return target.evaluate((element, type) => {
+    const event = new ClipboardEvent(type, {
+      clipboardData: new DataTransfer(),
+      bubbles: true,
+      cancelable: true,
+    });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, type);
+}
+
+test("Explorer clicks select entries while double clicks and chevrons activate them", async ({
+  page,
+}) => {
+  await setup(page);
+  const tree = page.locator(".file-tree");
+  const folder = tree.locator('.tree-entry[title="/project/src"]');
+  const folderRow = folder.locator("..");
+  const file = tree.locator('.tree-entry[title="/project/README.md"]');
+  const fileRow = file.locator("..");
+
+  await folder.click();
+  await expect(folderRow).toHaveAttribute("data-selected", "true");
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+  await page.mouse.move(1400, 880);
+  const selectedBackground = await folderRow.evaluate(
+    (row) => getComputedStyle(row).backgroundColor,
+  );
+  expect(selectedBackground).not.toBe("rgba(0, 0, 0, 0)");
+
+  await file.click();
+  await expect(fileRow).toHaveAttribute("data-selected", "true");
+  await expect(folderRow).not.toHaveAttribute("data-selected", "true");
+  await expect(tree.locator('.tree-row[data-selected="true"]')).toHaveCount(1);
+  await expect(page.locator(".cm-content")).toHaveCount(0);
+  await page.mouse.move(1400, 880);
+  await page.locator(".explorer-panel").screenshot({
+    path: test.info().outputPath("explorer-selected-entry.png"),
+  });
+
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+  await expect(folderRow).toHaveAttribute("data-selected", "true");
+  await page.keyboard.press("F2");
+  const renameFolder = tree.getByRole("textbox", { name: "Rename name" });
+  await expect(renameFolder).toHaveValue("src");
+  await renameFolder.press("Escape");
+  await folder.click();
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+  await folder.dblclick();
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  const sourceFile = tree.locator('.tree-entry[title="/project/src/main.ts"]');
+  await sourceFile.click();
+  await expect(page.locator(".cm-content")).toHaveCount(0);
+  await sourceFile.dblclick();
+  await expect(page.locator(".editor-path")).toContainText("src/main.ts");
+});
+
+test("keyboard activation and commands act on the clicked Explorer entry", async ({
+  page,
+}) => {
+  await setup(page);
+  const tree = page.locator(".file-tree");
+  const folder = tree.locator('.tree-entry[title="/project/src"]');
+  await folder.focus();
+  await page.keyboard.press("Enter");
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Space");
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+
+  const readme = tree.locator('.tree-entry[title="/project/README.md"]');
+  await readme.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".editor-path")).toContainText("README.md");
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+  await readme.focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator(".editor-path")).toContainText("README.md");
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+
+  await readme.click();
+  await page.keyboard.press("F2");
+  const rename = tree.getByRole("textbox", { name: "Rename name" });
+  await expect(rename).toHaveValue("README.md");
+  await rename.press("Escape");
+
+  await readme.click();
+  await page.keyboard.press("Delete");
+  const trash = page.getByRole("dialog", { name: "Move to Trash" });
+  await expect(trash.locator("strong")).toHaveText("README.md");
+  await trash.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await readme.click();
+  await page.keyboard.press("Control+Delete");
+  const permanentlyDelete = page.getByRole("dialog", {
+    name: "Delete Permanently",
+  });
+  await expect(permanentlyDelete.locator("strong")).toHaveText("README.md");
+  await permanentlyDelete
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+
+  await readme.click();
+  await page.keyboard.press("Control+c");
+  await menu(page, "src", "Paste");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__nativeTest.calls
+            .filter((call: any) => call.command === "file_operation")
+            .at(-1)?.args,
+      ),
+    )
+    .toMatchObject({
+      root: "/project",
+      relative: "src",
+      operation: { kind: "copy", source: "README.md" },
+    });
+});
+
+for (const platform of ["linux", "windows"] as const) {
+  test(`${platform} Explorer handles native clipboard events without keydown`, async ({
+    page,
+  }) => {
+    await setup(page, true, undefined, false, platform);
+    const tree = page.locator(".file-tree");
+    const readme = tree.locator('.tree-entry[title="/project/README.md"]');
+    const folder = tree.locator('.tree-entry[title="/project/src"]');
+
+    await page.getByRole("button", { name: "Expand src", exact: true }).click();
+
+    await readme.focus();
+    expect(await dispatchClipboardEvent(readme, "copy")).toBe(true);
+    await folder.focus();
+    expect(await dispatchClipboardEvent(folder, "paste")).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls
+              .filter((call: any) => call.command === "file_operation")
+              .at(-1)?.args,
+        ),
+      )
+      .toMatchObject({
+        root: "/project",
+        relative: "src",
+        operation: {
+          kind: "copy",
+          sourceRoot: "/project",
+          source: "README.md",
+        },
+      });
+
+    const source = tree.locator('.tree-entry[title="/project/src/main.ts"]');
+    await source.focus();
+    expect(await dispatchClipboardEvent(source, "cut")).toBe(true);
+    await expect(source.locator("..")).toHaveAttribute("data-cut", "true");
+    await readme.focus();
+    expect(await dispatchClipboardEvent(readme, "paste")).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls
+              .filter((call: any) => call.command === "file_operation")
+              .at(-1)?.args,
+        ),
+      )
+      .toMatchObject({
+        root: "/project",
+        relative: "",
+        operation: {
+          kind: "move",
+          sourceRoot: "/project",
+          source: "src/main.ts",
+        },
+      });
+    await expect(source).toHaveCount(0);
+  });
+
+  test(`${platform} Explorer duplicates with Ctrl+D and renames with F2`, async ({
+    page,
+  }) => {
+    await setup(page, true, undefined, false, platform);
+    const tree = page.locator(".file-tree");
+    const readme = tree.locator('.tree-entry[title="/project/README.md"]');
+
+    await readme.focus();
+    await page.keyboard.press("Control+d");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls
+              .filter((call: any) => call.command === "file_operation")
+              .at(-1)?.args,
+        ),
+      )
+      .toMatchObject({
+        root: "/project",
+        relative: "README.md",
+        operation: { kind: "duplicate" },
+      });
+    await expect(
+      tree.locator('.tree-entry[title="/project/README copy.md"]'),
+    ).toBeVisible();
+
+    await readme.focus();
+    await page.keyboard.press("F2");
+    const rename = tree.getByRole("textbox", { name: "Rename name" });
+    await expect(rename).toHaveValue("README.md");
+    await rename.press("Escape");
+  });
+
+  test(`${platform} Explorer supports Ctrl+C, Ctrl+X, and Ctrl+V for files`, async ({
+    page,
+  }) => {
+    await setup(page, true, undefined, false, platform);
+    const tree = page.locator(".file-tree");
+    const folder = tree.locator('.tree-entry[title="/project/src"]');
+    const folderRow = folder.locator("..");
+    const readme = tree.locator('.tree-entry[title="/project/README.md"]');
+    const readmeRow = readme.locator("..");
+
+    await page.getByRole("button", { name: "Expand src", exact: true }).click();
+
+    // Meta is not the file shortcut on Linux or Windows.
+    await readme.click();
+    await page.keyboard.press("Meta+x");
+    await expect(readmeRow).not.toHaveAttribute("data-cut", "true");
+
+    // Folders can be cut too, and copying replaces the cut state immediately.
+    await folder.click();
+    await page.keyboard.press("Control+x");
+    await expect(folderRow).toHaveAttribute("data-cut", "true");
+    await expect(folderRow.locator(".tree-cut-mark")).toBeVisible();
+    await page.keyboard.press("Control+c");
+    await expect(folderRow).not.toHaveAttribute("data-cut", "true");
+    await expect(folderRow.locator(".tree-cut-mark")).toHaveCount(0);
+
+    // Copy README into src with Ctrl+V.
+    await readme.click();
+    await page.keyboard.press("Control+c");
+    await folder.focus();
+    await page.keyboard.press("Control+v");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls
+              .filter((call: any) => call.command === "file_operation")
+              .at(-1)?.args,
+        ),
+      )
+      .toMatchObject({
+        root: "/project",
+        relative: "src",
+        operation: {
+          kind: "copy",
+          sourceRoot: "/project",
+          source: "README.md",
+        },
+      });
+    await expect(
+      tree.locator('.tree-entry[title="/project/src/README.md"]'),
+    ).toBeVisible();
+
+    // Cut a file, confirm the muted scissors state, then move it across folders.
+    const source = tree.locator('.tree-entry[title="/project/src/main.ts"]');
+    const sourceRow = source.locator("..");
+    await source.click();
+    await page.keyboard.press("Control+x");
+    await expect(sourceRow).toHaveAttribute("data-cut", "true");
+    await expect(sourceRow.locator(".tree-cut-mark")).toBeVisible();
+    await expect
+      .poll(() =>
+        source
+          .locator("span")
+          .last()
+          .evaluate((name) => {
+            const style = getComputedStyle(name);
+            return { filter: style.filter, opacity: style.opacity };
+          }),
+      )
+      .toEqual({ filter: "grayscale(1)", opacity: "0.55" });
+    await expect
+      .poll(() =>
+        source
+          .locator("svg")
+          .nth(1)
+          .evaluate((icon) => {
+            const style = getComputedStyle(icon);
+            return { filter: style.filter, opacity: style.opacity };
+          }),
+      )
+      .toEqual({ filter: "grayscale(1)", opacity: "0.55" });
+    if (platform === "linux")
+      await page.locator(".explorer-panel").screenshot({
+        path: test.info().outputPath("explorer-cut-item.png"),
+      });
+
+    await page.keyboard.press("Control+c");
+    await expect(sourceRow).not.toHaveAttribute("data-cut", "true");
+    await expect(sourceRow.locator(".tree-cut-mark")).toHaveCount(0);
+    await page.keyboard.press("Control+x");
+    await expect(sourceRow).toHaveAttribute("data-cut", "true");
+    await readme.focus();
+    await page.keyboard.press("Control+v");
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls
+              .filter((call: any) => call.command === "file_operation")
+              .at(-1)?.args,
+        ),
+      )
+      .toMatchObject({
+        root: "/project",
+        relative: "",
+        operation: {
+          kind: "move",
+          sourceRoot: "/project",
+          source: "src/main.ts",
+        },
+      });
+    await expect(
+      tree.locator('.tree-entry[title="/project/main.ts"]'),
+    ).toBeVisible();
+    await expect(
+      tree.locator('.tree-entry[title="/project/src/main.ts"]'),
+    ).toHaveCount(0);
+
+    // A successful cut paste consumes the in-app clipboard.
+    await tree
+      .locator('.tree-entry[title="/project/main.ts"]')
+      .click({ button: "right" });
+    await expect(page.getByRole("menuitem", { name: "Paste" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+  });
+}
+
+test("Windows-style Explorer paths paste a copied item into its current folder", async ({
+  page,
+}) => {
+  await setup(
+    page,
+    true,
+    [
+      { relative: "src", directory: true },
+      { relative: "src\\main.ts", directory: false },
+      { relative: "README.md", directory: false },
+    ],
+    false,
+    "windows",
+  );
+  const tree = page.locator(".file-tree");
+  const folder = tree.locator('.tree-entry[title="/project/src"]');
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  const source = tree.getByRole("button", { name: "main.ts", exact: true });
+
+  await source.click();
+  await page.keyboard.press("Control+c");
+  await folder.focus();
+  await page.keyboard.press("Control+v");
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__nativeTest.calls
+            .filter((call: any) => call.command === "file_operation")
+            .at(-1)?.args,
+      ),
+    )
+    .toMatchObject({
+      root: "/project",
+      relative: "src\\main.ts",
+      operation: { kind: "duplicate" },
+    });
+  await expect(
+    tree.getByRole("button", { name: "main copy.ts", exact: true }),
+  ).toBeVisible();
+});
+
+test("the in-app clipboard survives switching Explorer projects", async ({
+  page,
+}) => {
+  const project = newProject("/project", "local:bash");
+  const otherProject = newProject("/other", "local:bash");
+  const saved = {
+    ...newSession(),
+    projects: [project, otherProject],
+    activeProjectId: project.id,
+  };
+  await setup(page, true, undefined, false, "linux", saved);
+
+  const readme = page.locator(
+    '.file-tree .tree-entry[title="/project/README.md"]',
+  );
+  await readme.click();
+  await page.keyboard.press("Control+c");
+
+  await page.locator(".project-switcher").click();
+  await page.getByRole("menuitem", { name: "other", exact: true }).click();
+  await expect(page.locator(".project-switcher")).toContainText("other");
+
+  const destination = page.locator(
+    '.file-tree .tree-entry[title="/other/src"]',
+  );
+  await destination.focus();
+  await page.keyboard.press("Control+v");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__nativeTest.calls
+            .filter((call: any) => call.command === "file_operation")
+            .at(-1)?.args,
+      ),
+    )
+    .toMatchObject({
+      root: "/other",
+      relative: "src",
+      operation: {
+        kind: "copy",
+        sourceRoot: "/project",
+        source: "README.md",
+      },
+    });
+});
+
+test("single-click mode delays activation without selecting and leaves chevrons immediate", async ({
+  page,
+}) => {
+  await setup(page, true, undefined, true);
+  const tree = page.locator(".file-tree");
+  const file = tree.locator('.tree-entry[title="/project/README.md"]');
+  const folder = tree.locator('.tree-entry[title="/project/src"]');
+
+  await file.click();
+  await page.waitForTimeout(150);
+  await expect(file).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".editor-path")).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "README.md", exact: true }),
+  ).toHaveCount(0);
+  await page.waitForTimeout(400);
+  await expect(page.locator(".editor-path")).toContainText("README.md", {
+    timeout: 1000,
+  });
+  await expect(
+    page.getByRole("tab", { name: "README.md", exact: true }),
+  ).toBeVisible();
+  await expect(file).toHaveAttribute("aria-pressed", "false");
+  await expect(tree.locator('.tree-row[data-selected="true"]')).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+
+  await folder.click();
+  await page.waitForTimeout(150);
+  await expect(folder).toHaveAttribute("aria-pressed", "false");
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    tree.getByRole("button", { name: "main.ts", exact: true }),
+  ).toHaveCount(0);
+  await expect(folder).toHaveAttribute("aria-expanded", "true", {
+    timeout: 1000,
+  });
+  await expect(folder).toHaveAttribute("aria-pressed", "false");
+
+  await tree.getByRole("button", { name: "Collapse src", exact: true }).click();
+  await expect(folder).toHaveAttribute("aria-expanded", "false", {
+    timeout: 250,
+  });
+  await tree.getByRole("button", { name: "Expand src", exact: true }).click();
+  await expect(folder).toHaveAttribute("aria-expanded", "true", {
+    timeout: 250,
+  });
+});
+
+test("double-click mode selects only and keyboard activation and shortcuts remain immediate", async ({
+  page,
+}) => {
+  await setup(page, true, undefined, true);
+  const tree = page.locator(".file-tree");
+  const file = tree.locator('.tree-entry[title="/project/README.md"]');
+  const fileRow = file.locator("..");
+  const folder = tree.locator('.tree-entry[title="/project/src"]');
+  const folderRow = folder.locator("..");
+
+  await file.dblclick();
+  await expect(file).toHaveAttribute("aria-pressed", "true");
+  await expect(fileRow).toHaveAttribute("data-selected", "true");
+  await page.waitForTimeout(600);
+  await expect(page.locator(".editor-path")).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "README.md", exact: true }),
+  ).toHaveCount(0);
+
+  await folder.dblclick();
+  await expect(folder).toHaveAttribute("aria-pressed", "true");
+  await expect(folderRow).toHaveAttribute("data-selected", "true");
+  await expect(file).toHaveAttribute("aria-pressed", "false");
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+  await page.waitForTimeout(600);
+  await expect(page.locator(".editor-path")).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "README.md", exact: true }),
+  ).toHaveCount(0);
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+
+  await folder.focus();
+  await page.keyboard.press("Enter");
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Space");
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+
+  await file.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".editor-path")).toContainText("README.md");
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+  await file.focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator(".editor-path")).toContainText("README.md");
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+
+  await file.focus();
+  await page.keyboard.press("F2");
+  const rename = tree.getByRole("textbox", { name: "Rename name" });
+  await expect(rename).toHaveValue("README.md");
+  await rename.press("Escape");
+});
+
+test("dragging out of an Explorer entry clears pointer focus suppression", async ({
+  page,
+}) => {
+  await setup(page, true, undefined, true);
+  const tree = page.locator(".file-tree");
+  const file = tree.locator('.tree-entry[title="/project/README.md"]');
+  const fileRow = file.locator("..");
+  const project = page.getByRole("button", {
+    name: "Project folder project",
+    exact: true,
+  });
+  const bounds = (await file.boundingBox())!;
+
+  await page.mouse.move(
+    bounds.x + bounds.width / 2,
+    bounds.y + bounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(1000, 400, { steps: 4 });
+  await page.mouse.up();
+  await expect(file).toHaveAttribute("aria-pressed", "false");
+
+  await project.focus();
+  await expect(project).toHaveAttribute("aria-pressed", "true");
+  await file.focus();
+  await expect(file).toHaveAttribute("aria-pressed", "true");
+  await expect(fileRow).toHaveAttribute("data-selected", "true");
+
+  await page.keyboard.press("F2");
+  const rename = tree.getByRole("textbox", { name: "Rename name" });
+  await expect(rename).toHaveValue("README.md");
+  await rename.press("Escape");
+});
+
 test("automatically refreshes visible directories without Git and releases collapsed watches", async ({
   page,
 }, testInfo) => {
   await setup(page, false);
   const tree = page.locator(".file-tree");
-  await tree.getByRole("button", { name: "src", exact: true }).click();
+  await tree.getByRole("button", { name: "Expand src", exact: true }).click();
   await expect(
     tree.getByRole("button", { name: "main.ts", exact: true }),
   ).toBeVisible();
@@ -277,7 +904,7 @@ test("automatically refreshes visible directories without Git and releases colla
   await page.screenshot({
     path: testInfo.outputPath("explorer-auto-refresh.png"),
   });
-  await tree.getByRole("button", { name: "src", exact: true }).click();
+  await tree.getByRole("button", { name: "Collapse src", exact: true }).click();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -418,8 +1045,10 @@ test("Explorer colors files and ancestor folders and refreshes new files and cle
   const source = tree.getByRole("button", { name: "src", exact: true });
   await expect(source).toHaveAttribute("data-git-status", "U");
   await expect(source).toHaveAttribute("aria-expanded", "false");
-  await source.click();
-  await tree.getByRole("button", { name: "nested", exact: true }).click();
+  await tree.getByRole("button", { name: "Expand src", exact: true }).click();
+  await tree
+    .getByRole("button", { name: "Expand nested", exact: true })
+    .click();
   for (const mode of ["dark", "light"] as const) {
     await page.emulateMedia({ colorScheme: mode });
     await expect(page.locator("html")).toHaveAttribute("data-appearance", mode);
@@ -558,8 +1187,8 @@ test("renames a folder without losing dirty editor text or undo history", async 
   page,
 }) => {
   await setup(page);
-  await page.getByRole("button", { name: "src", exact: true }).click();
-  await page.getByRole("button", { name: "main.ts", exact: true }).click();
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  await page.getByRole("button", { name: "main.ts", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.locator(".cm-content").focus();
   await page.keyboard.press("Control+End");
@@ -603,8 +1232,8 @@ test("deleting a dirty folder supports cancel and retains edits after a failed s
   page,
 }) => {
   await setup(page);
-  await page.getByRole("button", { name: "src", exact: true }).click();
-  await page.getByRole("button", { name: "main.ts", exact: true }).click();
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  await page.getByRole("button", { name: "main.ts", exact: true }).dblclick();
   await page.locator(".cm-content").fill("dirty");
   await menu(page, "src", "Delete Permanently…");
   await page
@@ -830,7 +1459,7 @@ test("creates and copies items and exposes scoped Git history", async ({
   await setup(page);
   await menu(page, "README.md", "Copy");
   await menu(page, "src", "Paste");
-  await page.getByRole("button", { name: "src", exact: true }).click();
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "README.md", exact: true }),
   ).toHaveCount(2);
@@ -985,8 +1614,8 @@ test("renames nested files and the project root inline while keeping the editor 
   page,
 }) => {
   await setup(page, false);
-  await page.getByRole("button", { name: "src", exact: true }).click();
-  await page.getByRole("button", { name: "main.ts", exact: true }).click();
+  await page.getByRole("button", { name: "Expand src", exact: true }).click();
+  await page.getByRole("button", { name: "main.ts", exact: true }).dblclick();
   await page.locator(".cm-content").fill("unsaved rename");
   for (const [entry, name, relative] of [
     ["main.ts", "renamed.ts", "src/main.ts"],
@@ -1072,7 +1701,7 @@ test("moving a dirty file updates its buffer location and keeps failed operation
   page,
 }) => {
   await setup(page);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await page.locator(".cm-content").fill("unsaved move");
   await menu(page, "README.md", "Cut");
   await menu(page, "src", "Paste");
@@ -1294,7 +1923,7 @@ test("nested repositories supply file decorations, history and ignore targets", 
   });
   const first = page.getByRole("button", { name: "first", exact: true });
   await expect(first).toHaveAttribute("data-git-status", "M");
-  await first.click();
+  await page.getByRole("button", { name: "Expand first", exact: true }).click();
   const file = page.getByRole("button", { name: "file.txt", exact: true });
   await expect(file).toHaveAttribute("data-git-status", "M");
   await menu(page, "file.txt", "Add to .gitignore");

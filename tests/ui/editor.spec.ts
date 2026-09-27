@@ -9,7 +9,7 @@ import {
 import { buffer, mockDesktop } from "./desktop";
 
 async function openReadme(page: Page) {
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
 }
 
@@ -550,7 +550,7 @@ test("Close Clean keeps dirty buffers and undo history while closing terminals a
   await replaceText(page, "keep my edits");
   await page
     .getByRole("button", { name: "it's a file.txt", exact: true })
-    .click();
+    .dblclick();
   await expect(page.locator(".cm-content")).toContainText("Hello, 🦀!");
   await page.getByRole("tab", { name: /README.md/ }).click({ button: "right" });
   await page
@@ -605,7 +605,7 @@ for (const resolution of ["Save changes", "Discard changes"]) {
     await replaceText(page, "first unsaved file");
     await page
       .getByRole("button", { name: "it's a file.txt", exact: true })
-      .click();
+      .dblclick();
     await expect(page.locator(".cm-content")).toContainText("Hello, 🦀!");
     await replaceText(page, "second unsaved file");
     const closeAll = async () => {
@@ -667,7 +667,7 @@ for (const resolution of ["Save changes", "Discard changes"]) {
     );
     await page
       .getByRole("button", { name: "it's a file.txt", exact: true })
-      .click();
+      .dblclick();
     await expect(page.locator(".cm-content")).toContainText(
       resolution === "Save changes" ? "second unsaved file" : "Hello, 🦀!",
     );
@@ -789,7 +789,7 @@ test("missing files and failed reads retain edits and allow recovery", async ({
   await page.evaluate(() => {
     (window as any).__nativeTest.fileReadError = "Unsupported binary file";
   });
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.getByRole("status")).toContainText(
     "Unsupported binary file",
   );
@@ -1048,10 +1048,10 @@ test("slow reads cannot steal focus or reopen a tab that was closed while loadin
   await page.evaluate(() => {
     (window as any).__nativeTest.fileReadDelays["README.md"] = 500;
   });
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await page
     .getByRole("button", { name: "it's a file.txt", exact: true })
-    .click();
+    .dblclick();
   await expect(page.locator(".cm-content")).toContainText("Hello, 🦀!");
   await page
     .getByRole("button", { name: "Close README.md", exact: true })

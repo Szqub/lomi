@@ -19,7 +19,12 @@ case "backup":
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
 case "restore":
     defer { try? FileManager.default.removeItem(at: backup) }
-    if board.string(forType: marker) == directory.path {
+    let markerOwned = board.string(forType: marker) == directory.path
+    let expectedChangeCount = CommandLine.arguments.count > 3
+        ? Int(CommandLine.arguments[3])
+        : nil
+    let unchangedSinceSmokeAction = expectedChangeCount == board.changeCount
+    if markerOwned || unchangedSinceSmokeAction {
         let data = try Data(contentsOf: backup)
         let items = try PropertyListSerialization.propertyList(from: data, format: nil) as! [[String: Data]]
         board.clearContents()
@@ -28,7 +33,34 @@ case "restore":
             for (type, bytes) in values { item.setData(bytes, forType: NSPasteboard.PasteboardType(type)) }
             return item
         })
+        print("restored")
+    } else {
+        print("preserved-newer-clipboard")
     }
+case "status":
+    let status: [String: Any] = [
+        "markerOwned": board.string(forType: marker) == directory.path,
+        "changeCount": board.changeCount,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: status, options: [.sortedKeys])
+    FileHandle.standardOutput.write(data)
+case "activate":
+    guard CommandLine.arguments.count > 3,
+          let pid = Int32(CommandLine.arguments[3])
+    else {
+        print("not-registered")
+        exit(2)
+    }
+    guard let application = NSRunningApplication(processIdentifier: pid) else {
+        print("not-registered")
+        exit(2)
+    }
+    let activated = application.activate(options: [.activateAllWindows])
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+    print(
+        "activation-requested=\(activated); active=\(application.isActive); frontmostPid=\(frontmostPid)"
+    )
 case "image", "image-only", "text":
     board.clearContents()
     board.setString(directory.path, forType: marker)

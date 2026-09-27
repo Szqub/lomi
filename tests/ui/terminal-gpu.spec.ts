@@ -75,7 +75,7 @@ test("large terminal history reuses its GPU context and releases hidden drawing 
     await expect(page.locator(".xterm-helper-textarea")).toBeFocused();
     expect(await allocations()).toEqual(beforeOverview);
   }
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   for (let i = 0; i < 4; i++) {
     await expect(page.locator(".cm-content")).toBeVisible();
     expect(

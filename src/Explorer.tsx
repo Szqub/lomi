@@ -1,5 +1,6 @@
 import ResourceIcon from "./ResourceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Scissors } from "lucide-react";
 import { Channel, Resource } from "@tauri-apps/api/core";
 import {
   ChevronDown,
@@ -23,10 +24,20 @@ import ProjectSearch from "./ProjectSearch";
 import type { SearchMatch } from "./ProjectSearch";
 import type { FileOperation } from "./explorer-model";
 import { explorerGitStatuses, gitFilePath } from "./explorer-model";
-import { useExplorerActions } from "./ExplorerActions";
+import { useExplorerActions, type ExplorerClipboard } from "./ExplorerActions";
+
+const isCutItem = (
+  clipboard: ExplorerClipboard | undefined,
+  root: string,
+  relative: string,
+) =>
+  !!clipboard?.cut &&
+  clipboard.root === root &&
+  clipboard.relative === relative;
 
 interface Props {
   root: string;
+  explorerOpenOnSingleClick: boolean;
   onTerminal: (path: string) => void;
   onOpenFile: (relative: string, match?: SearchMatch) => void;
   repositories: GitStatus[];
@@ -99,6 +110,90 @@ export default function Explorer(props: Props) {
     setRevision((revision) => revision + 1);
     props.onRefreshGit();
   };
+  const [selection, setSelection] = useState<
+    { root: string; relativePath: string } | undefined
+  >();
+  const selectedPath =
+    selection?.root === props.root ? selection.relativePath : undefined;
+  const select = (relativePath: string | undefined) =>
+    setSelection(
+      relativePath === undefined
+        ? undefined
+        : { root: props.root, relativePath },
+    );
+  useEffect(() => {
+    setSelection(undefined);
+  }, [props.root]);
+  const pendingActivation = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const pendingPointerDown = useRef<(() => void) | undefined>(undefined);
+  const pointerFocusPaths = useRef(new Set<string>());
+  const activationContext = useRef({
+    root: props.root,
+    enabled: props.explorerOpenOnSingleClick,
+  });
+  activationContext.current = {
+    root: props.root,
+    enabled: props.explorerOpenOnSingleClick,
+  };
+  const removePendingPointerDown = useCallback(() => {
+    if (pendingPointerDown.current) {
+      document.removeEventListener(
+        "pointerdown",
+        pendingPointerDown.current,
+        true,
+      );
+      pendingPointerDown.current = undefined;
+    }
+  }, []);
+  const cancelPendingActivation = useCallback(() => {
+    if (pendingActivation.current !== undefined)
+      clearTimeout(pendingActivation.current);
+    pendingActivation.current = undefined;
+    removePendingPointerDown();
+  }, [removePendingPointerDown]);
+  const scheduleActivation = useCallback(
+    (activate: () => void) => {
+      cancelPendingActivation();
+      const root = props.root;
+      const cancelOnPointerDown = () => cancelPendingActivation();
+      pendingPointerDown.current = cancelOnPointerDown;
+      document.addEventListener("pointerdown", cancelOnPointerDown, true);
+      pendingActivation.current = setTimeout(() => {
+        pendingActivation.current = undefined;
+        removePendingPointerDown();
+        if (
+          activationContext.current.root === root &&
+          activationContext.current.enabled
+        )
+          activate();
+      }, 500);
+    },
+    [cancelPendingActivation, props.root, removePendingPointerDown],
+  );
+  useEffect(() => {
+    cancelPendingActivation();
+    pointerFocusPaths.current.clear();
+    return () => {
+      cancelPendingActivation();
+      pointerFocusPaths.current.clear();
+    };
+  }, [
+    props.root,
+    props.explorerOpenOnSingleClick,
+    searchOpen,
+    cancelPendingActivation,
+  ]);
+  useEffect(() => {
+    const clearPointerFocus = () => pointerFocusPaths.current.clear();
+    document.addEventListener("pointerup", clearPointerFocus, true);
+    document.addEventListener("pointercancel", clearPointerFocus, true);
+    return () => {
+      document.removeEventListener("pointerup", clearPointerFocus, true);
+      document.removeEventListener("pointercancel", clearPointerFocus, true);
+    };
+  }, []);
   const actions = useExplorerActions({
     ...props,
     onSearch: search,
@@ -106,6 +201,14 @@ export default function Explorer(props: Props) {
     onExpand: (relative) =>
       setExpanded((previous) => new Set(previous).add(relative)),
   });
+  const onContext: typeof actions.onContext = (event, entry, background) => {
+    cancelPendingActivation();
+    actions.onContext(event, entry, background);
+  };
+  const onClipboard: typeof actions.onClipboard = (event, entry) => {
+    cancelPendingActivation();
+    actions.onClipboard(event, entry);
+  };
   const rootEntry: FileEntry = {
     name: basename(props.root),
     relativePath: "",
@@ -135,7 +238,12 @@ export default function Explorer(props: Props) {
         />
       )}
       {!searchOpen && (
-        <div className="sidebar-panel explorer-panel" aria-busy={actions.busy}>
+        <div
+          className="sidebar-panel explorer-panel"
+          aria-busy={actions.busy}
+          onPointerDown={cancelPendingActivation}
+          onKeyDownCapture={cancelPendingActivation}
+        >
           <header className="sidebar-heading">
             <span>EXPLORER</span>
             <div>
@@ -167,14 +275,40 @@ export default function Explorer(props: Props) {
             <div
               className="project-tree-heading"
               data-git-status={gitStatuses.get(gitFilePath(props.root))}
-              tabIndex={0}
-              role="button"
-              aria-label={`Project folder ${rootEntry.name}`}
-              onContextMenu={(event) => actions.onContext(event, rootEntry)}
-              onKeyDown={(event) => actions.onKey(event, rootEntry)}
+              data-selected={selectedPath === "" ? "true" : undefined}
+              onContextMenu={(event) => {
+                select("");
+                onContext(event, rootEntry);
+              }}
+              onKeyDown={(event) => {
+                cancelPendingActivation();
+                actions.onKey(event, rootEntry);
+              }}
             >
-              <ResourceIcon path={props.root} folder root expanded size={14} />
-              <span title={props.root}>{basename(props.root)}</span>
+              <button
+                type="button"
+                className="tree-entry project-tree-entry"
+                aria-label={`Project folder ${rootEntry.name}`}
+                aria-pressed={selectedPath === ""}
+                onFocus={() => select("")}
+                onClick={(event) => {
+                  if (event.detail !== 0)
+                    event.currentTarget.focus({ preventScroll: true });
+                  select("");
+                }}
+                onCopy={(event) => onClipboard(event, rootEntry)}
+                onCut={(event) => onClipboard(event, rootEntry)}
+                onPaste={(event) => onClipboard(event, rootEntry)}
+              >
+                <ResourceIcon
+                  path={props.root}
+                  folder
+                  root
+                  expanded
+                  size={14}
+                />
+                <span title={props.root}>{basename(props.root)}</span>
+              </button>
               <IconButton
                 title="Copy project folder path"
                 onClick={() =>
@@ -196,7 +330,7 @@ export default function Explorer(props: Props) {
           <div
             className="file-tree"
             aria-label="Project files"
-            onContextMenu={(event) => actions.onContext(event, rootEntry, true)}
+            onContextMenu={(event) => onContext(event, rootEntry, true)}
           >
             <Directory
               {...props}
@@ -210,8 +344,16 @@ export default function Explorer(props: Props) {
               showHidden={showHidden}
               expanded={expanded}
               toggle={toggle}
-              onContext={actions.onContext}
+              selectedPath={selectedPath}
+              clipboard={actions.clipboard}
+              onSelect={select}
+              pointerFocusPaths={pointerFocusPaths}
+              explorerOpenOnSingleClick={props.explorerOpenOnSingleClick}
+              scheduleActivation={scheduleActivation}
+              cancelPendingActivation={cancelPendingActivation}
+              onContext={onContext}
               onKey={actions.onKey}
+              onClipboard={onClipboard}
               creation={actions.creation}
               rename={actions.rename}
             />
@@ -230,6 +372,7 @@ interface DirectoryProps extends Props {
   gitRevision: string | undefined;
   onContext: ReturnType<typeof useExplorerActions>["onContext"];
   onKey: ReturnType<typeof useExplorerActions>["onKey"];
+  onClipboard: ReturnType<typeof useExplorerActions>["onClipboard"];
   creation: ReturnType<typeof useExplorerActions>["creation"];
   rename: ReturnType<typeof useExplorerActions>["rename"];
   relative: string;
@@ -240,6 +383,13 @@ interface DirectoryProps extends Props {
   showHidden: boolean;
   expanded: Set<string>;
   toggle: (path: string) => void;
+  selectedPath: string | undefined;
+  clipboard: ExplorerClipboard | undefined;
+  onSelect: (relativePath: string | undefined) => void;
+  pointerFocusPaths: { current: Set<string> };
+  explorerOpenOnSingleClick: boolean;
+  scheduleActivation: (activate: () => void) => void;
+  cancelPendingActivation: () => void;
 }
 function Directory(props: DirectoryProps) {
   const {
@@ -252,6 +402,12 @@ function Directory(props: DirectoryProps) {
     showHidden,
     expanded,
     toggle,
+    selectedPath,
+    onSelect,
+    pointerFocusPaths,
+    explorerOpenOnSingleClick,
+    scheduleActivation,
+    cancelPendingActivation,
     onTerminal,
     onOpenFile,
     onError,
@@ -259,6 +415,7 @@ function Directory(props: DirectoryProps) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const suppressedFocusPath = useRef<string | undefined>(undefined);
   const reload = useRef(() => {});
   useEffect(() => {
     let current = true;
@@ -347,36 +504,137 @@ function Directory(props: DirectoryProps) {
             ) : (
               <div
                 className="tree-row"
-                onContextMenu={(event) => props.onContext(event, entry)}
-                onKeyDown={(event) => props.onKey(event, entry)}
+                data-cut={
+                  isCutItem(props.clipboard, root, entry.relativePath)
+                    ? "true"
+                    : undefined
+                }
+                data-selected={
+                  selectedPath === entry.relativePath ? "true" : undefined
+                }
+                onContextMenu={(event) => {
+                  onSelect(entry.relativePath);
+                  props.onContext(event, entry);
+                }}
+                onKeyDown={(event) => {
+                  cancelPendingActivation();
+                  props.onKey(event, entry);
+                }}
+                onCopy={(event) => props.onClipboard(event, entry)}
+                onCut={(event) => props.onClipboard(event, entry)}
+                onPaste={(event) => props.onClipboard(event, entry)}
                 style={{
                   paddingLeft: `calc(${depth} * var(--tree-indent) + var(--space-10))`,
                 }}
-                onPointerDown={(event) =>
-                  beginFileDrag(event, entry.path, onError)
-                }
+                onPointerDown={(event) => {
+                  cancelPendingActivation();
+                  if (!(event.target as HTMLElement).closest(".tree-toggle"))
+                    beginFileDrag(event, entry.path, onError);
+                }}
               >
+                {entry.isDirectory ? (
+                  <button
+                    type="button"
+                    className="tree-toggle"
+                    title={`${open ? "Collapse" : "Expand"} ${entry.name}`}
+                    aria-label={`${open ? "Collapse" : "Expand"} ${entry.name}`}
+                    aria-expanded={open}
+                    onFocus={() => onSelect(entry.relativePath)}
+                    onClick={(event) => {
+                      if (event.detail !== 0)
+                        event.currentTarget.focus({ preventScroll: true });
+                      onSelect(entry.relativePath);
+                      toggle(entry.relativePath);
+                    }}
+                  >
+                    {open ? (
+                      <ChevronDown size={12} />
+                    ) : (
+                      <ChevronRight size={12} />
+                    )}
+                  </button>
+                ) : (
+                  <span className="tree-toggle-space" aria-hidden="true" />
+                )}
                 <button
+                  type="button"
                   className="tree-entry"
                   data-git-status={props.gitStatuses.get(
                     gitFilePath(entry.path),
                   )}
                   title={entry.path}
                   aria-expanded={entry.isDirectory ? open : undefined}
-                  onClick={() =>
-                    entry.isDirectory
-                      ? toggle(entry.relativePath)
-                      : onOpenFile(entry.relativePath)
+                  aria-pressed={selectedPath === entry.relativePath}
+                  aria-description={
+                    isCutItem(props.clipboard, root, entry.relativePath)
+                      ? "Cut item"
+                      : undefined
                   }
-                >
-                  {entry.isDirectory ? (
-                    open ? (
-                      <ChevronDown size={12} />
-                    ) : (
-                      <ChevronRight size={12} />
+                  onClick={(event) => {
+                    const activate = () =>
+                      entry.isDirectory
+                        ? toggle(entry.relativePath)
+                        : onOpenFile(entry.relativePath);
+                    if (!explorerOpenOnSingleClick) {
+                      if (event.detail !== 0)
+                        event.currentTarget.focus({ preventScroll: true });
+                      onSelect(entry.relativePath);
+                      if (event.detail === 0) activate();
+                      return;
+                    }
+
+                    pointerFocusPaths.current.delete(entry.relativePath);
+                    const button = event.currentTarget;
+                    suppressedFocusPath.current = entry.relativePath;
+                    button.focus({ preventScroll: true });
+                    suppressedFocusPath.current = undefined;
+                    if (event.detail === 0) {
+                      cancelPendingActivation();
+                      onSelect(entry.relativePath);
+                      activate();
+                    } else if (event.detail > 1) {
+                      cancelPendingActivation();
+                      onSelect(entry.relativePath);
+                    } else {
+                      onSelect(undefined);
+                      scheduleActivation(() => {
+                        if (button.isConnected) activate();
+                      });
+                    }
+                  }}
+                  onFocus={() => {
+                    if (
+                      explorerOpenOnSingleClick &&
+                      (pointerFocusPaths.current.has(entry.relativePath) ||
+                        suppressedFocusPath.current === entry.relativePath)
                     )
-                  ) : (
-                    <span className="tree-indent" />
+                      return;
+                    onSelect(entry.relativePath);
+                  }}
+                  onPointerDown={(event) => {
+                    if (event.button === 0)
+                      pointerFocusPaths.current.add(entry.relativePath);
+                  }}
+                  onDoubleClick={(event) => {
+                    cancelPendingActivation();
+                    if (explorerOpenOnSingleClick) {
+                      suppressedFocusPath.current = entry.relativePath;
+                      event.currentTarget.focus({ preventScroll: true });
+                      suppressedFocusPath.current = undefined;
+                      onSelect(entry.relativePath);
+                    } else {
+                      entry.isDirectory
+                        ? toggle(entry.relativePath)
+                        : onOpenFile(entry.relativePath);
+                    }
+                  }}
+                >
+                  {isCutItem(props.clipboard, root, entry.relativePath) && (
+                    <Scissors
+                      className="tree-cut-mark"
+                      size={12}
+                      aria-hidden="true"
+                    />
                   )}
                   <ResourceIcon
                     path={entry.path}
@@ -390,6 +648,7 @@ function Directory(props: DirectoryProps) {
                   {entry.isSymlink && <span className="symlink-mark">↗</span>}
                 </button>
                 <button
+                  type="button"
                   className="tree-action"
                   title={
                     entry.isDirectory ? "Copy folder path" : "Copy file path"
@@ -405,6 +664,7 @@ function Directory(props: DirectoryProps) {
                 </button>
                 {entry.isDirectory && (
                   <button
+                    type="button"
                     className="tree-action"
                     title="Open terminal here"
                     aria-label={`Open terminal in ${entry.name}`}

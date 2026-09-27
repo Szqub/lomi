@@ -25,7 +25,7 @@ test("the main window blocks browser menus and preserves custom tab actions", as
   await expectBrowserMenuBlocked(page.locator(".xterm-screen"));
   await expectBrowserMenuBlocked(page.locator(".titlebar"));
   await expectBrowserMenuBlocked(page.locator("body"));
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expectBrowserMenuBlocked(page.locator(".cm-content"));
   await page.getByRole("tab", { name: "README.md", exact: true }).click({
     button: "right",

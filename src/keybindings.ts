@@ -252,6 +252,7 @@ export interface KeybindingSettings {
   version: 1;
   bindings: Partial<Keybindings>;
   focusFollowsPointer?: boolean;
+  explorerOpenOnSingleClick?: boolean;
 }
 
 export function defaultKeybindings(
@@ -378,7 +379,9 @@ export function restoreKeybindings(
     typeof value.bindings !== "object" ||
     Array.isArray(value.bindings) ||
     ("focusFollowsPointer" in value &&
-      typeof value.focusFollowsPointer !== "boolean")
+      typeof value.focusFollowsPointer !== "boolean") ||
+    ("explorerOpenOnSingleClick" in value &&
+      typeof value.explorerOpenOnSingleClick !== "boolean")
   ) {
     throw new Error(
       "The saved keybindings use an unsupported format. The file has been left intact.",

@@ -65,6 +65,8 @@ pub struct Keybindings {
     bindings: BTreeMap<String, Option<String>>,
     #[serde(default)]
     focus_follows_pointer: bool,
+    #[serde(default)]
+    explorer_open_on_single_click: bool,
 }
 
 fn read(path: &Path) -> Result<Option<serde_json::Value>, String> {
@@ -295,7 +297,7 @@ mod tests {
     #[test]
     fn agent_changes_one_stored_field_and_preserves_unavailable_descriptors() {
         use lomi_control_protocol::settings::SettingsPatch;
-        let source = br#"{"version":1,"bindings":{"saveFile":"Meta+KeyS","missing.plugin":null},"opaque":{"preserved":true}}"#;
+        let source = br#"{"version":1,"bindings":{"saveFile":"Meta+KeyS","missing.plugin":null},"focusFollowsPointer":false,"explorerOpenOnSingleClick":true,"opaque":{"preserved":true}}"#;
         for patch in [
             SettingsPatch::KeybindingSet {
                 action: "saveFile".into(),
@@ -309,6 +311,7 @@ mod tests {
             let output: serde_json::Value =
                 serde_json::from_slice(&agent_patch(Some(source), &patch).unwrap()).unwrap();
             assert_eq!(output["opaque"]["preserved"], true);
+            assert_eq!(output["explorerOpenOnSingleClick"], true);
             assert!(output["bindings"]
                 .as_object()
                 .unwrap()
@@ -344,6 +347,7 @@ mod tests {
         let data = Keybindings {
             version: 1,
             focus_follows_pointer: true,
+            explorer_open_on_single_click: false,
             bindings: BTreeMap::from([
                 ("newTerminal".into(), Some("Ctrl+KeyK".into())),
                 ("closeTerminal".into(), None),
@@ -362,6 +366,7 @@ mod tests {
             &Keybindings {
                 version: 2,
                 focus_follows_pointer: false,
+                explorer_open_on_single_click: false,
                 bindings: BTreeMap::new()
             }
         )
@@ -370,22 +375,30 @@ mod tests {
     }
 
     #[test]
-    fn pointer_focus_defaults_to_click_and_round_trips_both_modes() {
+    fn pointer_focus_and_explorer_click_mode_default_and_round_trip() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("keybindings.json");
         let mut data: Keybindings = serde_json::from_str(r#"{"version":1,"bindings":{}}"#).unwrap();
         assert!(!data.focus_follows_pointer);
-        for enabled in [true, false] {
-            data.focus_follows_pointer = enabled;
+        assert!(!data.explorer_open_on_single_click);
+        for (focus_follows_pointer, explorer_open_on_single_click) in [(true, true), (false, false)]
+        {
+            data.focus_follows_pointer = focus_follows_pointer;
+            data.explorer_open_on_single_click = explorer_open_on_single_click;
             save(&path, &data).unwrap();
+            let saved = read(&path).unwrap().unwrap();
+            assert_eq!(saved["focusFollowsPointer"], focus_follows_pointer);
             assert_eq!(
-                read(&path).unwrap().unwrap()["focusFollowsPointer"],
-                enabled
+                saved["explorerOpenOnSingleClick"],
+                explorer_open_on_single_click
             );
         }
         for invalid in ["null", "1", "\"false\""] {
             let json =
                 format!(r#"{{"version":1,"bindings":{{}},"focusFollowsPointer":{invalid}}}"#);
+            assert!(serde_json::from_str::<Keybindings>(&json).is_err());
+            let json =
+                format!(r#"{{"version":1,"bindings":{{}},"explorerOpenOnSingleClick":{invalid}}}"#);
             assert!(serde_json::from_str::<Keybindings>(&json).is_err());
         }
     }

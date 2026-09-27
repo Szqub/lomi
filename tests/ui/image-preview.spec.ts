@@ -74,7 +74,7 @@ async function setup(page: Page, saved?: unknown) {
 }
 
 async function openImage(page: Page, name = "picture.PNG") {
-  await page.getByRole("button", { name, exact: true }).click();
+  await page.getByRole("button", { name, exact: true }).dblclick();
   await expect(page.locator(".image-canvas img")).toBeVisible();
 }
 
@@ -210,7 +210,9 @@ test("decode and read errors can be retried and late reads cannot replace anothe
   page,
 }) => {
   await setup(page);
-  await page.getByRole("button", { name: "broken.png", exact: true }).click();
+  await page
+    .getByRole("button", { name: "broken.png", exact: true })
+    .dblclick();
   await expect(page.getByRole("alert")).toContainText("damaged");
   await page.evaluate(() => {
     const native = (window as any).__nativeTest;
@@ -231,7 +233,9 @@ test("decode and read errors can be retried and late reads cannot replace anothe
     native.imageError = "";
     native.imageDelays["picture.PNG"] = 800;
   });
-  await page.getByRole("button", { name: "picture.PNG", exact: true }).click();
+  await page
+    .getByRole("button", { name: "picture.PNG", exact: true })
+    .dblclick();
   await expect(
     page.getByRole("status").filter({ hasText: "Opening image…" }),
   ).toBeVisible();

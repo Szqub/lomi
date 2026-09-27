@@ -1,16 +1,43 @@
-import { useId, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, MouseEvent } from "react";
+import { useId, useRef, useState, useSyncExternalStore } from "react";
+import type {
+  ClipboardEvent as ReactClipboardEvent,
+  FormEvent,
+  KeyboardEvent,
+  MouseEvent,
+} from "react";
 import ResourceIcon from "./ResourceIcon";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { api, errorMessage, macOS } from "./api";
 import type { FileEntry, GitCommitSummary, GitStatus } from "./api";
-import { parentPath, repositoryForPath, gitFilePath } from "./explorer-model";
+import {
+  normalizePath,
+  parentPath,
+  repositoryForPath,
+  gitFilePath,
+} from "./explorer-model";
 import type { FileOperation } from "./explorer-model";
 import ContextMenu from "./ContextMenu";
 import { Modal } from "./ui";
 import GitHistory from "./GitHistory";
 
-let clipboard: { root: string; relative: string; cut: boolean } | undefined;
+export interface ExplorerClipboard {
+  root: string;
+  relative: string;
+  cut: boolean;
+}
+
+let clipboard: ExplorerClipboard | undefined;
+const clipboardListeners = new Set<() => void>();
+
+const subscribeClipboard = (listener: () => void) => {
+  clipboardListeners.add(listener);
+  return () => clipboardListeners.delete(listener);
+};
+const getClipboard = () => clipboard;
+const setClipboard = (next: ExplorerClipboard | undefined) => {
+  clipboard = next;
+  clipboardListeners.forEach((listener) => listener());
+};
 
 interface Props {
   root: string;
@@ -26,6 +53,11 @@ interface Props {
 }
 
 export function useExplorerActions(props: Props) {
+  const clipboardSnapshot = useSyncExternalStore(
+    subscribeClipboard,
+    getClipboard,
+    getClipboard,
+  );
   const [context, setContext] = useState<{
     entry: FileEntry;
     x: number;
@@ -108,9 +140,18 @@ export function useExplorerActions(props: Props) {
   const paste = (entry: FileEntry) => {
     if (!clipboard) return;
     const source = clipboard;
+    const destination = parent(entry);
+    const sameParent =
+      normalizePath(source.root) === normalizePath(props.root) &&
+      parentPath(source.relative) === normalizePath(destination);
+    if (sameParent && source.cut) return;
     run(async () => {
+      if (sameParent) {
+        await operate(source.relative, { kind: "duplicate" });
+        return;
+      }
       if (
-        (await operate(parent(entry), {
+        (await operate(destination, {
           kind: source.cut ? "move" : "copy",
           sourceRoot: source.root,
           source: source.relative,
@@ -118,12 +159,29 @@ export function useExplorerActions(props: Props) {
         source.cut &&
         clipboard === source
       )
-        clipboard = undefined;
+        setClipboard(undefined);
     });
   };
   const copy = (entry: FileEntry, cut: boolean) => {
     if (entry.relativePath)
-      clipboard = { root: props.root, relative: entry.relativePath, cut };
+      setClipboard({ root: props.root, relative: entry.relativePath, cut });
+  };
+  const onClipboard = (
+    event: ReactClipboardEvent<HTMLElement>,
+    entry: FileEntry,
+  ) => {
+    if (
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement ||
+      (event.target instanceof HTMLElement && event.target.isContentEditable)
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    trigger.current = event.currentTarget;
+    if (event.type === "cut") copy(entry, true);
+    else if (event.type === "copy") copy(entry, false);
+    else if (event.type === "paste") paste(entry);
   };
   const reveal = (entry: FileEntry, reveal: boolean) =>
     run(() =>
@@ -148,8 +206,29 @@ export function useExplorerActions(props: Props) {
       props.onRefresh();
     });
   const onKey = (event: KeyboardEvent<HTMLElement>, entry: FileEntry) => {
-    if (busy || event.target instanceof HTMLInputElement) return;
+    if (
+      busy ||
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement ||
+      (event.target instanceof HTMLElement && event.target.isContentEditable)
+    )
+      return;
     const mod = event.ctrlKey || event.metaKey;
+    const fileMod = macOS
+      ? event.metaKey && !event.ctrlKey
+      : event.ctrlKey && !event.metaKey;
+    const clipboardKey = ["x", "c", "v"].includes(event.key.toLowerCase());
+    if (
+      clipboardKey &&
+      (event.ctrlKey || event.metaKey) &&
+      (!fileMod || event.altKey || event.shiftKey)
+    ) {
+      // Prevent the host WebView's native clipboard default from being
+      // translated into a ClipboardEvent for the wrong platform shortcut.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (
       event.key === "ContextMenu" ||
       (event.shiftKey && event.key === "F10")
@@ -165,10 +244,13 @@ export function useExplorerActions(props: Props) {
       action = () => ask(entry, mod ? "delete" : "trash");
     if (macOS && event.key === "Backspace" && event.metaKey)
       action = () => ask(entry, event.altKey ? "delete" : "trash");
-    if (mod && !event.altKey && !event.shiftKey) {
+    if (fileMod && !event.altKey && !event.shiftKey) {
       if (event.key.toLowerCase() === "x") action = () => copy(entry, true);
       if (event.key.toLowerCase() === "c") action = () => copy(entry, false);
       if (event.key.toLowerCase() === "v") action = () => paste(entry);
+      if (event.key.toLowerCase() === "d" && entry.relativePath)
+        action = () =>
+          run(() => operate(entry.relativePath, { kind: "duplicate" }));
     }
     if (action) {
       event.preventDefault();
@@ -225,6 +307,7 @@ export function useExplorerActions(props: Props) {
         },
         {
           label: "Duplicate",
+          shortcut: macOS ? "⌘D" : "Ctrl+D",
           disabled: !entry.relativePath,
           run: () =>
             run(() => operate(entry.relativePath, { kind: "duplicate" })),
@@ -232,7 +315,7 @@ export function useExplorerActions(props: Props) {
         {
           label: "Paste",
           shortcut: macOS ? "⌘V" : "Ctrl+V",
-          disabled: !clipboard,
+          disabled: !clipboardSnapshot,
           run: () => paste(entry),
         },
         null,
@@ -465,10 +548,12 @@ export function useExplorerActions(props: Props) {
   return {
     onContext,
     onKey,
+    onClipboard,
     menu,
     dialog,
     historyDialog,
     busy,
+    clipboard: clipboardSnapshot,
     creation,
     rename,
   };

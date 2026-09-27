@@ -56,7 +56,9 @@ for (const mode of ["dark", "light"] as const) {
       ),
     ).toHaveLength(0);
 
-    await page.getByRole("button", { name: "README.md", exact: true }).click();
+    await page
+      .getByRole("button", { name: "README.md", exact: true })
+      .dblclick();
     await page.locator(".cm-content").fill("Keep this unsaved work");
     await page.keyboard.press("Control+w");
     const save = page.getByRole("dialog", {

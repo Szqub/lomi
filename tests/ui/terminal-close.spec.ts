@@ -159,7 +159,7 @@ test("confirming terminal closure still protects dirty editors and failed saves"
   await page.goto("/");
   await expect(page.locator(".xterm-screen")).toBeVisible();
   await markBusy(page);
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await page.locator(".cm-content").fill("unsaved work");
   await page.evaluate(() => {

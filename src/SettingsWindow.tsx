@@ -140,6 +140,7 @@ export default function SettingsWindow() {
   const persist = async (
     bindings: Keybindings,
     focusFollowsPointer = preferences.focusFollowsPointer,
+    explorerOpenOnSingleClick = preferences.explorerOpenOnSingleClick,
   ) => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -148,7 +149,11 @@ export default function SettingsWindow() {
     setStatus("Saving…");
     setRecording(null);
     try {
-      await preferences.save(bindings, focusFollowsPointer);
+      await preferences.save(
+        bindings,
+        focusFollowsPointer,
+        explorerOpenOnSingleClick,
+      );
       setStatus("Saved");
     } catch (error) {
       setError(errorMessage(error));
@@ -295,7 +300,7 @@ export default function SettingsWindow() {
               <button
                 className="button"
                 disabled={!preferences.ready || busy}
-                onClick={() => void persist(preferences.defaults, false)}
+                onClick={() => void persist(preferences.defaults, false, false)}
               >
                 <RotateCcw size={14} />
                 Reset all
@@ -336,6 +341,31 @@ export default function SettingsWindow() {
                   disabled={!preferences.ready || busy || !!preferences.error}
                   onChange={(event) =>
                     void persist(preferences.bindings, event.target.checked)
+                  }
+                />
+              </SettingRow>
+            </SettingsSection>
+            <SettingsSection title="File Explorer">
+              <SettingRow
+                label="Open with one click"
+                htmlFor="explorer-open-on-single-click"
+                description="On: one click opens after a brief pause; a double click selects without opening. Off: one click selects and a double click opens."
+                descriptionId="explorer-click-mode-help"
+              >
+                <input
+                  id="explorer-open-on-single-click"
+                  className="settings-switch"
+                  type="checkbox"
+                  role="switch"
+                  aria-describedby="explorer-click-mode-help"
+                  checked={preferences.explorerOpenOnSingleClick}
+                  disabled={!preferences.ready || busy || !!preferences.error}
+                  onChange={(event) =>
+                    void persist(
+                      preferences.bindings,
+                      preferences.focusFollowsPointer,
+                      event.target.checked,
+                    )
                   }
                 />
               </SettingRow>

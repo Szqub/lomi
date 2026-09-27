@@ -23,10 +23,15 @@ interface Preferences {
   bindings: Keybindings;
   defaults: Keybindings;
   focusFollowsPointer: boolean;
+  explorerOpenOnSingleClick: boolean;
   ready: boolean;
   error: string;
   reload: () => Promise<void>;
-  save: (bindings: Keybindings, focusFollowsPointer?: boolean) => Promise<void>;
+  save: (
+    bindings: Keybindings,
+    focusFollowsPointer?: boolean,
+    explorerOpenOnSingleClick?: boolean,
+  ) => Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
 const builtinDefaults = defaultKeybindings(macOS);
@@ -57,6 +62,8 @@ export function KeybindingsProvider({ children }: { children: ReactNode }) {
       action.description += ` Default ${action.shortcut} conflicts with another command; assign a free shortcut.`;
   const [bindings, setBindings] = useState(builtinDefaults);
   const [focusFollowsPointer, setFocusFollowsPointer] = useState(false);
+  const [explorerOpenOnSingleClick, setExplorerOpenOnSingleClick] =
+    useState(false);
   const [ready, setReady] = useState(!native);
   const [error, setError] = useState("");
   const revision = useRef(0);
@@ -70,6 +77,7 @@ export function KeybindingsProvider({ children }: { children: ReactNode }) {
       if (mounted.current && request === revision.current) {
         setBindings(value);
         setFocusFollowsPointer(data?.focusFollowsPointer ?? false);
+        setExplorerOpenOnSingleClick(data?.explorerOpenOnSingleClick ?? false);
         setError("");
       }
     } catch (error) {
@@ -110,11 +118,13 @@ export function KeybindingsProvider({ children }: { children: ReactNode }) {
   const save = async (
     next: Keybindings,
     pointerFocus = focusFollowsPointer,
+    explorerSingleClick = explorerOpenOnSingleClick,
   ) => {
     const data = {
       version: 1,
       bindings: next,
       focusFollowsPointer: pointerFocus,
+      explorerOpenOnSingleClick: explorerSingleClick,
     };
     restoreKeybindings(data, macOS, contributions);
     if (native) await api("save_keybindings", { data });
@@ -122,6 +132,7 @@ export function KeybindingsProvider({ children }: { children: ReactNode }) {
       ++revision.current;
       setBindings(next);
       setFocusFollowsPointer(pointerFocus);
+      setExplorerOpenOnSingleClick(explorerSingleClick);
       setError("");
     }
   };
@@ -132,6 +143,7 @@ export function KeybindingsProvider({ children }: { children: ReactNode }) {
         bindings,
         defaults,
         focusFollowsPointer,
+        explorerOpenOnSingleClick,
         ready,
         error,
         reload,

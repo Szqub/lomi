@@ -50,6 +50,7 @@ import {
   errorMessage,
   getInfo,
   loadSession,
+  macOS,
   native,
   saveSession,
 } from "./api";
@@ -1268,6 +1269,20 @@ export default function Workbench() {
       const inEditor =
         event.target instanceof Element &&
         !!event.target.closest(".file-editor");
+      const explorerFileShortcut =
+        event.target instanceof Element &&
+        !!event.target.closest(
+          ".explorer-panel .tree-row, .explorer-panel .project-tree-heading",
+        ) &&
+        !isTextInput(event.target) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        (((macOS
+          ? event.metaKey && !event.ctrlKey
+          : event.ctrlKey && !event.metaKey) &&
+          ["c", "d", "v", "x"].includes(event.key.toLowerCase())) ||
+          (event.key === "F2" && !event.ctrlKey && !event.metaKey));
+      if (explorerFileShortcut) return;
       const action = actionForEvent(event, bindings);
       if (
         event.defaultPrevented ||
@@ -2262,6 +2277,9 @@ export default function Workbench() {
                     <Explorer
                       key={project.path}
                       root={project.path}
+                      explorerOpenOnSingleClick={
+                        preferences.explorerOpenOnSingleClick
+                      }
                       onTerminal={addTab}
                       onOpenFile={(relative, match) =>
                         void openFile(relative, project.path, match)

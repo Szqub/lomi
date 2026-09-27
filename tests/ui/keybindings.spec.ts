@@ -206,6 +206,85 @@ test("keybindings update another window immediately and survive reloading", asyn
   await expect(page.locator("[data-pane-id]")).toHaveCount(3);
 });
 
+test("Explorer click mode persists, syncs, and Reset all restores defaults", async ({
+  page,
+  context,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "test-keybindings",
+      JSON.stringify({
+        version: 1,
+        bindings: { newTerminal: "Ctrl+KeyK" },
+        focusFollowsPointer: true,
+      }),
+    );
+  });
+  await openTerminal(page);
+  const settings = await context.newPage();
+  await mockDesktop(settings);
+  await settings.goto("/?window=settings");
+
+  const mode = settings.getByRole("switch", {
+    name: "Open with one click",
+  });
+  await expect(mode).not.toBeChecked();
+  const loads = (await calls(page, "load_keybindings")).length;
+  await mode.click();
+  await expect(mode).toBeChecked();
+  await expect
+    .poll(async () => (await calls(page, "load_keybindings")).length)
+    .toBeGreaterThan(loads);
+  expect(
+    await settings.evaluate(() =>
+      JSON.parse(localStorage.getItem("test-keybindings")!),
+    ),
+  ).toMatchObject({
+    bindings: { newTerminal: "Ctrl+KeyK" },
+    focusFollowsPointer: true,
+    explorerOpenOnSingleClick: true,
+  });
+
+  const readme = page.locator('.file-tree .tree-entry[title$="/README.md"]');
+  const editorPath = page.locator(".editor-path");
+  await expect(readme).toBeVisible();
+  await readme.click();
+  await page.waitForTimeout(100);
+  await expect(editorPath).toHaveCount(0);
+  await expect(editorPath).toContainText("README.md");
+
+  await settings.reload();
+  await expect(mode).toBeChecked();
+  const loadsBeforeReset = (await calls(page, "load_keybindings")).length;
+  await settings
+    .getByRole("button", { name: "Reset all", exact: true })
+    .click();
+  await expect(mode).not.toBeChecked();
+  await expect
+    .poll(async () => (await calls(page, "load_keybindings")).length)
+    .toBeGreaterThan(loadsBeforeReset);
+  expect(
+    await settings.evaluate(() =>
+      JSON.parse(localStorage.getItem("test-keybindings")!),
+    ),
+  ).toMatchObject({
+    bindings: { newTerminal: "Ctrl+KeyD" },
+    focusFollowsPointer: false,
+    explorerOpenOnSingleClick: false,
+  });
+
+  await page
+    .getByRole("button", { name: "Close README.md", exact: true })
+    .click();
+  await expect(editorPath).toHaveCount(0);
+  const readmeRow = readme.locator("..");
+  await readme.click();
+  await expect(readmeRow).toHaveAttribute("data-selected", "true");
+  await expect(editorPath).toHaveCount(0);
+  await readme.dblclick();
+  await expect(editorPath).toContainText("README.md");
+});
+
 test("recording rejects conflicts, supports clearing and preserves bindings after a failed save", async ({
   page,
 }) => {
@@ -325,4 +404,39 @@ test("unsupported keybindings remain intact until an explicit reset", async ({
       () => JSON.parse(localStorage.getItem("test-keybindings")!).version,
     ),
   ).toBe(1);
+});
+
+test("invalid Explorer click mode stays intact until an explicit reset", async ({
+  page,
+}) => {
+  await mockDesktop(page);
+  await page.goto("/?window=settings");
+  const saved = JSON.stringify({
+    version: 1,
+    bindings: {},
+    explorerOpenOnSingleClick: "yes",
+  });
+  await page.evaluate(
+    (saved) => localStorage.setItem("test-keybindings", saved),
+    saved,
+  );
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText("left intact");
+  await expect(
+    page.getByRole("switch", { name: "Open with one click" }),
+  ).toBeDisabled();
+  expect(await calls(page, "save_keybindings")).toHaveLength(0);
+  expect(
+    await page.evaluate(() => localStorage.getItem("test-keybindings")),
+  ).toBe(saved);
+
+  await page.getByRole("button", { name: "Reset all", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("test-keybindings")!)
+          .explorerOpenOnSingleClick,
+    ),
+  ).toBe(false);
 });

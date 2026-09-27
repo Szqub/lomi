@@ -393,7 +393,7 @@ test("declining the editor close guard leaves the chat request and PTYs running"
   await input.fill("Guarded response");
   await input.press("Enter");
   await expect(page.locator(".chat-message-assistant")).toContainText("日本語");
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await page.locator(".cm-content").focus();
   await page.keyboard.insertText("Unsaved editor change");
   await page.getByRole("button", { name: "Close window", exact: true }).click();

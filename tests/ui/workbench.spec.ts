@@ -160,7 +160,7 @@ test("project selection, file editing and dragging paths reach the native comman
   await expect(page.locator(".project-switcher")).toContainText(
     "chosen folder",
   );
-  await page.getByRole("button", { name: "README.md", exact: true }).click();
+  await page.getByRole("button", { name: "README.md", exact: true }).dblclick();
   await expect(page.locator(".cm-content")).toContainText(
     "A text file preview.",
   );

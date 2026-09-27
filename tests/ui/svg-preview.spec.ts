@@ -43,7 +43,9 @@ async function setup(page: Page, saved?: unknown) {
 }
 
 async function openSvg(page: Page) {
-  await page.getByRole("button", { name: "vector.SVG", exact: true }).click();
+  await page
+    .getByRole("button", { name: "vector.SVG", exact: true })
+    .dblclick();
   await expect(page.locator(".cm-content")).toBeVisible();
   await expect(page.locator(".image-canvas img")).toHaveCount(0);
   await expect(
