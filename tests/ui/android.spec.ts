@@ -6,6 +6,7 @@ import {
   newProject,
   newSession,
   newWorkspace,
+  splitPane,
   type TerminalTab,
 } from "../../src/model";
 
@@ -345,6 +346,85 @@ test("shared views coalesce pending startup and preserve a real failure for retr
   expect(
     await page.evaluate(() => (window as any).__androidTest.startRequests),
   ).toBe(1);
+});
+
+test("Alt-drag on the Android screen keeps its mirrored two-finger gesture", async ({
+  page,
+}) => {
+  const project = newProject("/project", "local:bash");
+  const tab = project.workspaces[0].tabs[0] as TerminalTab;
+  const android = newAndroidTab(
+    "12345678-1234-4567-8123-123456789abc",
+    "Test phone",
+  );
+  tab.layout = splitPane(tab.layout, tab.activePaneId, "horizontal", android);
+  await mockDesktop(page, false, {
+    ...newSession(),
+    projects: [project],
+    activeProjectId: project.id,
+  });
+  await mockAndroid(page, true);
+  await page.goto("/");
+  const canvas = page.locator(".android-screen");
+  await expect(canvas).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__androidTest.live.size))
+    .toBe(1);
+  const bounds = (await canvas.boundingBox())!;
+  const start = {
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y + bounds.height / 2,
+  };
+  const before = (await page
+    .locator(`[data-android-pane-id="${android.id}"]`)
+    .boundingBox())!;
+
+  await page.keyboard.down("Alt");
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 32, start.y + 24, { steps: 3 });
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__androidTest.input.filter(
+          (event: any) => event.type === "touch",
+        ),
+      ),
+    )
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ identifier: 0, phase: "down" }),
+        expect.objectContaining({ identifier: 1, phase: "down" }),
+        expect.objectContaining({ identifier: 0, phase: "move" }),
+        expect.objectContaining({ identifier: 1, phase: "move" }),
+        expect.objectContaining({ identifier: 0, phase: "up" }),
+        expect.objectContaining({ identifier: 1, phase: "up" }),
+      ]),
+    );
+  const touches = await page.evaluate(() =>
+    (window as any).__androidTest.input.filter(
+      (event: any) => event.type === "touch",
+    ),
+  );
+  const primary = touches.find(
+    (event: any) => event.identifier === 0 && event.phase === "down",
+  );
+  const mirrored = touches.find(
+    (event: any) => event.identifier === 1 && event.phase === "down",
+  );
+  expect(mirrored).toMatchObject({
+    x: 720 - 1 - primary.x,
+    y: 1280 - 1 - primary.y,
+  });
+  expect(
+    await page.locator(".pane-drag-ghost, .pane-drop-preview").count(),
+  ).toBe(0);
+  expect(
+    await page.locator(`[data-android-pane-id="${android.id}"]`).boundingBox(),
+  ).toEqual(before);
 });
 
 test("modern phone zoom stays bounded, preserves position and maps input to guest pixels", async ({

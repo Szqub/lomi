@@ -1717,6 +1717,9 @@ svg {
   touch-action: none;
   user-select: none;
 }
+.split-container.is-pane-movable [data-pane-drag-handle] {
+  cursor: grab;
+}
 .terminal-title-box .icon-button {
   flex-shrink: 0;
 }

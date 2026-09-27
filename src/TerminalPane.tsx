@@ -145,7 +145,7 @@ function LiveTerminal({
   const displayTitle = title || (canMove || revealTitle ? fallbackTitle : "");
   const headingVisible =
     snapshot.agentControlled ||
-    ((preferences.alwaysShowTitles || revealTitle) &&
+    ((preferences.alwaysShowTitles || revealTitle || canMove) &&
       !!(displayTitle || activity || maximized));
   return (
     <section
@@ -230,7 +230,9 @@ function LiveTerminal({
           <div
             className={`terminal-title-box${canMove ? " is-movable" : ""}`}
             title={
-              canMove ? "Ctrl+drag to move terminal · Esc to cancel" : undefined
+              canMove
+                ? "Alt+drag or Ctrl+drag to move terminal · Esc to cancel"
+                : undefined
             }
           >
             {displayTitle && (

@@ -1,7 +1,17 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { newPane, newProject, newSession, splitPane } from "../../src/model";
+import {
+  newAndroidTab,
+  newBrowserTab,
+  newChatTab,
+  newPane,
+  newProject,
+  newSession,
+  splitPane,
+} from "../../src/model";
 import { buffer, mockDesktop } from "./desktop";
+import { mockAndroid } from "./android-mock";
+import { mockChats } from "./chat-mock";
 import {
   captureLayoutMotion,
   finishLayoutMotion,
@@ -38,6 +48,232 @@ async function setup(page: Page, withEditor = false) {
   await expect(page.locator(".xterm-screen")).toHaveCount(withEditor ? 2 : 3);
   await expect.poll(() => buffer(page, source)).toContain("bash $ ");
   return { source, target: target.id, layout: tab.layout };
+}
+
+type MovablePane = "terminal" | "browser" | "android" | "chat";
+
+async function setupMixed(page: Page) {
+  const project = newProject("/project", "local:bash");
+  const workspace = project.workspaces[0];
+  const tab = workspace.tabs[0];
+  if (tab.type !== "terminal") throw new Error("Expected terminal tab");
+  const terminal = tab.activePaneId;
+  const browser = newBrowserTab("https://example.com/");
+  const android = newAndroidTab(
+    "12345678-1234-4567-8123-123456789abc",
+    "Test phone",
+  );
+  const chat = newChatTab("pane-drag-chat");
+  let layout = splitPane(tab.layout, terminal, "horizontal", browser);
+  layout = splitPane(layout, browser.id, "vertical", android);
+  layout = splitPane(layout, terminal, "vertical", chat);
+  tab.layout = layout;
+
+  await mockDesktop(page, false, {
+    ...newSession(),
+    projects: [project],
+    activeProjectId: project.id,
+  });
+  await mockAndroid(page, true);
+  await mockChats(page);
+  await page.addInitScript(
+    ({ conversationId, projectId, workspaceId }) => {
+      const conversations = (window as any).__chatTest.conversations;
+      conversations[conversationId] = {
+        conversation: {
+          id: conversationId,
+          title: "Chat AI",
+          origin: { projectId, workspaceId },
+          config: {
+            connectionId: "fixture",
+            model: "gpt-4.1",
+            system: "",
+            maxOutputTokens: 4096,
+            temperature: null,
+            configured: true,
+          },
+          revision: 0,
+          activeLeafId: null,
+          updatedAt: Date.now(),
+          pinned: false,
+        },
+        draft: { text: "", revision: 0, attachments: [] },
+        messages: [],
+        hasOlder: false,
+        request: null,
+      };
+      localStorage.setItem("chat-conversations", JSON.stringify(conversations));
+    },
+    {
+      conversationId: chat.conversationId,
+      projectId: project.id,
+      workspaceId: workspace.id,
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toHaveCount(1);
+  await expect(page.locator(".browser-pane")).toBeVisible();
+  await expect(page.locator(".android-screen")).toBeVisible();
+  await expect(page.locator(".chat-toolbar")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__androidTest.live.size))
+    .toBe(1);
+  return {
+    terminal,
+    browser: browser.id,
+    android: android.id,
+    chat: chat.id,
+    layout,
+  };
+}
+
+function mixedPane(page: Page, type: MovablePane, id: string) {
+  const selector = {
+    terminal: `[data-pane-id="${id}"]`,
+    browser: `[data-browser-pane-id="${id}"]`,
+    android: `[data-android-pane-id="${id}"]`,
+    chat: `[data-chat-pane-id="${id}"]`,
+  }[type];
+  return page.locator(selector);
+}
+
+async function moveWithAlt(
+  page: Page,
+  source: string,
+  sourceType: MovablePane,
+  target: string,
+  targetType: MovablePane,
+  layoutBeforeMove: unknown,
+) {
+  const pane = mixedPane(page, sourceType, source);
+  const handleSelector = {
+    terminal: ".terminal-title-box",
+    browser: ".browser-toolbar",
+    android: ".android-toolbar",
+    chat: ".chat-toolbar",
+  }[sourceType];
+  const handle = pane.locator(handleSelector);
+  await page.keyboard.down("Alt");
+  await expect(handle).toBeVisible();
+  const from = await handle.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    for (let y = bounds.top + 1; y < bounds.bottom - 1; y += 2) {
+      for (let x = bounds.left + 1; x < bounds.right - 1; x += 2) {
+        const target = document.elementFromPoint(x, y);
+        if (
+          target &&
+          element.contains(target) &&
+          !target.closest("button, input, textarea, select")
+        )
+          return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(
+    from,
+    `${sourceType} handle should have a draggable area`,
+  ).not.toBeNull();
+  const destinationPane = mixedPane(page, targetType, target);
+  const destination = (await destinationPane.boundingBox())!;
+
+  await page.mouse.move(from!.x, from!.y);
+  await page.mouse.down();
+  await page.mouse.move(
+    destination.x + destination.width - 10,
+    destination.y + destination.height / 2,
+    { steps: 8 },
+  );
+  const preview = page.locator(".pane-drop-preview");
+  await expect(preview).toHaveAttribute("data-side", "right");
+  await preview.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
+  const expected = (await preview.boundingBox())!;
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await expect(preview).toHaveCount(0);
+  await expect(async () => {
+    const actual = (await pane.locator("..").boundingBox())!;
+    for (const dimension of ["x", "y", "width", "height"] as const)
+      expect(actual[dimension]).toBeCloseTo(expected[dimension], 0);
+  }).toPass();
+  await expect
+    .poll(async () => (await savedTab(page))?.layout)
+    .not.toEqual(layoutBeforeMove);
+  const saved = await savedTab(page);
+  const paneIds = (node: any): string[] =>
+    node.type === "split"
+      ? [...paneIds(node.first), ...paneIds(node.second)]
+      : [node.id];
+  expect(paneIds(saved.layout)).toEqual(
+    expect.arrayContaining([source, target]),
+  );
+  expect(paneIds(saved.layout)).toHaveLength(4);
+}
+
+async function preserveControlClick(
+  page: Page,
+  type: Exclude<MovablePane, "terminal">,
+  id: string,
+  initialLayout: unknown,
+) {
+  await page.keyboard.down("Alt");
+  if (type === "browser") {
+    await mixedPane(page, type, id)
+      .getByRole("button", { name: "Reload page", exact: true })
+      .click();
+    await page.keyboard.up("Alt");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (id) => (window as any).__nativeTest.browsers.get(id)?.visits,
+          id,
+        ),
+      )
+      .toBe(2);
+  } else if (type === "android") {
+    await mixedPane(page, type, id)
+      .getByRole("button", { name: "Toggle phone screen", exact: true })
+      .click();
+    await page.keyboard.up("Alt");
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).__androidTest.input.length),
+      )
+      .toBeGreaterThan(0);
+  } else {
+    const history = mixedPane(page, type, id).getByRole("button", {
+      name: "Chat history",
+      exact: true,
+    });
+    await history.click();
+    await page.keyboard.up("Alt");
+    await expect(
+      page.getByRole("complementary", { name: "Chat history" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Close history" }).click();
+  }
+  await expect
+    .poll(async () => (await savedTab(page))?.layout)
+    .toEqual(initialLayout);
+  await expect(
+    page.locator(".pane-drag-ghost, .pane-drop-preview"),
+  ).toHaveCount(0);
+}
+
+for (const type of ["terminal", "browser", "android", "chat"] as const) {
+  test(`Alt+drag moves a ${type} pane in a mixed layout`, async ({ page }) => {
+    const panes = await setupMixed(page);
+    const id = panes[type];
+    const targetType: MovablePane =
+      type === "terminal" ? "browser" : "terminal";
+    const target = panes[targetType];
+    if (type !== "terminal")
+      await preserveControlClick(page, type, id, panes.layout);
+    await moveWithAlt(page, id, type, target, targetType, panes.layout);
+    expect((await savedTab(page))?.layout).not.toEqual(panes.layout);
+  });
 }
 
 test("moving beside a dirty editor retains its text and history with pointer focus enabled", async ({
@@ -85,8 +321,12 @@ test("moving beside a dirty editor retains its text and history with pointer foc
   ).toEqual([]);
 });
 
-async function grab(page: Page, source: string) {
-  await page.keyboard.down("Control");
+async function grab(
+  page: Page,
+  source: string,
+  modifier: "Control" | "Alt" = "Control",
+) {
+  await page.keyboard.down(modifier);
   const title = page.locator(`[data-pane-id="${source}"] .terminal-title`);
   await expect(title).toBeVisible();
   const bounds = (await title.boundingBox())!;
@@ -652,7 +892,7 @@ for (const fallback of [
   });
 }
 
-test("Ctrl is required; Escape, releasing Ctrl, lost capture, blur and outside drops cancel", async ({
+test("Escape, releasing Ctrl or Alt, lost capture, blur and outside drops cancel", async ({
   page,
 }) => {
   const { source, target, layout } = await setup(page);
@@ -672,6 +912,7 @@ test("Ctrl is required; Escape, releasing Ctrl, lost capture, blur and outside d
     "no-control",
     "escape",
     "control-up",
+    "alt-up",
     "pointercancel",
     "lostcapture",
     "blur",
@@ -682,13 +923,14 @@ test("Ctrl is required; Escape, releasing Ctrl, lost capture, blur and outside d
       await page.keyboard.press("Control");
       await title.hover();
       await page.mouse.down();
-    } else await grab(page, source);
+    } else await grab(page, source, cancel === "alt-up" ? "Alt" : "Control");
     await page.mouse.move(area.x + 20, area.y + area.height / 2, { steps: 5 });
     if (cancel === "no-control")
       await expect(page.locator(".pane-drag-ghost")).toHaveCount(0);
     else await expect(page.locator(".pane-drop-preview")).toBeVisible();
     if (cancel === "escape") await page.keyboard.press("Escape");
     if (cancel === "control-up") await page.keyboard.up("Control");
+    if (cancel === "alt-up") await page.keyboard.up("Alt");
     if (cancel === "pointercancel")
       await title.dispatchEvent("pointercancel", { pointerId: 1 });
     if (cancel === "lostcapture")
@@ -701,6 +943,7 @@ test("Ctrl is required; Escape, releasing Ctrl, lost capture, blur and outside d
     if (cancel === "self") await title.hover();
     await page.mouse.up();
     await page.keyboard.up("Control");
+    await page.keyboard.up("Alt");
     await expect(
       page.locator(".pane-drag-ghost, .pane-drop-preview"),
     ).toHaveCount(0);

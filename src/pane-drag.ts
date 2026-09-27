@@ -12,23 +12,23 @@ interface Props {
 
 // Use pointer capture, as native webviews can intercept HTML drag-and-drop.
 export function usePaneDrag({ layout, root, enabled, onMove }: Props) {
-  const [controlHeld, setControlHeld] = useState(false);
+  const [moveModifierHeld, setMoveModifierHeld] = useState(false);
   const cleanup = useRef<(() => void) | null>(null);
   const suppressClick = useRef(false);
   useLayoutEffect(() => () => cleanup.current?.(), [layout, enabled]);
   useEffect(() => {
     if (!enabled) return;
     const key = (event: KeyboardEvent) => {
-      setControlHeld(event.ctrlKey);
+      setMoveModifierHeld(event.altKey || event.ctrlKey);
       if (event.key === "Escape" && cleanup.current) {
         event.preventDefault();
         event.stopImmediatePropagation();
         cleanup.current();
       }
-      if (!event.ctrlKey) cleanup.current?.();
+      if (!event.altKey && !event.ctrlKey) cleanup.current?.();
     };
     const blur = () => {
-      setControlHeld(false);
+      setMoveModifierHeld(false);
       cleanup.current?.();
     };
     window.addEventListener("keydown", key, true);
@@ -38,12 +38,17 @@ export function usePaneDrag({ layout, root, enabled, onMove }: Props) {
       window.removeEventListener("keydown", key, true);
       window.removeEventListener("keyup", key, true);
       window.removeEventListener("blur", blur);
-      setControlHeld(false);
+      setMoveModifierHeld(false);
     };
   }, [enabled]);
 
   const beginDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!enabled || !event.ctrlKey || event.button !== 0 || !event.isPrimary)
+    if (
+      !enabled ||
+      (!event.altKey && !event.ctrlKey) ||
+      event.button !== 0 ||
+      !event.isPrimary
+    )
       return;
     const element = event.target as Element;
     const handle = element.closest<HTMLElement>(
@@ -143,7 +148,7 @@ export function usePaneDrag({ layout, root, enabled, onMove }: Props) {
     };
     const move = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) return;
-      if (!event.ctrlKey) {
+      if (!event.altKey && !event.ctrlKey) {
         clean();
         return;
       }
@@ -185,7 +190,8 @@ export function usePaneDrag({ layout, root, enabled, onMove }: Props) {
     const up = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) return;
       preview(event.clientX, event.clientY);
-      const drop = event.ctrlKey && ghost ? destination : undefined;
+      const drop =
+        (event.altKey || event.ctrlKey) && ghost ? destination : undefined;
       clean();
       if (drop) onMove(id, drop.targetId, drop.side);
     };
@@ -205,5 +211,9 @@ export function usePaneDrag({ layout, root, enabled, onMove }: Props) {
     document.addEventListener("pointercancel", cancel);
     handle.addEventListener("lostpointercapture", clean);
   };
-  return { beginDrag, controlHeld: enabled && controlHeld, suppressClick };
+  return {
+    beginDrag,
+    moveModifierHeld: enabled && moveModifierHeld,
+    suppressClick,
+  };
 }

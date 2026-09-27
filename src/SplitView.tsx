@@ -65,7 +65,7 @@ export default function SplitView({
       pane.id === maximizedPaneId &&
       pane.id === props.activePaneId,
   );
-  const { beginDrag, controlHeld, suppressClick } = usePaneDrag({
+  const { beginDrag, moveModifierHeld, suppressClick } = usePaneDrag({
     layout: props.layout,
     root,
     enabled: allPanes.length > 1 && !props.overview && !maximizedPane,
@@ -104,7 +104,7 @@ export default function SplitView({
   );
   return (
     <div
-      className={`split-container${props.layout.type === "split" ? " is-split" : ""}`}
+      className={`split-container${props.layout.type === "split" ? " is-split" : ""}${moveModifierHeld ? " is-pane-movable" : ""}`}
       ref={root}
       onPointerDown={beginDrag}
       onPointerDownCapture={(event) => {
@@ -144,7 +144,7 @@ export default function SplitView({
                       active={props.activePaneId === layout.id}
                       overview={props.overview}
                       revealTitle={props.revealTitles}
-                      canMove={controlHeld}
+                      canMove={moveModifierHeld}
                       canMaximize={props.layout.type === "split"}
                       maximized={maximizedPane?.id === layout.id}
                       onToggleMaximize={() => {

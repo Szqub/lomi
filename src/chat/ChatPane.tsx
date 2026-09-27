@@ -246,7 +246,7 @@ export default function ChatPane({
         />
       </div>
       <div ref={content} className="chat-conversation">
-        <header className="chat-toolbar">
+        <header className="chat-toolbar" data-pane-drag-handle>
           <MessageSquare size={15} aria-hidden="true" />
           <span
             className="chat-title"
