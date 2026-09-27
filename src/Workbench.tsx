@@ -40,7 +40,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Folder, GitBranch, Layers, Settings, Terminal, X } from "./icons";
+import { Folder, GitBranch, Layers, Terminal, X } from "./icons";
 import TitlebarAccount from "./auth/TitlebarAccount";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1677,13 +1677,11 @@ export default function Workbench() {
             <header className="titlebar" data-tauri-drag-region>
               {projectPicker}
               <div className="titlebar-space" data-tauri-drag-region />
-              <TitlebarAccount key="account" onError={setError} />
-              <IconButton
-                title={shortcutTitle("Settings", bindings.openSettings)}
-                onClick={openSettings}
-              >
-                <Settings size={16} />
-              </IconButton>
+              <TitlebarAccount
+                key="account"
+                onError={setError}
+                onOpenSettings={openSettings}
+              />
               <WindowControls onError={setError} />
             </header>
             {notice}
@@ -2235,13 +2233,11 @@ export default function Workbench() {
               }
             />
             <div className="titlebar-space" data-tauri-drag-region />
-            <TitlebarAccount key="account" onError={setError} />
-            <IconButton
-              title={shortcutTitle("Settings", bindings.openSettings)}
-              onClick={openSettings}
-            >
-              <Settings size={16} />
-            </IconButton>
+            <TitlebarAccount
+              key="account"
+              onError={setError}
+              onOpenSettings={openSettings}
+            />
             <WindowControls onError={setError} />
           </header>
           {notice}

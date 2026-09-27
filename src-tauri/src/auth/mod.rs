@@ -153,7 +153,7 @@ pub async fn auth_sign_out(
     window: Window,
     controller: State<'_, AuthController>,
 ) -> Result<AuthState, String> {
-    settings_window(&window)?;
+    trusted_account_window(&window)?;
     Ok(controller.sign_out().await)
 }
 
@@ -163,7 +163,7 @@ pub fn auth_open_account_portal(
     app: AppHandle,
     controller: State<'_, AuthController>,
 ) -> Result<AuthState, String> {
-    settings_window(&window)?;
+    trusted_account_window(&window)?;
     controller.open_account_portal(&app)?;
     Ok(controller.snapshot())
 }

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 
 export interface ContextAction {
@@ -17,12 +17,16 @@ export default function ContextMenu({
   label,
   actions,
   onClose,
+  align = "start",
+  trigger,
 }: {
   x: number;
   y: number;
   label: string;
   actions: (ContextAction | null)[];
   onClose: () => void;
+  align?: "start" | "end";
+  trigger?: RefObject<HTMLButtonElement | null>;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -30,12 +34,14 @@ export default function ContextMenu({
   useLayoutEffect(() => {
     const element = menu.current!;
     const rect = element.getBoundingClientRect();
-    element.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
+    const left = align === "end" ? x - rect.width : x;
+    element.style.left = `${Math.max(8, Math.min(left, innerWidth - rect.width - 8))}px`;
     element.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
     element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [x, y]);
+  }, [x, y, align]);
   useEffect(() => {
     const outside = (event: Event) => {
+      if (trigger?.current?.contains(event.target as Node)) return;
       if (!menu.current?.contains(event.target as Node)) close.current();
     };
     const dismiss = () => close.current();
@@ -53,7 +59,11 @@ export default function ContextMenu({
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("blur", dismiss);
     };
-  }, []);
+  }, [trigger]);
+  const dismiss = () => {
+    onClose();
+    trigger?.current?.focus({ preventScroll: true });
+  };
   return createPortal(
     <div
       ref={menu}
@@ -66,7 +76,7 @@ export default function ContextMenu({
         if (["Escape", "Tab"].includes(event.key)) {
           event.preventDefault();
           event.stopPropagation();
-          onClose();
+          dismiss();
         }
         if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key))
           return;
@@ -100,7 +110,7 @@ export default function ContextMenu({
             className={`menu-item${action.danger ? " text-error" : ""}`}
             disabled={action.disabled}
             onClick={() => {
-              onClose();
+              dismiss();
               action.run();
             }}
           >

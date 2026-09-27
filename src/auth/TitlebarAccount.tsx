@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "../api";
-import { Github } from "../icons";
+import ContextMenu from "../ContextMenu";
+import { ExternalLink, Github, Settings, SquareArrowRight } from "../icons";
 import { authStatusLabel, newestAuthState, unavailableState } from "./model";
 import type { AuthState } from "./model";
 import "./titlebar-account.css";
 
 export default function TitlebarAccount({
   onError,
+  onOpenSettings,
 }: {
   onError: (message: string) => void;
+  onOpenSettings: () => void;
 }) {
   const [state, setState] = useState<AuthState | null>(
     native ? null : unavailableState,
@@ -17,6 +20,8 @@ export default function TitlebarAccount({
   const current = useRef(state);
   const mounted = useRef(false);
   const pending = useRef(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [opening, setOpening] = useState(false);
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
   const accept = useCallback((incoming: AuthState) => {
@@ -24,6 +29,7 @@ export default function TitlebarAccount({
     if (next !== current.current) {
       current.current = next;
       setState(next);
+      if (!next?.user && !next?.session) setMenu(null);
     }
     return next;
   }, []);
@@ -80,13 +86,13 @@ export default function TitlebarAccount({
     .toLocaleUpperCase();
   const status = state ? authStatusLabel(state.status) : "Checking account…";
   const buttonLabel = account
-    ? `Open account settings for ${displayName || "your account"}`
+    ? `Open account menu for ${displayName || "your account"}`
     : hasAccount
-      ? "Open account settings"
+      ? "Open account menu"
       : "Sign In";
   const title = opening
     ? hasAccount
-      ? "Opening account settings…"
+      ? "Updating account…"
       : "Starting sign-in…"
     : !native
       ? "Sign-in is available in the Lomi desktop app"
@@ -94,17 +100,55 @@ export default function TitlebarAccount({
         ? `${buttonLabel} · ${status}`
         : `Sign in to your Lomi account · ${status}`;
 
+  const showMenu = () => {
+    if (!native || pending.current || !hasAccount || !trigger.current) return;
+    const bounds = trigger.current.getBoundingClientRect();
+    setMenu({ x: bounds.right, y: bounds.bottom + 6 });
+  };
+
+  const runAccountAction = async (
+    command: "open_settings" | "auth_open_account_portal" | "auth_sign_out",
+  ) => {
+    if (!native || pending.current) return;
+    pending.current = true;
+    setOpening(true);
+    try {
+      if (command === "open_settings") {
+        await api(command, { page: "account" });
+      } else {
+        const result = await api<AuthState>(command);
+        if (!mounted.current) return;
+        const latest = accept(result);
+        if (
+          command === "auth_sign_out" &&
+          latest?.revision === result.revision
+        ) {
+          if (result.message) onError(result.message);
+          else if (result.remoteRevocationConfirmed === false)
+            onError(
+              "Signed out on this device. The server could not confirm that its session was revoked. You can remove it from your account in a browser.",
+            );
+        }
+      }
+    } catch (error) {
+      if (mounted.current) onError(errorMessage(error));
+    } finally {
+      pending.current = false;
+      if (mounted.current) setOpening(false);
+    }
+  };
+
   const openAccount = () => {
     if (!native || pending.current) return;
+    if (hasAccount) {
+      if (menu) setMenu(null);
+      else showMenu();
+      return;
+    }
     pending.current = true;
     setOpening(true);
     void (async () => {
       try {
-        if (hasAccount) {
-          await api("open_settings", { page: "account" });
-          return;
-        }
-
         let attempt =
           current.current?.status === "authorizing"
             ? current.current.attempt
@@ -166,33 +210,89 @@ export default function TitlebarAccount({
   };
 
   return (
-    <button
-      type="button"
-      className={`titlebar-account${hasAccount ? " titlebar-account-avatar" : ""}`}
-      title={title}
-      aria-label={buttonLabel}
-      aria-busy={opening || undefined}
-      disabled={!native || opening}
-      onClick={openAccount}
-    >
-      {hasAccount ? (
-        <span className="titlebar-account-image" aria-hidden="true">
-          {login && failedAvatar !== login ? (
-            <img
-              src={`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?s=64`}
-              referrerPolicy="no-referrer"
-              alt=""
-              onError={() => setFailedAvatar(login)}
-            />
-          ) : initials ? (
-            <span>{initials}</span>
-          ) : (
-            <Github size={13} />
-          )}
-        </span>
-      ) : (
-        "Sign In"
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className={`titlebar-account${hasAccount ? " titlebar-account-avatar" : ""}`}
+        title={title}
+        aria-label={buttonLabel}
+        aria-busy={opening || undefined}
+        aria-haspopup={hasAccount ? "menu" : undefined}
+        aria-expanded={hasAccount ? Boolean(menu) : undefined}
+        disabled={!native || opening}
+        onClick={openAccount}
+        onContextMenu={(event) => {
+          if (!hasAccount) return;
+          event.preventDefault();
+          showMenu();
+        }}
+        onKeyDown={(event) => {
+          if (
+            hasAccount &&
+            (event.key === "ArrowDown" ||
+              event.key === "ContextMenu" ||
+              (event.shiftKey && event.key === "F10"))
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            showMenu();
+          }
+        }}
+      >
+        {hasAccount ? (
+          <span className="titlebar-account-image" aria-hidden="true">
+            {login && failedAvatar !== login ? (
+              <img
+                src={`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?s=64`}
+                referrerPolicy="no-referrer"
+                alt=""
+                onError={() => setFailedAvatar(login)}
+              />
+            ) : initials ? (
+              <span>{initials}</span>
+            ) : (
+              <Github size={13} />
+            )}
+          </span>
+        ) : (
+          "Sign In"
+        )}
+      </button>
+      {menu && hasAccount && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          align="end"
+          trigger={trigger}
+          label="Account menu"
+          onClose={() => setMenu(null)}
+          actions={[
+            {
+              label: "Settings",
+              icon: <Settings size={15} aria-hidden="true" />,
+              run: onOpenSettings,
+            },
+            null,
+            {
+              label: "Account settings",
+              icon: <Settings size={15} aria-hidden="true" />,
+              run: () => void runAccountAction("open_settings"),
+            },
+            {
+              label: "Manage account",
+              icon: <ExternalLink size={15} aria-hidden="true" />,
+              run: () => void runAccountAction("auth_open_account_portal"),
+            },
+            null,
+            {
+              label: "Sign out",
+              icon: <SquareArrowRight size={15} aria-hidden="true" />,
+              run: () => void runAccountAction("auth_sign_out"),
+            },
+          ]}
+        />
       )}
-    </button>
+    </>
   );
 }

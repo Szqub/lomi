@@ -182,14 +182,6 @@ export default function SettingsWindow() {
         <nav className="settings-navigation" aria-label="Settings pages">
           <button
             className="settings-nav-item"
-            aria-current={page === "account" ? "page" : undefined}
-            onClick={() => setPage("account")}
-          >
-            <ShieldCheck size={16} aria-hidden="true" />
-            Account
-          </button>
-          <button
-            className="settings-nav-item"
             aria-current={page === "keybinds" ? "page" : undefined}
             onClick={() => setPage("keybinds")}
           >
@@ -243,6 +235,14 @@ export default function SettingsWindow() {
           >
             <ShieldCheck size={16} />
             Agent control
+          </button>
+          <button
+            className="settings-nav-item settings-nav-account"
+            aria-current={page === "account" ? "page" : undefined}
+            onClick={() => setPage("account")}
+          >
+            <ShieldCheck size={16} aria-hidden="true" />
+            Account
           </button>
           <button
             className="settings-nav-item settings-nav-about"

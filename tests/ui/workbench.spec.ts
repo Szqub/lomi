@@ -230,9 +230,7 @@ test("command input, search and shortcuts remain functional at minimum window si
     .press("Escape");
   await page.keyboard.press("Control+Shift+T");
   await expect(page.getByRole("tab")).toHaveCount(2);
-  await page
-    .getByRole("button", { name: "Settings (Ctrl+,)", exact: true })
-    .click();
+  await page.keyboard.press("Control+,");
   expect(
     await page.evaluate(() =>
       (window as any).__nativeTest.calls.some(

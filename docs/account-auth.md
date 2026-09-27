@@ -4,7 +4,11 @@ Account sign-in is optional. Projects, terminals, local files, plugins, and Chat
 provider credentials do not depend on the account service. The account controls
 live in Settings → Account. The titlebar's Sign In button starts the same browser
 flow directly, using persistent storage by default. An existing authorization
-attempt is reopened instead of replaced; the signed-in avatar opens Account settings.
+attempt is reopened instead of replaced. The signed-in avatar opens an account
+menu with Settings, Account settings, Manage account (the browser portal), and
+Sign out (this device). The menu also remains available while the account is
+offline. General settings remain available through the Open settings keyboard
+shortcut and command picker when signed out.
 
 Before starting sign-in, Rust binds an ephemeral listener to `127.0.0.1` and
 creates a random PKCE verifier and state. It sends the S256 challenge, state, and
@@ -30,9 +34,9 @@ include the session token, authorization URL, verifier, state, or callback code.
 An attempt snapshot contains only its ID and expiry. Each snapshot has a monotonically
 increasing revision so a delayed reply cannot restore an obsolete account state.
 The existing global trusted-webview guard remains in place. Main and Settings may
-read account state, start sign-in, and reopen the current browser request. Cancel,
-sign-out, and account-portal management remain restricted to Settings. Browser
-children are not authorized app views.
+read account state, start sign-in, reopen the current browser request, sign out,
+and open the account portal. Cancelling a sign-in attempt remains restricted to
+Settings. Browser children are not authorized app views.
 
 Persistent sessions use a separate OS keyring service namespace and private
 metadata below `account-auth/<environment>` in the application data directory.

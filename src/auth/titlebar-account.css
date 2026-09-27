@@ -18,7 +18,8 @@
   user-select: none;
 }
 
-.titlebar-account:hover:not(:disabled) {
+.titlebar-account:hover:not(:disabled),
+.titlebar-account[aria-expanded="true"] {
   border-color: var(--color-outline);
   background: var(--color-surface-container-high);
   color: var(--color-background-text);

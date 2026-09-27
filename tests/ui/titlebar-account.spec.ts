@@ -56,10 +56,26 @@ async function mockMainWindow(
         beginLoginStarted: false,
         beginLoginHeld: false,
         resolveBeginLogin: null as null | (() => Promise<void>),
+        failCommand: null as string | null,
+        remoteRevocationConfirmed: true,
       };
       desktop.__authInvoke = async (command: string, args: unknown = {}) => {
         const fixture = desktop.__authTest;
         fixture.calls.push({ command, args: structuredClone(args) });
+        if (command === fixture.failCommand)
+          throw new Error("The account portal could not be opened.");
+        if (command === "auth_sign_out") {
+          fixture.state = {
+            ...fixture.state,
+            revision: fixture.state.revision + 1,
+            status: "signed-out",
+            user: null,
+            session: null,
+            storage: null,
+            attempt: null,
+            remoteRevocationConfirmed: fixture.remoteRevocationConfirmed,
+          };
+        }
         if (command === "auth_begin_login") {
           const started = {
             ...fixture.state,
@@ -367,7 +383,7 @@ test("offline and checking account states retain the GitHub avatar", async ({
   ).toHaveCount(0);
 });
 
-test("a failed avatar falls back to initials and still opens Account at 800px", async ({
+test("a failed avatar falls back to initials and opens the account menu at 800px", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 800, height: 600 });
@@ -379,13 +395,12 @@ test("a failed avatar falls back to initials and still opens Account at 800px", 
   const account = accountButton(page);
   const settings = page.locator('.titlebar button[aria-label^="Settings"]');
   await expect(account).toBeVisible();
-  await expect(settings).toBeVisible();
+  await expect(settings).toHaveCount(0);
   await expect(account.getByText("LU", { exact: true })).toBeVisible();
 
   const layout = await page.evaluate(() => {
     const header = document.querySelector(".titlebar")!;
     const account = header.querySelector('button[aria-label*="account" i]')!;
-    const settings = header.querySelector('button[aria-label^="Settings"]')!;
     const rect = (element: Element) => {
       const { left, right, top, bottom } = element.getBoundingClientRect();
       return { left, right, top, bottom };
@@ -396,18 +411,38 @@ test("a failed avatar falls back to initials and still opens Account at 800px", 
       header: header.clientWidth,
       headerContent: header.scrollWidth,
       account: rect(account),
-      settings: rect(settings),
     };
   });
   expect(layout.viewport).toBe(800);
   expect(layout.document).toBeLessThanOrEqual(layout.viewport);
   expect(layout.headerContent).toBeLessThanOrEqual(layout.header);
-  expect(layout.account.right).toBeLessThanOrEqual(layout.settings.left);
+  expect(layout.account.right).toBeLessThanOrEqual(layout.viewport);
   await page.locator(".titlebar").screenshot({
     path: "/tmp/lomi-titlebar-account-fallback.png",
   });
 
   await account.click();
+  const menu = page.getByRole("menu", { name: "Account menu" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Settings",
+    "Account settings",
+    "Manage account",
+    "Sign out",
+  ]);
+  const menuBounds = await menu.boundingBox();
+  expect(menuBounds!.x + menuBounds!.width).toBeCloseTo(
+    layout.account.right,
+    0,
+  );
+  await page.screenshot({ path: "/tmp/lomi-account-menu-light.png" });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.screenshot({ path: "/tmp/lomi-account-menu-dark.png" });
+  await menu.getByRole("menuitem", { name: "Settings", exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await account.click();
+  await menu.getByRole("menuitem", { name: "Account settings" }).click();
+  await expect(menu).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -416,5 +451,115 @@ test("a failed avatar falls back to initials and still opens Account at 800px", 
           .map((call: any) => call.args),
       ),
     )
-    .toEqual([{ page: "account" }]);
+    .toEqual([{}, { page: "account" }]);
 });
+
+test("account menu supports keyboard navigation, toggle, and outside dismissal", async ({
+  page,
+}) => {
+  await mockMainWindow(page, {
+    state: { ...signedIn, user: { ...signedIn.user!, githubLogin: null } },
+    welcome: true,
+  });
+  const account = accountButton(page);
+  const menu = page.getByRole("menu", { name: "Account menu" });
+  await expect(account).toHaveAttribute("aria-haspopup", "menu");
+  await account.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(account).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    menu.getByRole("menuitem", { name: "Settings", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    menu.getByRole("menuitem", { name: "Account settings" }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    menu.getByRole("menuitem", { name: "Manage account" }),
+  ).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(
+    menu.getByRole("menuitem", { name: "Sign out", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(account).toBeFocused();
+  await expect(account).toHaveAttribute("aria-expanded", "false");
+  await account.click();
+  await expect(menu).toBeVisible();
+  await account.click();
+  await expect(menu).toHaveCount(0);
+  await account.click();
+  await page.mouse.click(400, 400);
+  await expect(menu).toHaveCount(0);
+  await account.click({ button: "right" });
+  await expect(menu).toBeVisible();
+  await emitAuthState(page, { ...signedOut, revision: 11 });
+  await expect(menu).toHaveCount(0);
+});
+
+test("Manage account uses the native portal action and reports launch failures", async ({
+  page,
+}) => {
+  await mockMainWindow(page, { state: signedIn });
+  const account = accountButton(page);
+  await account.click();
+  await page.getByRole("menuitem", { name: "Manage account" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__authTest.calls.filter(
+            (call: any) => call.command === "auth_open_account_portal",
+          ).length,
+      ),
+    )
+    .toBe(1);
+  await expect(page.getByRole("menu", { name: "Account menu" })).toHaveCount(0);
+  await page.evaluate(() => {
+    (window as any).__authTest.failCommand = "auth_open_account_portal";
+  });
+  await account.click();
+  await page.getByRole("menuitem", { name: "Manage account" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "The account portal could not be opened.",
+  );
+  await expect(account).toBeEnabled();
+});
+
+for (const offline of [false, true]) {
+  test(`Sign out from the avatar clears the account${offline ? " while offline" : ""}`, async ({
+    page,
+  }) => {
+    await mockMainWindow(page, {
+      state: { ...signedIn, status: offline ? "offline" : "signed-in" },
+    });
+    if (offline)
+      await page.evaluate(() => {
+        (window as any).__authTest.remoteRevocationConfirmed = false;
+      });
+    await accountButton(page).click();
+    await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+    await expect(
+      page
+        .locator(".titlebar")
+        .getByRole("button", { name: "Sign In", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("menu", { name: "Account menu" })).toHaveCount(
+      0,
+    );
+    expect(
+      await page.evaluate(
+        () =>
+          (window as any).__authTest.calls.filter(
+            (call: any) => call.command === "auth_sign_out",
+          ).length,
+      ),
+    ).toBe(1);
+    if (offline)
+      await expect(page.getByRole("alert")).toContainText(
+        "server could not confirm",
+      );
+  });
+}
