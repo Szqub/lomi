@@ -222,19 +222,30 @@ async fn write_response(
     accepted: bool,
     cancel: &mut watch::Receiver<bool>,
 ) -> bool {
-    let (status, message) = if accepted {
-        ("200 OK", "Returning to Lomi. You can close this page.")
+    let (status, state, title, message, next_step) = if accepted {
+        (
+            "200 OK",
+            "accepted",
+            "Returning to Lomi",
+            "Your sign-in request has been sent to the app. Continue in Lomi to check your sign-in.",
+            "You can close this tab.",
+        )
     } else {
         (
             "400 Bad Request",
-            "This sign-in link is invalid. Return to Lomi and try again.",
+            "error",
+            "Unable to return to Lomi",
+            "This sign-in link is invalid. Return to the Lomi app and start sign-in again.",
+            "You can close this tab and retry from Lomi.",
         )
     };
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Lomi sign-in</title></head><body><p>{message}</p></body></html>"
-    );
+    let body = include_str!("callback.html")
+        .replace("{{state}}", state)
+        .replace("{{title}}", title)
+        .replace("{{message}}", message)
+        .replace("{{next_step}}", next_step);
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     tokio::select! {

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{{title}} · Lomi</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        --canvas: #f7f8f3;
+        --surface: #ffffff;
+        --text: #0b0d0c;
+        --text-soft: #535c56;
+        --line: #d5dad2;
+        --accent: #c8ff3d;
+        --danger: #a12a1d;
+        --danger-bg: #fdeae7;
+        background: var(--canvas);
+        color: var(--text);
+        font-synthesis: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --canvas: #101114;
+          --surface: #181a1f;
+          --text: #f3f4f6;
+          --text-soft: #bec3cc;
+          --line: #343943;
+          --danger: #f1aba8;
+          --danger-bg: #3a2328;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        min-height: 100dvh;
+        margin: 0;
+        padding: 24px;
+        place-items: center;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      main {
+        width: min(100%, 400px);
+        padding: 32px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        text-align: center;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 28px;
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .brand-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: #0b0d0c;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 1.25;
+        text-wrap: balance;
+      }
+
+      p {
+        margin: 0;
+        color: var(--text-soft);
+        text-wrap: pretty;
+      }
+
+      .next-step {
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+        font-size: 13px;
+      }
+
+      .error-notice {
+        display: none;
+      }
+
+      [data-state="error"] .error-notice {
+        display: inline-block;
+        margin-bottom: 16px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        color: var(--danger);
+        background: var(--danger-bg);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      @media (max-width: 380px) {
+        body {
+          padding: 16px;
+        }
+
+        main {
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body data-state="{{state}}">
+    <main aria-labelledby="title">
+      <div class="brand">
+        <svg
+          class="brand-icon"
+          viewBox="0 0 256 256"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <g
+            transform="translate(37 43.678899082568805) scale(0.8348623853211009)"
+            fill="currentColor"
+            fill-rule="evenodd"
+          >
+            <path
+              d="M0 184V120C0 84 21 62 52 62C73 62 90 72 102 87C114 72 131 62 152 62C183 62 204 84 204 120V184Q204 202 186 202Q168 202 168 184V120C168 106 162 98 150 98C132 98 120 108 120 123V184Q120 202 102 202Q84 202 84 184V123C84 108 72 98 54 98C42 98 36 106 36 120V184Q36 202 18 202Q0 202 0 184Z"
+            />
+            <path
+              d="M175 0H197Q213 0 213 16V16Q213 32 197 32H175Q159 32 159 16V16Q159 0 175 0Z"
+            />
+          </g>
+        </svg>
+        <span>Lomi</span>
+      </div>
+      <span class="error-notice">Sign-in interrupted</span>
+      <h1 id="title">{{title}}</h1>
+      <p>{{message}}</p>
+      <p class="next-step">{{next_step}}</p>
+    </main>
+  </body>
+</html>
