@@ -4,7 +4,8 @@ Account sign-in is optional. Projects, terminals, local files, plugins, and Chat
 provider credentials do not depend on the account service. The account controls
 live in Settings → Account. The titlebar's Sign In button starts the same browser
 flow directly, using persistent storage by default. An existing authorization
-attempt is reopened instead of replaced. The signed-in avatar opens an account
+attempt is reopened instead of replaced. The arrow beside Sign In opens a menu
+with Settings. The signed-in avatar opens an account
 menu with Settings, Account settings, Manage account (the browser portal), and
 Sign out (this device). The menu also remains available while the account is
 offline. General settings remain available through the Open settings keyboard
@@ -16,7 +17,12 @@ exact loopback callback URI to `/v1/desktop/start`, then opens the returned auth
 URL in the system browser. After GitHub sign-in and approval, the browser redirects
 to the native listener. Rust validates the callback state and exchanges the code
 once through `/v1/desktop/exchange`, then verifies the issued session through
-`/v1/me`. The browser request is Lomi's first-party handshake and does not use
+`/v1/me`. The local callback page stays pending until the native app has activated
+the session and completed the selected storage step. It reports authentication
+success only after that point; canceled, stale, unconfirmed, or unsaved sessions
+show an error page instead. Successful sign-in brings the main Lomi window to the
+front without opening or focusing Settings. The page uses bundled Lomi assets and
+makes no remote requests. The browser request is Lomi's first-party handshake and does not use
 GitHub's device flow.
 
 The release origin is `https://auth.lomi.dev`, client ID `lomi-desktop`. Debug

@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::{net::SocketAddr, time::Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -9,6 +10,25 @@ use tokio::{
 const HEADER_LIMIT: usize = 8 * 1024;
 const CALLBACK_PATH: &str = "/auth/callback";
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(super) struct PendingCallback {
+    pub(super) code: String,
+    stream: TcpStream,
+}
+
+impl PendingCallback {
+    pub(super) async fn complete(mut self, authenticated: bool) -> bool {
+        let response = completion_response(authenticated);
+        matches!(
+            timeout_at(
+                TokioInstant::now() + BROWSER_TIMEOUT,
+                self.stream.write_all(response.as_bytes())
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    }
+}
 
 #[derive(Debug)]
 pub(super) enum CallbackError {
@@ -38,7 +58,7 @@ pub(super) async fn wait_for_callback(
     expected_state: &str,
     expires_at: Instant,
     mut cancel: watch::Receiver<bool>,
-) -> Result<String, CallbackError> {
+) -> Result<PendingCallback, CallbackError> {
     let deadline = TokioInstant::from_std(expires_at);
     let local_address = listener.local_addr().ok();
     let mut listener = Some(listener);
@@ -67,7 +87,7 @@ pub(super) async fn wait_for_callback(
             request = read_request(&mut stream, request_deadline) => request,
         };
         let Some(request) = request else {
-            if write_response(&mut stream, false, &mut cancel).await {
+            if write_invalid_response(&mut stream, &mut cancel).await {
                 return Err(CallbackError::Cancelled);
             }
             if TokioInstant::now() >= deadline {
@@ -78,13 +98,10 @@ pub(super) async fn wait_for_callback(
         match parse_callback_request(&request, peer, local_address, expected_state) {
             Some(code) => {
                 drop(listener.take());
-                if write_response(&mut stream, true, &mut cancel).await {
-                    return Err(CallbackError::Cancelled);
-                }
-                return Ok(code);
+                return Ok(PendingCallback { code, stream });
             }
             None => {
-                if write_response(&mut stream, false, &mut cancel).await {
+                if write_invalid_response(&mut stream, &mut cancel).await {
                     return Err(CallbackError::Cancelled);
                 }
             }
@@ -217,36 +234,16 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-async fn write_response(
+async fn write_invalid_response(
     stream: &mut TcpStream,
-    accepted: bool,
     cancel: &mut watch::Receiver<bool>,
 ) -> bool {
-    let (status, state, title, message, next_step) = if accepted {
-        (
-            "200 OK",
-            "accepted",
-            "Returning to Lomi",
-            "Your sign-in request has been sent to the app. Continue in Lomi to check your sign-in.",
-            "You can close this tab.",
-        )
-    } else {
-        (
-            "400 Bad Request",
-            "error",
-            "Unable to return to Lomi",
-            "This sign-in link is invalid. Return to the Lomi app and start sign-in again.",
-            "You can close this tab and retry from Lomi.",
-        )
-    };
-    let body = include_str!("callback.html")
-        .replace("{{state}}", state)
-        .replace("{{title}}", title)
-        .replace("{{message}}", message)
-        .replace("{{next_step}}", next_step);
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+    let response = http_response(
+        "400 Bad Request",
+        "error",
+        "Unable to return to Lomi",
+        "This sign-in link is invalid. Return to Lomi and start sign-in again.",
+        "role=\"alert\"",
     );
     tokio::select! {
         _ = timeout_at(TokioInstant::now() + BROWSER_TIMEOUT, stream.write_all(response.as_bytes())) => false,
@@ -255,6 +252,47 @@ async fn write_response(
             true
         }
     }
+}
+
+fn completion_response(authenticated: bool) -> String {
+    if authenticated {
+        http_response(
+            "200 OK",
+            "success",
+            "Authentication successful",
+            "You have successfully signed in to Lomi. You can close this tab and return to the app.",
+            "role=\"status\"",
+        )
+    } else {
+        http_response(
+            "200 OK",
+            "error",
+            "Sign-in was not completed",
+            "Lomi could not activate your session. Return to Lomi and try signing in again.",
+            "role=\"alert\"",
+        )
+    }
+}
+
+fn http_response(status: &str, state: &str, title: &str, message: &str, role: &str) -> String {
+    let cloud = STANDARD.encode(include_bytes!("assets/clouds.webp"));
+    let geist_latin = STANDARD.encode(include_bytes!("assets/Geist-latin-wght-normal.woff2"));
+    let geist_latin_ext =
+        STANDARD.encode(include_bytes!("assets/Geist-latin-ext-wght-normal.woff2"));
+    let wordmark = STANDARD.encode(include_bytes!("assets/lomi-wordmark.svg"));
+    let body = include_str!("callback.html")
+        .replace("{{state}}", state)
+        .replace("{{title}}", title)
+        .replace("{{message}}", message)
+        .replace("{{role}}", role)
+        .replace("{{cloud}}", &cloud)
+        .replace("{{geist_latin}}", &geist_latin)
+        .replace("{{geist_latin_ext}}", &geist_latin_ext)
+        .replace("{{wordmark}}", &wordmark);
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 #[cfg(test)]
@@ -267,6 +305,25 @@ mod tests {
 
     fn request(target: &str, host: &str) -> Vec<u8> {
         format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").into_bytes()
+    }
+
+    async fn pending_callback() -> (TcpStream, PendingCallback, watch::Sender<bool>) {
+        let listener = bind_loopback().await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let worker = tokio::spawn(wait_for_callback(
+            listener,
+            STATE,
+            Instant::now() + Duration::from_secs(2),
+            cancel_rx,
+        ));
+        let mut browser = TcpStream::connect(address).await.unwrap();
+        let request = request(
+            &format!("{CALLBACK_PATH}?code={CODE}&state={STATE}"),
+            &format!("127.0.0.1:{}", address.port()),
+        );
+        browser.write_all(&request).await.unwrap();
+        (browser, worker.await.unwrap().unwrap(), cancel_tx)
     }
 
     #[test]
@@ -308,7 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_returns_success_only_after_a_valid_browser_request() {
+    async fn valid_callback_stays_pending_until_native_completion_confirms_sign_in() {
         let listener = bind_loopback().await.unwrap();
         let address = listener.local_addr().unwrap();
         let redirect = redirect_uri(&listener).unwrap();
@@ -329,12 +386,53 @@ mod tests {
             &format!("127.0.0.1:{}", address.port()),
         );
         browser.write_all(&request).await.unwrap();
-        let mut response = Vec::new();
-        browser.read_to_end(&mut response).await.unwrap();
+        let pending = worker.await.unwrap().unwrap();
+        assert_eq!(pending.code, CODE);
+        let mut first_byte = [0_u8; 1];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), browser.read(&mut first_byte))
+                .await
+                .is_err()
+        );
+
+        let reader = tokio::spawn(async move {
+            let mut response = Vec::new();
+            browser.read_to_end(&mut response).await.unwrap();
+            response
+        });
+        assert!(pending.complete(true).await);
+        let response = reader.await.unwrap();
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
-        assert!(String::from_utf8_lossy(&response).contains("Returning to Lomi"));
-        assert_eq!(worker.await.unwrap().unwrap(), CODE);
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.contains("Authentication successful"));
+        assert!(response.contains(
+            "You have successfully signed in to Lomi. You can close this tab and return to the app."
+        ));
+        assert!(response.contains("Content-Security-Policy: default-src 'none'"));
+        assert!(response.contains("font-src data:"));
+        assert!(!response.contains(CODE));
+        assert!(!response.contains(STATE));
         drop(cancel_tx);
+    }
+
+    #[tokio::test]
+    async fn failed_native_completion_shows_error_without_claiming_authentication() {
+        let (mut browser, pending, _cancel_tx) = pending_callback().await;
+        let reader = tokio::spawn(async move {
+            let mut response = Vec::new();
+            browser.read_to_end(&mut response).await.unwrap();
+            response
+        });
+        assert!(pending.complete(false).await);
+
+        let response = reader.await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Sign-in was not completed"));
+        assert!(response.contains("Lomi could not activate your session."));
+        assert!(!response.contains("Authentication successful"));
+        assert!(!response.contains(CODE));
+        assert!(!response.contains(STATE));
     }
 
     #[tokio::test]

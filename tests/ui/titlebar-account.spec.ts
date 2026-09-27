@@ -178,6 +178,107 @@ for (const destination of ["welcome", "workspace"] as const) {
   });
 }
 
+test("the signed-out chevron opens the settings menu without starting sign-in", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await mockMainWindow(page);
+
+  const titlebar = page.locator(".titlebar");
+  const signIn = titlebar.getByRole("button", {
+    name: "Sign In",
+    exact: true,
+  });
+  const menuButton = titlebar.getByRole("button", {
+    name: "Open account menu",
+    exact: true,
+  });
+  const menu = page.getByRole("menu", { name: "Account menu" });
+  await expect(signIn).toBeVisible();
+  await expect(menuButton).toHaveAttribute("aria-haspopup", "menu");
+  await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  await titlebar.screenshot({
+    path: "/tmp/lomi-titlebar-sign-in-split-light.png",
+  });
+
+  await menuButton.click();
+  await expect(menu).toBeVisible();
+  await expect(menuButton).toHaveAttribute("aria-expanded", "true");
+  await expect(menu.getByRole("menuitem")).toHaveText(["Settings"]);
+  const menuBounds = await menu.boundingBox();
+  const triggerBounds = await menuButton.boundingBox();
+  expect(menuBounds!.x + menuBounds!.width).toBeCloseTo(
+    triggerBounds!.x + triggerBounds!.width,
+    0,
+  );
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.some((call: any) =>
+        ["auth_begin_login", "auth_open_verification"].includes(call.command),
+      ),
+    ),
+  ).toBe(false);
+  await page.screenshot({
+    path: "/tmp/lomi-account-menu-signed-out-light.png",
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await titlebar.screenshot({
+    path: "/tmp/lomi-titlebar-sign-in-split-dark.png",
+  });
+  await page.screenshot({ path: "/tmp/lomi-account-menu-signed-out-dark.png" });
+
+  await menu.getByRole("menuitem", { name: "Settings", exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__nativeTest.calls
+          .filter((call: any) => call.command === "open_settings")
+          .map((call: any) => call.args),
+      ),
+    )
+    .toEqual([{}]);
+
+  await menuButton.click();
+  await emitAuthState(page, { ...signedOut, revision: 2, status: "offline" });
+  await expect(menu).toBeVisible();
+  await emitAuthState(page, signedIn);
+  await expect(menu).toHaveCount(0);
+  await expect(
+    titlebar.getByRole("button", { name: /Open account menu for/ }),
+  ).toBeVisible();
+
+  await accountButton(page).click();
+  await expect(menu).toBeVisible();
+  await emitAuthState(page, { ...signedOut, revision: 11 });
+  await expect(menu).toHaveCount(0);
+  await expect(menuButton).toBeVisible();
+});
+
+test("the signed-out account menu opens by keyboard and restores focus to its trigger", async ({
+  page,
+}) => {
+  await mockMainWindow(page, { welcome: true });
+  const menuButton = page
+    .locator(".titlebar")
+    .getByRole("button", { name: "Open account menu", exact: true });
+  const menu = page.getByRole("menu", { name: "Account menu" });
+
+  for (const key of ["ArrowDown", "ContextMenu", "Shift+F10"]) {
+    await menuButton.focus();
+    await page.keyboard.press(key);
+    await expect(menu).toBeVisible();
+    await expect(
+      menu.getByRole("menuitem", { name: "Settings", exact: true }),
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(menuButton).toBeFocused();
+    await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  }
+});
+
 test("a pending sign-in survives opening a project from the welcome screen", async ({
   page,
 }) => {

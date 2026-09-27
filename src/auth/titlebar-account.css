@@ -1,3 +1,30 @@
+.titlebar-account-control {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 22px;
+  border: var(--control-border-width) solid var(--color-outline);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-container);
+  color: var(--color-surface-variant-text);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-account-control:not(.titlebar-account-control-avatar):hover,
+.titlebar-account-control:not(
+    .titlebar-account-control-avatar
+  ).titlebar-account-menu-open {
+  border-color: var(--color-outline);
+  background: var(--color-surface-container-high);
+  color: var(--color-background-text);
+}
+
+.titlebar-account-control-avatar {
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
 .titlebar-account {
   display: inline-flex;
   align-items: center;
@@ -6,26 +33,45 @@
   min-width: 0;
   height: 22px;
   padding: 0 7px;
-  border: var(--control-border-width) solid var(--color-outline);
-  border-radius: var(--radius-xs);
-  background: var(--color-surface-container);
-  color: var(--color-surface-variant-text);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
   font-size: var(--font-size-11);
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
   -webkit-user-select: none;
   user-select: none;
 }
 
-.titlebar-account:hover:not(:disabled),
-.titlebar-account[aria-expanded="true"] {
+.titlebar-account-avatar {
+  width: 22px;
+  padding: 0;
+  border: var(--control-border-width) solid var(--color-outline);
+  border-radius: 50%;
+  background: var(--color-surface-container);
+  color: var(--color-surface-variant-text);
+}
+
+.titlebar-account-avatar:hover:not(:disabled),
+.titlebar-account-avatar[aria-expanded="true"] {
   border-color: var(--color-outline);
   background: var(--color-surface-container-high);
   color: var(--color-background-text);
 }
 
+.titlebar-account-menu-trigger {
+  width: 23px;
+  padding: 0;
+  border-left: var(--control-border-width) solid var(--color-outline);
+}
+
 .titlebar-account:focus-visible {
+  position: relative;
+  z-index: 1;
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
@@ -33,12 +79,6 @@
 .titlebar-account:disabled {
   cursor: default;
   opacity: 0.75;
-}
-
-.titlebar-account-avatar {
-  width: 22px;
-  padding: 0;
-  border-radius: 50%;
 }
 
 .titlebar-account-image,

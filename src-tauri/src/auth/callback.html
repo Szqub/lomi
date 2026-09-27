@@ -3,164 +3,141 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="light" />
     <meta name="robots" content="noindex, nofollow" />
     <title>{{title}} · Lomi</title>
-    <link rel="icon" href="data:," />
     <style>
+      @font-face {
+        font-family: "Geist";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("data:font/woff2;base64,{{geist_latin_ext}}") format("woff2");
+        unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20CF,U+2113,U+2C60-2C7F,U+A720-A7FF;
+      }
+
+      @font-face {
+        font-family: "Geist";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("data:font/woff2;base64,{{geist_latin}}") format("woff2");
+        unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+      }
+
       :root {
         color-scheme: light;
-        font-family:
-          ui-sans-serif,
-          system-ui,
-          -apple-system,
-          BlinkMacSystemFont,
-          "Segoe UI",
-          sans-serif;
-        --canvas: #f7f8f3;
-        --surface: #ffffff;
-        --text: #0b0d0c;
-        --text-soft: #535c56;
-        --line: #d5dad2;
-        --accent: #c8ff3d;
-        --danger: #a12a1d;
-        --danger-bg: #fdeae7;
-        background: var(--canvas);
-        color: var(--text);
+        font-family: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         font-synthesis: none;
         -webkit-font-smoothing: antialiased;
+        --canvas: #f7f8f3;
+        --text: #0b0d0c;
+        --text-soft: #535c56;
+        background: var(--canvas);
+        color: var(--text);
       }
 
-      @media (prefers-color-scheme: dark) {
-        :root {
-          color-scheme: dark;
-          --canvas: #101114;
-          --surface: #181a1f;
-          --text: #f3f4f6;
-          --text-soft: #bec3cc;
-          --line: #343943;
-          --danger: #f1aba8;
-          --danger-bg: #3a2328;
-        }
-      }
-
-      * {
+      *,
+      *::before,
+      *::after {
         box-sizing: border-box;
       }
 
       body {
+        position: relative;
+        isolation: isolate;
         display: grid;
+        min-width: 320px;
         min-height: 100vh;
-        min-height: 100dvh;
+        min-height: 100svh;
         margin: 0;
-        padding: 24px;
-        place-items: center;
-        font-size: 14px;
-        line-height: 1.6;
+        line-height: 1.5;
+      }
+
+      .sky-background {
+        position: fixed;
+        z-index: -1;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      .sky-background img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center;
+        filter: grayscale(1);
+      }
+
+      .sky-background::after {
+        position: absolute;
+        inset: 0;
+        background: #f7f8f3b8;
+        content: "";
+      }
+
+      .wordmark {
+        position: absolute;
+        z-index: 1;
+        top: 49px;
+        left: 50%;
+        display: block;
+        width: 112px;
+        height: auto;
+        transform: translateX(-50%);
       }
 
       main {
-        width: min(100%, 400px);
-        padding: 32px;
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        background: var(--surface);
+        display: flex;
+        min-height: 100vh;
+        min-height: 100svh;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 136px 24px 88px;
         text-align: center;
       }
 
-      .brand {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        margin-bottom: 28px;
-        font-size: 18px;
-        font-weight: 600;
-      }
-
-      .brand-icon {
-        width: 36px;
-        height: 36px;
-        border-radius: 10px;
-        background: var(--accent);
-        color: #0b0d0c;
-      }
-
       h1 {
+        max-width: 620px;
         margin: 0 0 12px;
-        font-size: 24px;
+        font-size: clamp(32px, 4vw, 40px);
         font-weight: 600;
-        line-height: 1.25;
+        line-height: 1.2;
+        letter-spacing: -0.035em;
         text-wrap: balance;
       }
 
       p {
+        max-width: 460px;
         margin: 0;
         color: var(--text-soft);
+        font-size: 15px;
+        line-height: 1.55;
         text-wrap: pretty;
       }
 
-      .next-step {
-        margin-top: 24px;
-        padding-top: 20px;
-        border-top: 1px solid var(--line);
-        font-size: 13px;
-      }
-
-      .error-notice {
-        display: none;
-      }
-
-      [data-state="error"] .error-notice {
-        display: inline-block;
-        margin-bottom: 16px;
-        padding: 4px 10px;
-        border-radius: 6px;
-        color: var(--danger);
-        background: var(--danger-bg);
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      @media (max-width: 380px) {
-        body {
-          padding: 16px;
+      @media (max-width: 600px) {
+        .wordmark {
+          top: 36px;
+          width: 96px;
         }
 
-        main {
-          padding: 24px;
+        .sky-background img {
+          object-position: 47% center;
         }
       }
     </style>
   </head>
   <body data-state="{{state}}">
-    <main aria-labelledby="title">
-      <div class="brand">
-        <svg
-          class="brand-icon"
-          viewBox="0 0 256 256"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <g
-            transform="translate(37 43.678899082568805) scale(0.8348623853211009)"
-            fill="currentColor"
-            fill-rule="evenodd"
-          >
-            <path
-              d="M0 184V120C0 84 21 62 52 62C73 62 90 72 102 87C114 72 131 62 152 62C183 62 204 84 204 120V184Q204 202 186 202Q168 202 168 184V120C168 106 162 98 150 98C132 98 120 108 120 123V184Q120 202 102 202Q84 202 84 184V123C84 108 72 98 54 98C42 98 36 106 36 120V184Q36 202 18 202Q0 202 0 184Z"
-            />
-            <path
-              d="M175 0H197Q213 0 213 16V16Q213 32 197 32H175Q159 32 159 16V16Q159 0 175 0Z"
-            />
-          </g>
-        </svg>
-        <span>Lomi</span>
-      </div>
-      <span class="error-notice">Sign-in interrupted</span>
+    <div class="sky-background" aria-hidden="true">
+      <img src="data:image/webp;base64,{{cloud}}" alt="" />
+    </div>
+    <img class="wordmark" src="data:image/svg+xml;base64,{{wordmark}}" alt="Lomi" />
+    <main aria-labelledby="title" {{role}}>
       <h1 id="title">{{title}}</h1>
       <p>{{message}}</p>
-      <p class="next-step">{{next_step}}</p>
     </main>
   </body>
 </html>

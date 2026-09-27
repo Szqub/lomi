@@ -806,10 +806,15 @@ impl AuthController {
         let Some(api) = self.inner.api.as_ref() else {
             return;
         };
-        let code = match callback::wait_for_callback(listener, state.exposed(), expires_at, cancel)
-            .await
+        let mut pending = match callback::wait_for_callback(
+            listener,
+            state.exposed(),
+            expires_at,
+            cancel,
+        )
+        .await
         {
-            Ok(code) => code,
+            Ok(pending) => pending,
             Err(CallbackError::Cancelled) => return,
             Err(CallbackError::Expired) => {
                 self.finish_attempt(
@@ -831,15 +836,20 @@ impl AuthController {
             }
         };
         if !self.is_current_attempt(generation, &attempt_id) {
+            pending.complete(false).await;
             return;
         }
-        let code = Secret::new(code);
+        let code = Secret::new(std::mem::take(&mut pending.code));
         match api
             .exchange_desktop_code(code.exposed(), code_verifier.exposed(), &redirect_uri)
             .await
         {
             Ok(token) => {
-                self.complete_device_token(token, generation, &attempt_id, storage)
+                let activated = self
+                    .complete_device_token(token, generation, &attempt_id, storage)
+                    .await;
+                pending
+                    .complete(activated && self.is_signed_in_generation(generation))
                     .await;
             }
             Err(problem) => {
@@ -854,6 +864,7 @@ impl AuthController {
                     ),
                 };
                 self.finish_attempt(generation, &attempt_id, status, message);
+                pending.complete(false).await;
             }
         }
     }
@@ -864,11 +875,11 @@ impl AuthController {
         generation: u64,
         attempt_id: &str,
         storage: AuthStorage,
-    ) {
+    ) -> bool {
         let mut token = Secret::new(token);
         if !self.is_current_attempt(generation, attempt_id) {
             self.revoke_if_possible(&token).await;
-            return;
+            return false;
         }
         let Some(api) = self.inner.api.as_ref() else {
             self.finish_attempt(
@@ -877,7 +888,7 @@ impl AuthController {
                 AuthStatus::Unavailable,
                 "Account sign-in is unavailable in this build.",
             );
-            return;
+            return false;
         };
         match api.check_session(token.exposed()).await {
             Ok(check) => {
@@ -938,6 +949,7 @@ impl AuthController {
                 } else {
                     SessionActivation::Stale
                 };
+                let activated = matches!(activation, SessionActivation::Activated);
                 match activation {
                     SessionActivation::Activated => {
                         drop(revoke_token);
@@ -957,6 +969,7 @@ impl AuthController {
                         self.publish();
                     }
                 }
+                activated
             }
             Err(HttpProblem::Transport | HttpProblem::Temporary | HttpProblem::RateLimited(_)) => {
                 let accepted = {
@@ -986,10 +999,11 @@ impl AuthController {
                 };
                 if !accepted {
                     self.revoke_if_possible(&token).await;
-                    return;
+                    return false;
                 }
                 drop(token);
                 self.publish();
+                false
             }
             Err(HttpProblem::Unauthorized) => {
                 self.finish_attempt(
@@ -999,6 +1013,7 @@ impl AuthController {
                     "The issued session could not be confirmed. Start sign-in again.",
                 );
                 self.revoke_if_possible(&token).await;
+                false
             }
             Err(HttpProblem::Forbidden) => {
                 self.finish_attempt(
@@ -1008,6 +1023,7 @@ impl AuthController {
                     "This account cannot access Lomi.",
                 );
                 self.revoke_if_possible(&token).await;
+                false
             }
             Err(_) => {
                 let accepted = {
@@ -1037,10 +1053,11 @@ impl AuthController {
                 };
                 if !accepted {
                     self.revoke_if_possible(&token).await;
-                    return;
+                    return false;
                 }
                 drop(token);
                 self.publish();
+                false
             }
         }
     }
@@ -1062,10 +1079,7 @@ impl AuthController {
         let Some(app) = app else {
             return;
         };
-        let Some(window) = app
-            .get_window("settings")
-            .or_else(|| app.get_window("main"))
-        else {
+        let Some(window) = app.get_window("main") else {
             return;
         };
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1083,6 +1097,16 @@ impl AuthController {
             .core
             .lock()
             .is_ok_and(|core| core.current_attempt(generation, attempt_id))
+    }
+
+    fn is_signed_in_generation(&self, generation: u64) -> bool {
+        self.inner.core.lock().is_ok_and(|core| {
+            core.generation == generation
+                && core.state.status == AuthStatus::SignedIn
+                && core.token.is_some()
+                && core.state.user.is_some()
+                && core.state.session.is_some()
+        })
     }
 
     fn finish_attempt(&self, generation: u64, attempt_id: &str, status: AuthStatus, message: &str) {
@@ -1244,6 +1268,177 @@ mod tests {
         net::TcpListener,
         thread,
     };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEST_CALLBACK_CODE: &str = "A123456789012345678901234567890123456789012";
+    const TEST_CALLBACK_STATE: &str = "B123456789012345678901234567890123456789012";
+    const TEST_VERIFIER: &str = "C123456789012345678901234567890123456789012";
+    const ACTIVE_SESSION_JSON: &str = r#"{"user":{"id":"user-1","displayName":"Ada","email":"ada@example.com","githubLogin":"ada","status":"active"},"session":{"id":"session-1","expiresAt":"2026-10-01T00:00:00Z"}}"#;
+
+    struct DelayedDesktopServer {
+        origin: String,
+        session_request: std::sync::mpsc::Receiver<String>,
+        release_session: std::sync::mpsc::Sender<()>,
+        worker: thread::JoinHandle<Vec<String>>,
+    }
+
+    struct BrowserCallbackRun {
+        browser: tokio::net::TcpStream,
+        worker: tokio::task::JoinHandle<()>,
+        generation: u64,
+        cancel_observer: tokio::sync::watch::Receiver<bool>,
+    }
+
+    fn delayed_desktop_server(expect_revocation: bool) -> DelayedDesktopServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (session_request_tx, session_request_rx) = std::sync::mpsc::channel();
+        let (release_session_tx, release_session_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (mut exchange_stream, _) = listener.accept().unwrap();
+            let exchange_request = read_complete_http_request(&mut exchange_stream);
+            write_api_response(
+                &mut exchange_stream,
+                "200 OK",
+                r#"{"access_token":"issued-session","token_type":"Bearer","expires_in":900}"#,
+            );
+
+            let (mut session_stream, _) = listener.accept().unwrap();
+            let session_request = read_complete_http_request(&mut session_stream);
+            session_request_tx.send(session_request.clone()).unwrap();
+            release_session_rx.recv().unwrap();
+            write_api_response(&mut session_stream, "200 OK", ACTIVE_SESSION_JSON);
+
+            let mut requests = vec![exchange_request, session_request];
+            if expect_revocation {
+                let (mut revoke_stream, _) = listener.accept().unwrap();
+                requests.push(read_complete_http_request(&mut revoke_stream));
+                write_api_response(&mut revoke_stream, "200 OK", "{}");
+            }
+            requests
+        });
+        DelayedDesktopServer {
+            origin: format!("http://{address}"),
+            session_request: session_request_rx,
+            release_session: release_session_tx,
+            worker,
+        }
+    }
+
+    fn read_complete_http_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        let mut header_end = None;
+        let mut content_length = 0;
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if header_end.is_none() {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let end = position + 4;
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    header_end = Some(end);
+                }
+            }
+            if header_end.is_some_and(|end| request.len() >= end + content_length) {
+                break;
+            }
+        }
+        String::from_utf8(request).unwrap()
+    }
+
+    fn write_api_response(stream: &mut std::net::TcpStream, status: &str, body: &str) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    }
+
+    fn start_browser_attempt(
+        controller: &AuthController,
+        attempt_id: &str,
+        storage: AuthStorage,
+    ) -> (u64, tokio::sync::watch::Receiver<bool>) {
+        let expires_at = Instant::now() + Duration::from_secs(60);
+        let expires_at_text = "2026-10-01T00:00:00Z".to_string();
+        let (cancel, cancel_receiver) = tokio::sync::watch::channel(false);
+        let cancel_observer = cancel_receiver.clone();
+        let mut core = controller.inner.core.lock().unwrap();
+        let generation = core.start_attempt(attempt_id.to_string());
+        core.state.status = AuthStatus::Authorizing;
+        core.state.storage = Some(storage);
+        core.state.attempt = Some(AuthAttempt {
+            id: attempt_id.to_string(),
+            expires_at: expires_at_text.clone(),
+        });
+        core.attempt = Some(BrowserAttempt {
+            id: attempt_id.to_string(),
+            authorization_url: String::new(),
+            cancel,
+            expires_at,
+            expires_at_text,
+        });
+        (generation, cancel_observer)
+    }
+
+    async fn begin_browser_callback(
+        controller: &AuthController,
+        attempt_id: &str,
+        storage: AuthStorage,
+    ) -> BrowserCallbackRun {
+        let listener = callback::bind_loopback().await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let redirect_uri = callback::redirect_uri(&listener).unwrap();
+        let expires_at = Instant::now() + Duration::from_secs(60);
+        let (generation, cancel_observer) = start_browser_attempt(controller, attempt_id, storage);
+        let callback_cancel = cancel_observer.clone();
+        let attempt_id = attempt_id.to_string();
+        let worker_controller = controller.clone();
+        let worker = tokio::spawn(async move {
+            worker_controller
+                .await_browser_callback_and_exchange(
+                    attempt_id,
+                    generation,
+                    listener,
+                    Secret::new(TEST_CALLBACK_STATE.to_string()),
+                    Secret::new(TEST_VERIFIER.to_string()),
+                    redirect_uri,
+                    expires_at,
+                    storage,
+                    callback_cancel,
+                )
+                .await;
+        });
+        let mut browser = tokio::net::TcpStream::connect(address).await.unwrap();
+        let request = format!(
+            "GET /auth/callback?code={TEST_CALLBACK_CODE}&state={TEST_CALLBACK_STATE} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            address.port()
+        );
+        browser.write_all(request.as_bytes()).await.unwrap();
+        BrowserCallbackRun {
+            browser,
+            worker,
+            generation,
+            cancel_observer,
+        }
+    }
 
     fn health_server(statuses: Vec<&'static str>) -> (String, thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1351,6 +1546,154 @@ mod tests {
                 core: Mutex::new(Core::new(status, None)),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn browser_success_waits_for_exchange_session_check_and_activation() {
+        let server = delayed_desktop_server(false);
+        let DelayedDesktopServer {
+            origin,
+            session_request,
+            release_session,
+            worker: server_worker,
+        } = server;
+        let controller = controller_for_origin(origin, AuthStatus::SignedOut);
+        let mut callback =
+            begin_browser_callback(&controller, "confirmed-login", AuthStorage::Session).await;
+        let session_request = tokio::task::spawn_blocking(move || {
+            session_request
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(session_request.starts_with("GET /v1/me "));
+        assert!(session_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer issued-session"));
+
+        let mut first_byte = [0_u8; 1];
+        assert!(tokio::time::timeout(
+            Duration::from_millis(30),
+            callback.browser.read(&mut first_byte)
+        )
+        .await
+        .is_err());
+
+        let browser_reader = tokio::spawn(async move {
+            let mut response = Vec::new();
+            callback.browser.read_to_end(&mut response).await.unwrap();
+            String::from_utf8(response).unwrap()
+        });
+        release_session.send(()).unwrap();
+        callback.worker.await.unwrap();
+        let response = browser_reader.await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Authentication successful"));
+        assert_eq!(controller.snapshot().status, AuthStatus::SignedIn);
+        assert!(controller.is_signed_in_generation(callback.generation));
+        assert!(callback.cancel_observer.has_changed().is_err());
+
+        let requests = server_worker.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("POST /v1/desktop/exchange "));
+        assert!(requests[1].starts_with("GET /v1/me "));
+
+        {
+            let mut core = controller.inner.core.lock().unwrap();
+            core.next_generation();
+            core.state.status = AuthStatus::SignedOut;
+            core.token = None;
+            core.state.user = None;
+            core.state.session = None;
+        }
+        assert!(!controller.is_signed_in_generation(callback.generation));
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_session_check_revokes_token_and_finishes_with_error() {
+        let server = delayed_desktop_server(true);
+        let DelayedDesktopServer {
+            origin,
+            session_request,
+            release_session,
+            worker: server_worker,
+        } = server;
+        let controller = controller_for_origin(origin, AuthStatus::SignedOut);
+        let mut callback =
+            begin_browser_callback(&controller, "cancel-during-check", AuthStorage::Session).await;
+        let session_request = tokio::task::spawn_blocking(move || {
+            session_request
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(session_request.starts_with("GET /v1/me "));
+
+        assert_eq!(
+            controller.cancel_login("cancel-during-check").status,
+            AuthStatus::SignedOut
+        );
+        let browser_reader = tokio::spawn(async move {
+            let mut response = Vec::new();
+            callback.browser.read_to_end(&mut response).await.unwrap();
+            String::from_utf8(response).unwrap()
+        });
+        release_session.send(()).unwrap();
+        callback.worker.await.unwrap();
+        let response = browser_reader.await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Sign-in was not completed"));
+        assert!(!response.contains("Authentication successful"));
+        assert_eq!(controller.snapshot().status, AuthStatus::SignedOut);
+        assert!(!controller.is_signed_in_generation(callback.generation));
+
+        let requests = server_worker.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[2].starts_with("POST /api/auth/sign-out "));
+        assert!(requests[2]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer issued-session"));
+    }
+
+    #[tokio::test]
+    async fn session_storage_failure_never_displays_authentication_success() {
+        let server = delayed_desktop_server(true);
+        let DelayedDesktopServer {
+            origin,
+            session_request,
+            release_session,
+            worker: server_worker,
+        } = server;
+        let controller = controller_for_origin(origin, AuthStatus::SignedOut);
+        let mut callback =
+            begin_browser_callback(&controller, "storage-fails", AuthStorage::Persistent).await;
+        let session_request = tokio::task::spawn_blocking(move || {
+            session_request
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(session_request.starts_with("GET /v1/me "));
+
+        let browser_reader = tokio::spawn(async move {
+            let mut response = Vec::new();
+            callback.browser.read_to_end(&mut response).await.unwrap();
+            String::from_utf8(response).unwrap()
+        });
+        release_session.send(()).unwrap();
+        callback.worker.await.unwrap();
+        let response = browser_reader.await.unwrap();
+        assert!(response.contains("Sign-in was not completed"));
+        assert!(!response.contains("Authentication successful"));
+        assert_eq!(controller.snapshot().status, AuthStatus::StorageLocked);
+        assert!(!controller.is_signed_in_generation(callback.generation));
+
+        let requests = server_worker.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[2].starts_with("POST /api/auth/sign-out "));
     }
 
     #[tokio::test]

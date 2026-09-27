@@ -2,7 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "../api";
 import ContextMenu from "../ContextMenu";
-import { ExternalLink, Github, Settings, SquareArrowRight } from "../icons";
+import {
+  ChevronDown,
+  ExternalLink,
+  Github,
+  Settings,
+  SquareArrowRight,
+} from "../icons";
 import { authStatusLabel, newestAuthState, unavailableState } from "./model";
 import type { AuthState } from "./model";
 import "./titlebar-account.css";
@@ -27,9 +33,13 @@ export default function TitlebarAccount({
   const accept = useCallback((incoming: AuthState) => {
     const next = newestAuthState(current.current, incoming);
     if (next !== current.current) {
+      const hadAccount = Boolean(
+        current.current?.user || current.current?.session,
+      );
+      const hasAccount = Boolean(next?.user || next?.session);
       current.current = next;
       setState(next);
-      if (!next?.user && !next?.session) setMenu(null);
+      if (hadAccount !== hasAccount) setMenu(null);
     }
     return next;
   }, []);
@@ -101,9 +111,15 @@ export default function TitlebarAccount({
         : `Sign in to your Lomi account · ${status}`;
 
   const showMenu = () => {
-    if (!native || pending.current || !hasAccount || !trigger.current) return;
+    if (!native || pending.current || !trigger.current) return;
     const bounds = trigger.current.getBoundingClientRect();
     setMenu({ x: bounds.right, y: bounds.bottom + 6 });
+  };
+
+  const toggleMenu = () => {
+    if (!native || pending.current) return;
+    if (menu) setMenu(null);
+    else showMenu();
   };
 
   const runAccountAction = async (
@@ -138,13 +154,8 @@ export default function TitlebarAccount({
     }
   };
 
-  const openAccount = () => {
+  const signIn = () => {
     if (!native || pending.current) return;
-    if (hasAccount) {
-      if (menu) setMenu(null);
-      else showMenu();
-      return;
-    }
     pending.current = true;
     setOpening(true);
     void (async () => {
@@ -211,55 +222,97 @@ export default function TitlebarAccount({
 
   return (
     <>
-      <button
-        ref={trigger}
-        type="button"
-        className={`titlebar-account${hasAccount ? " titlebar-account-avatar" : ""}`}
-        title={title}
-        aria-label={buttonLabel}
-        aria-busy={opening || undefined}
-        aria-haspopup={hasAccount ? "menu" : undefined}
-        aria-expanded={hasAccount ? Boolean(menu) : undefined}
-        disabled={!native || opening}
-        onClick={openAccount}
-        onContextMenu={(event) => {
-          if (!hasAccount) return;
-          event.preventDefault();
-          showMenu();
-        }}
-        onKeyDown={(event) => {
-          if (
-            hasAccount &&
-            (event.key === "ArrowDown" ||
-              event.key === "ContextMenu" ||
-              (event.shiftKey && event.key === "F10"))
-          ) {
-            event.preventDefault();
-            event.stopPropagation();
-            showMenu();
-          }
-        }}
+      <div
+        className={`titlebar-account-control${hasAccount ? " titlebar-account-control-avatar" : ""}${menu ? " titlebar-account-menu-open" : ""}`}
       >
         {hasAccount ? (
-          <span className="titlebar-account-image" aria-hidden="true">
-            {login && failedAvatar !== login ? (
-              <img
-                src={`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?s=64`}
-                referrerPolicy="no-referrer"
-                alt=""
-                onError={() => setFailedAvatar(login)}
-              />
-            ) : initials ? (
-              <span>{initials}</span>
-            ) : (
-              <Github size={13} />
-            )}
-          </span>
+          <button
+            ref={trigger}
+            type="button"
+            className="titlebar-account titlebar-account-avatar"
+            title={title}
+            aria-label={buttonLabel}
+            aria-busy={opening || undefined}
+            aria-haspopup="menu"
+            aria-expanded={Boolean(menu)}
+            disabled={!native || opening}
+            onClick={toggleMenu}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              showMenu();
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key === "ArrowDown" ||
+                event.key === "ContextMenu" ||
+                (event.shiftKey && event.key === "F10")
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                showMenu();
+              }
+            }}
+          >
+            <span className="titlebar-account-image" aria-hidden="true">
+              {login && failedAvatar !== login ? (
+                <img
+                  src={`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?s=64`}
+                  referrerPolicy="no-referrer"
+                  alt=""
+                  onError={() => setFailedAvatar(login)}
+                />
+              ) : initials ? (
+                <span>{initials}</span>
+              ) : (
+                <Github size={13} />
+              )}
+            </span>
+          </button>
         ) : (
-          "Sign In"
+          <>
+            <button
+              type="button"
+              className="titlebar-account titlebar-account-sign-in"
+              title={title}
+              aria-label="Sign In"
+              aria-busy={opening || undefined}
+              disabled={!native || opening}
+              onClick={signIn}
+            >
+              Sign In
+            </button>
+            <button
+              ref={trigger}
+              type="button"
+              className="titlebar-account titlebar-account-menu-trigger"
+              title={`Open account menu · ${status}`}
+              aria-label="Open account menu"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(menu)}
+              disabled={!native || opening}
+              onClick={toggleMenu}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                showMenu();
+              }}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "ArrowDown" ||
+                  event.key === "ContextMenu" ||
+                  (event.shiftKey && event.key === "F10")
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  showMenu();
+                }
+              }}
+            >
+              <ChevronDown size={14} aria-hidden="true" />
+            </button>
+          </>
         )}
-      </button>
-      {menu && hasAccount && (
+      </div>
+      {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
@@ -273,23 +326,28 @@ export default function TitlebarAccount({
               icon: <Settings size={15} aria-hidden="true" />,
               run: onOpenSettings,
             },
-            null,
-            {
-              label: "Account settings",
-              icon: <Settings size={15} aria-hidden="true" />,
-              run: () => void runAccountAction("open_settings"),
-            },
-            {
-              label: "Manage account",
-              icon: <ExternalLink size={15} aria-hidden="true" />,
-              run: () => void runAccountAction("auth_open_account_portal"),
-            },
-            null,
-            {
-              label: "Sign out",
-              icon: <SquareArrowRight size={15} aria-hidden="true" />,
-              run: () => void runAccountAction("auth_sign_out"),
-            },
+            ...(hasAccount
+              ? [
+                  null,
+                  {
+                    label: "Account settings",
+                    icon: <Settings size={15} aria-hidden="true" />,
+                    run: () => void runAccountAction("open_settings"),
+                  },
+                  {
+                    label: "Manage account",
+                    icon: <ExternalLink size={15} aria-hidden="true" />,
+                    run: () =>
+                      void runAccountAction("auth_open_account_portal"),
+                  },
+                  null,
+                  {
+                    label: "Sign out",
+                    icon: <SquareArrowRight size={15} aria-hidden="true" />,
+                    run: () => void runAccountAction("auth_sign_out"),
+                  },
+                ]
+              : []),
           ]}
         />
       )}
