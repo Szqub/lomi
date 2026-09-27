@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { LogOut } from "lucide-react";
 import { api, errorMessage, native } from "../api";
 import ContextMenu from "../ContextMenu";
-import {
-  ChevronDown,
-  ExternalLink,
-  Github,
-  Settings,
-  SquareArrowRight,
-} from "../icons";
+import { ChevronDown, ExternalLink, Github, Settings } from "../icons";
 import { authStatusLabel, newestAuthState, unavailableState } from "./model";
 import type { AuthState } from "./model";
 import "./titlebar-account.css";
@@ -316,6 +311,7 @@ export default function TitlebarAccount({
         <ContextMenu
           x={menu.x}
           y={menu.y}
+          className="account-context-menu"
           align="end"
           trigger={trigger}
           label="Account menu"
@@ -343,7 +339,7 @@ export default function TitlebarAccount({
                   null,
                   {
                     label: "Sign out",
-                    icon: <SquareArrowRight size={15} aria-hidden="true" />,
+                    icon: <LogOut size={15} aria-hidden="true" />,
                     run: () => void runAccountAction("auth_sign_out"),
                   },
                 ]

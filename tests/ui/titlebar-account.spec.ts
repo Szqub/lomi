@@ -555,6 +555,54 @@ test("a failed avatar falls back to initials and opens the account menu at 800px
     .toEqual([{}, { page: "account" }]);
 });
 
+test("account categories keep visible separators at 90% zoom", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.addInitScript(() => localStorage.setItem("lomi.zoom.main", "90"));
+  await mockMainWindow(page, { state: signedIn, welcome: true });
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__nativeTest.zoom))
+    .toBe(0.9);
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "0.9";
+  });
+
+  await accountButton(page).click();
+  const menu = page.getByRole("menu", { name: "Account menu" });
+  const separators = menu.getByRole("separator");
+  await expect(separators).toHaveCount(2);
+  const layout = await menu.evaluate((element) => {
+    const items = [...element.querySelectorAll('[role="menuitem"]')];
+    const dividers = [...element.querySelectorAll('[role="separator"]')];
+    return {
+      items: items.map((item) => item.getBoundingClientRect().toJSON()),
+      dividers: dividers.map((divider) => ({
+        bounds: divider.getBoundingClientRect().toJSON(),
+        color: getComputedStyle(divider).backgroundColor,
+      })),
+      background: getComputedStyle(element).backgroundColor,
+    };
+  });
+  expect(layout.dividers[0].bounds.top).toBeGreaterThanOrEqual(
+    layout.items[0].bottom,
+  );
+  expect(layout.dividers[0].bounds.bottom).toBeLessThanOrEqual(
+    layout.items[1].top,
+  );
+  expect(layout.dividers[1].bounds.top).toBeGreaterThanOrEqual(
+    layout.items[2].bottom,
+  );
+  expect(layout.dividers[1].bounds.bottom).toBeLessThanOrEqual(
+    layout.items[3].top,
+  );
+  for (const divider of layout.dividers) {
+    expect(divider.bounds.height).toBeGreaterThanOrEqual(2);
+    expect(divider.color).not.toBe(layout.background);
+  }
+  await menu.screenshot({ path: "/tmp/lomi-account-categories-90.png" });
+});
+
 test("account menu supports keyboard navigation, toggle, and outside dismissal", async ({
   page,
 }) => {

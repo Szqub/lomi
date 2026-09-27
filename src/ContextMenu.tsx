@@ -19,6 +19,7 @@ export default function ContextMenu({
   onClose,
   align = "start",
   trigger,
+  className,
 }: {
   x: number;
   y: number;
@@ -27,6 +28,7 @@ export default function ContextMenu({
   onClose: () => void;
   align?: "start" | "end";
   trigger?: RefObject<HTMLButtonElement | null>;
+  className?: string;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -67,7 +69,7 @@ export default function ContextMenu({
   return createPortal(
     <div
       ref={menu}
-      className="menu explorer-context-menu"
+      className={`menu explorer-context-menu${className ? ` ${className}` : ""}`}
       role="menu"
       aria-label={label}
       style={{ left: x, top: y }}
