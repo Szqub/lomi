@@ -118,6 +118,7 @@ pub async fn open_settings(
                 | "about"
                 | "chat-ai"
                 | "android"
+                | "account"
                 | "agent-control"
         )
     }) {

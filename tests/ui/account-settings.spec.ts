@@ -1,0 +1,182 @@
+import { expect, test, type Page } from "@playwright/test";
+import { mockDesktop } from "./desktop";
+import { unavailableState, type AuthState } from "../../src/auth/model";
+
+const signedOut: AuthState = {
+  ...unavailableState,
+  revision: 1,
+  status: "signed-out",
+};
+const signedIn: AuthState = {
+  ...signedOut,
+  revision: 10,
+  status: "signed-in",
+  storage: "persistent",
+  user: {
+    id: "user-1",
+    displayName: "Lomi User",
+    email: "user@example.test",
+    githubLogin: "lomi-user",
+    status: "active",
+  },
+  session: { id: "session-1", expiresAt: "2026-10-01T12:00:00Z" },
+};
+
+async function mockAccount(page: Page, state = signedOut) {
+  await mockDesktop(page, false);
+  await page.addInitScript((initial) => {
+    const desktop = window as any;
+    desktop.__authTest = {
+      state: initial,
+      calls: [],
+      delayedRefresh: false,
+      resolveRefresh: null,
+    };
+    desktop.__authInvoke = async (command: string, args: any) => {
+      const fixture = desktop.__authTest;
+      fixture.calls.push({ command, args });
+      if (command === "auth_begin_login") {
+        fixture.state = {
+          ...fixture.state,
+          revision: fixture.state.revision + 1,
+          status: "authorizing",
+          storage: args.storage,
+          attempt: {
+            id: "attempt-1",
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+          },
+        };
+      }
+      if (command === "auth_cancel_login" || command === "auth_sign_out") {
+        fixture.state = {
+          ...fixture.state,
+          revision: fixture.state.revision + 1,
+          status: "signed-out",
+          user: null,
+          session: null,
+          attempt: null,
+          storage: null,
+          remoteRevocationConfirmed: command === "auth_sign_out" ? false : null,
+        };
+      }
+      if (command === "auth_refresh_state" && fixture.delayedRefresh) {
+        const captured = structuredClone(fixture.state);
+        return new Promise((resolve) => {
+          fixture.resolveRefresh = () => resolve(captured);
+        });
+      }
+      return fixture.state;
+    };
+  }, state);
+  await page.goto("/?window=settings&page=account");
+  await expect(
+    page.getByRole("heading", { name: "Account", exact: true }),
+  ).toBeVisible();
+}
+
+test("session-only login waits for browser approval and survives page changes", async ({
+  page,
+}) => {
+  await mockAccount(page);
+  await page
+    .getByRole("switch", { name: "Remember me on this device" })
+    .uncheck();
+  await page
+    .getByRole("button", { name: "Sign in with GitHub", exact: true })
+    .click();
+  await expect(page.getByText("Waiting for browser approval.")).toBeVisible();
+  await expect(page.getByText(/verification code/i)).toHaveCount(0);
+  await page.getByRole("button", { name: "Open browser again" }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (c: any) => c.command === "auth_open_verification",
+      ),
+    ),
+  ).toEqual([
+    { command: "auth_open_verification", args: { attemptId: "attempt-1" } },
+    { command: "auth_open_verification", args: { attemptId: "attempt-1" } },
+  ]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (c: any) => c.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([{ command: "auth_begin_login", args: { storage: "session" } }]);
+  await page.getByRole("button", { name: "Themes", exact: true }).click();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await expect(page.getByText("Waiting for browser approval.")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.some(
+        (c: any) => c.command === "auth_cancel_login",
+      ),
+    ),
+  ).toBe(false);
+  await page.getByRole("button", { name: "Cancel sign-in" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+  ).toBeVisible();
+});
+
+test("new logout event wins over an old refresh response", async ({ page }) => {
+  await mockAccount(page, signedIn);
+  await expect(
+    page.getByText("user@example.test", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).__authTest.delayedRefresh = true;
+  });
+  await page.getByRole("button", { name: "Check connection" }).click();
+  await page.evaluate(async () => {
+    const desktop = window as any;
+    await desktop.__nativeTest.emitEvent("auth-state-changed", {
+      ...desktop.__authTest.state,
+      revision: 11,
+      status: "signed-out",
+      user: null,
+      session: null,
+      storage: null,
+    });
+    desktop.__authTest.resolveRefresh();
+  });
+  await expect(
+    page.getByText("user@example.test", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+  ).toBeVisible();
+});
+
+test("offline logout communicates local removal without claiming server revocation", async ({
+  page,
+}) => {
+  await mockAccount(page, { ...signedIn, status: "offline" });
+  await expect(page.getByText(/Your local work is unaffected/)).toBeVisible();
+  await page.getByRole("button", { name: "Sign out of this device" }).click();
+  await expect(page.getByText(/server could not confirm/)).toBeVisible();
+  await expect(
+    page.getByText("user@example.test", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("account remains usable at the minimum settings width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 760, height: 650 });
+  await mockAccount(page);
+  await page
+    .getByRole("button", { name: "Sign in with GitHub", exact: true })
+    .click();
+  await expect(page.getByText("Waiting for browser approval.")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "/tmp/lomi-account-settings.png",
+    fullPage: true,
+  });
+});

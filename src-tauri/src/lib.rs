@@ -8,6 +8,7 @@ mod android_probe;
 #[path = "../../tests/native/android-product-support.rs"]
 mod android_product;
 mod android_protocol;
+mod auth;
 mod browser;
 mod chat;
 #[cfg(feature = "chat-probe")]
@@ -149,6 +150,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(chat::commands::Chats::default())
+        .manage(auth::AuthController::default())
         .manage(agent_control::Control::default())
         .manage(android::manager::Android::default())
         .manage(android::open::Requests::default())
@@ -181,6 +183,9 @@ pub fn run() {
         .setup(|app| {
             let integration = app.path().app_data_dir()?.join("shell-integration");
             shell::prepare(&integration).map_err(std::io::Error::other)?;
+            let account_auth = app.path().app_data_dir()?.join("account-auth");
+            app.state::<auth::AuthController>()
+                .initialize(&account_auth, app.handle().clone());
             app.manage(terminal::Shells {
                 profiles: shell::discover(),
                 integration,
@@ -353,6 +358,13 @@ pub fn run() {
                 chat::commands::chat_export,
                 chat::commands::chat_discard,
                 chat::commands::chat_recover,
+                auth::auth_get_state,
+                auth::auth_begin_login,
+                auth::auth_open_verification,
+                auth::auth_cancel_login,
+                auth::auth_refresh_state,
+                auth::auth_sign_out,
+                auth::auth_open_account_portal,
                 browser::sync_browsers,
                 browser::browser_action,
                 browser::agent_browser_navigate,
@@ -455,6 +467,7 @@ pub fn run() {
         macos::handle_run_event(app, &event);
         if matches!(event, tauri::RunEvent::Exit) {
             tauri::async_runtime::block_on(agent_control::shutdown(app));
+            app.state::<auth::AuthController>().shutdown();
             if let Err(error) = tauri::async_runtime::block_on(
                 app.state::<android::manager::Android>().emergency_cleanup(),
             ) {

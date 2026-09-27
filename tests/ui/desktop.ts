@@ -342,6 +342,8 @@ export async function mockDesktop(
           }
           if (command.startsWith("chat_") && desktop.__chatInvoke)
             return desktop.__chatInvoke(command, args);
+          if (command.startsWith("auth_") && desktop.__authInvoke)
+            return desktop.__authInvoke(command, args);
           if (
             (command.startsWith("android_") ||
               command === "save_android_preferences") &&

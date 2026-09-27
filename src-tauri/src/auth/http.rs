@@ -1,0 +1,567 @@
+use super::{config::AuthConfig, safe_text, AuthSession, AuthUser};
+use reqwest::{header, Client, Response, StatusCode};
+use serde::Deserialize;
+use serde_json::Value;
+use std::time::Duration;
+
+const RESPONSE_LIMIT: usize = 64 * 1024;
+
+pub(super) struct ApiClient {
+    client: Client,
+    config: AuthConfig,
+}
+
+pub(super) struct DesktopStart {
+    pub authorization_url: String,
+}
+
+pub(super) struct SessionCheck {
+    pub user: AuthUser,
+    pub session: AuthSession,
+    pub renewed_token: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HttpProblem {
+    Transport,
+    Temporary,
+    RateLimited(Option<u64>),
+    Unauthorized,
+    Forbidden,
+    InvalidResponse,
+    Rejected,
+}
+
+impl ApiClient {
+    pub fn new(config: AuthConfig) -> Result<Self, String> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(12))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "Cannot initialize the secure account connection.".to_string())?;
+        Ok(Self { client, config })
+    }
+
+    pub async fn start_desktop(
+        &self,
+        redirect_uri: &str,
+        state: &str,
+        code_challenge: &str,
+    ) -> Result<DesktopStart, HttpProblem> {
+        let url = self
+            .config
+            .endpoint("/v1/desktop/start")
+            .map_err(|_| HttpProblem::InvalidResponse)?;
+        let body = serde_json::json!({
+            "clientId": self.config.client_id,
+            "redirectUri": redirect_uri,
+            "state": state,
+            "codeChallenge": code_challenge,
+        });
+        let (response, bytes, retry_after) = self.send_json(self.client.post(url), &body).await?;
+        if !response.status().is_success() {
+            return Err(classify_status(response, &bytes, retry_after));
+        }
+        let wire: DesktopStartWire =
+            serde_json::from_slice(&bytes).map_err(|_| HttpProblem::InvalidResponse)?;
+        if wire.authorization_url.is_empty() || wire.authorization_url.len() > 2048 {
+            return Err(HttpProblem::InvalidResponse);
+        }
+        if wire.expires_in != 300 {
+            return Err(HttpProblem::InvalidResponse);
+        }
+        Ok(DesktopStart {
+            authorization_url: wire.authorization_url,
+        })
+    }
+
+    pub async fn exchange_desktop_code(
+        &self,
+        code: &str,
+        code_verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<String, HttpProblem> {
+        let url = self
+            .config
+            .endpoint("/v1/desktop/exchange")
+            .map_err(|_| HttpProblem::InvalidResponse)?;
+        let body = serde_json::json!({
+            "clientId": self.config.client_id,
+            "code": code,
+            "codeVerifier": code_verifier,
+            "redirectUri": redirect_uri,
+        });
+        let (response, bytes, retry_after) = self.send_json(self.client.post(url), &body).await?;
+        if !response.status().is_success() {
+            return Err(classify_status(response, &bytes, retry_after));
+        }
+        let wire: DesktopExchangeWire =
+            serde_json::from_slice(&bytes).map_err(|_| HttpProblem::InvalidResponse)?;
+        if wire.token_type != "Bearer"
+            || !(1..=31_536_000).contains(&wire.expires_in)
+            || !valid_token(&wire.access_token)
+        {
+            return Err(HttpProblem::InvalidResponse);
+        }
+        Ok(wire.access_token)
+    }
+
+    pub async fn check_session(&self, token: &str) -> Result<SessionCheck, HttpProblem> {
+        let url = self
+            .config
+            .endpoint("/v1/me")
+            .map_err(|_| HttpProblem::InvalidResponse)?;
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| HttpProblem::Transport)?;
+        let status = response.status();
+        let renewed_token = response
+            .headers()
+            .get("set-auth-token")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| valid_token(value))
+            .map(str::to_string);
+        let (response, bytes, retry_after) = read_response(response).await?;
+        if !status.is_success() {
+            return Err(classify_status(response, &bytes, retry_after));
+        }
+        let wire: MeWire =
+            serde_json::from_slice(&bytes).map_err(|_| HttpProblem::InvalidResponse)?;
+        let user_status = safe_text(&wire.user.status, 32);
+        let user = AuthUser {
+            id: safe_text(&wire.user.id, 128),
+            display_name: safe_text(&wire.user.display_name, 160),
+            email: safe_text(wire.user.email.as_deref().unwrap_or_default(), 254),
+            github_login: safe_text(wire.user.github_login.as_deref().unwrap_or_default(), 64),
+            status: user_status.clone(),
+        };
+        let session = AuthSession {
+            id: safe_text(&wire.session.id, 128),
+            expires_at: safe_text(&wire.session.expires_at, 64),
+        };
+        if user.id.is_empty()
+            || user.display_name.is_empty()
+            || session.id.is_empty()
+            || session.expires_at.is_empty()
+        {
+            return Err(HttpProblem::InvalidResponse);
+        }
+        if user_status != "active" {
+            return Err(HttpProblem::Forbidden);
+        }
+        Ok(SessionCheck {
+            user,
+            session,
+            renewed_token,
+        })
+    }
+
+    pub async fn sign_out(&self, token: &str) -> bool {
+        let Ok(url) = self.config.endpoint("/api/auth/sign-out") else {
+            return false;
+        };
+        let body = serde_json::json!({});
+        let Ok((response, _bytes, _retry_after)) = self
+            .send_json(self.client.post(url).bearer_auth(token), &body)
+            .await
+        else {
+            return false;
+        };
+        response.status().is_success()
+    }
+
+    pub async fn probe(&self) -> Result<(), HttpProblem> {
+        let url = self
+            .config
+            .endpoint("/health/live")
+            .map_err(|_| HttpProblem::InvalidResponse)?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| HttpProblem::Transport)?;
+        let status = response.status();
+        let (response, _bytes, retry_after) = read_response(response).await?;
+        if status.is_success() {
+            Ok(())
+        } else {
+            Err(classify_status(response, &[], retry_after))
+        }
+    }
+
+    async fn send_json(
+        &self,
+        request: reqwest::RequestBuilder,
+        body: &Value,
+    ) -> Result<(Response, Vec<u8>, Option<u64>), HttpProblem> {
+        let bytes = serde_json::to_vec(body).map_err(|_| HttpProblem::InvalidResponse)?;
+        let response = request
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| HttpProblem::Transport)?;
+        read_response(response).await
+    }
+}
+
+async fn read_response(
+    response: Response,
+) -> Result<(Response, Vec<u8>, Option<u64>), HttpProblem> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > RESPONSE_LIMIT as u64)
+    {
+        return Err(HttpProblem::InvalidResponse);
+    }
+    let retry_after = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .or_else(|| response.headers().get("x-retry-after"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.clamp(1, 600));
+    let mut response = response;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| HttpProblem::Transport)? {
+        if body.len().saturating_add(chunk.len()) > RESPONSE_LIMIT {
+            return Err(HttpProblem::InvalidResponse);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((response, body, retry_after))
+}
+
+fn classify_status(response: Response, body: &[u8], retry_after: Option<u64>) -> HttpProblem {
+    classify_http_error(response.status(), body, retry_after)
+}
+
+fn classify_http_error(status: StatusCode, _body: &[u8], retry_after: Option<u64>) -> HttpProblem {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return HttpProblem::RateLimited(retry_after);
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return HttpProblem::Unauthorized;
+    }
+    if status == StatusCode::FORBIDDEN {
+        return HttpProblem::Forbidden;
+    }
+    if status.is_server_error() {
+        return HttpProblem::Temporary;
+    }
+    HttpProblem::Rejected
+}
+
+fn valid_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= 4096 && token.bytes().all(|byte| !byte.is_ascii_control())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopStartWire {
+    authorization_url: String,
+    expires_in: u64,
+}
+
+#[derive(Deserialize)]
+struct DesktopExchangeWire {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+}
+
+#[derive(Deserialize)]
+struct MeWire {
+    user: UserWire,
+    session: SessionWire,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserWire {
+    id: String,
+    display_name: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    github_login: Option<String>,
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionWire {
+    id: String,
+    expires_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        thread,
+        time::Duration,
+    };
+
+    struct Reply {
+        status: String,
+        headers: String,
+        body: Vec<u8>,
+    }
+
+    fn reply(status: &str, headers: &str, body: &str) -> Reply {
+        Reply {
+            status: status.to_string(),
+            headers: headers.to_string(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    fn loopback_server(replies: Vec<Reply>) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            replies
+                .into_iter()
+                .map(|reply| {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                let request = read_http_request(&mut stream);
+                let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        reply.status,
+                        reply.headers,
+                        reply.body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.write_all(&reply.body).unwrap();
+                    stream.flush().unwrap();
+                    request
+                })
+                .collect()
+        });
+        (format!("http://{address}"), worker)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        let mut header_end = None;
+        let mut content_length = 0;
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if header_end.is_none() {
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let end = position + 4;
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    header_end = Some(end);
+                }
+            }
+            if header_end.is_some_and(|end| request.len() >= end + content_length) {
+                break;
+            }
+        }
+        String::from_utf8(request).unwrap()
+    }
+
+    fn test_api(origin: String) -> ApiClient {
+        ApiClient::new(AuthConfig {
+            origin,
+            client_id: "lomi-desktop-test".into(),
+            environment: "test".into(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fixed_origin_transport_uses_desktop_handshake_renewal_header_and_signout_json() {
+        let (origin, server) = loopback_server(vec![
+            reply(
+                "200 OK",
+                "",
+                &format!(
+                    r#"{{"authorizationUrl":"https://auth.lomi.dev/desktop?request={}","expiresIn":300}}"#,
+                    "A".repeat(43)
+                ),
+            ),
+            reply(
+                "200 OK",
+                "",
+                r#"{"access_token":"session-token","token_type":"Bearer","expires_in":900}"#,
+            ),
+            reply(
+                "200 OK",
+                "set-auth-token: rotated-token\r\n",
+                r#"{"user":{"id":"user-1","displayName":"Ada","email":"ada@example.com","githubLogin":"ada","status":"active"},"session":{"id":"session-1","expiresAt":"2026-10-01T00:00:00Z"}}"#,
+            ),
+            reply("200 OK", "", "{}"),
+        ]);
+        let api = test_api(origin);
+
+        let redirect_uri = "http://127.0.0.1:43210/auth/callback";
+        let state = "B".repeat(43);
+        let challenge = "C".repeat(43);
+        let start = api
+            .start_desktop(redirect_uri, &state, &challenge)
+            .await
+            .unwrap();
+        assert_eq!(
+            start.authorization_url,
+            format!("https://auth.lomi.dev/desktop?request={}", "A".repeat(43))
+        );
+        assert_eq!(
+            api.exchange_desktop_code("D".repeat(43).as_str(), &"E".repeat(43), redirect_uri)
+                .await
+                .unwrap(),
+            "session-token"
+        );
+        let check = api.check_session("session-token").await.unwrap();
+        assert_eq!(check.user.id, "user-1");
+        assert_eq!(check.renewed_token.as_deref(), Some("rotated-token"));
+        assert!(api.sign_out("rotated-token").await);
+
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("POST /v1/desktop/start "));
+        assert!(requests[0]
+            .to_ascii_lowercase()
+            .contains("content-type: application/json\r\n"));
+        assert!(requests[0].contains(r#""clientId":"lomi-desktop-test""#));
+        assert!(requests[0].contains(&format!(r#""redirectUri":"{redirect_uri}""#)));
+        assert!(requests[0].contains(&format!(r#""state":"{state}""#)));
+        assert!(requests[0].contains(&format!(r#""codeChallenge":"{challenge}""#)));
+        assert!(requests[1].starts_with("POST /v1/desktop/exchange "));
+        assert!(requests[1].contains(r#""code":"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD""#));
+        assert!(requests[1].contains(&format!(r#""codeVerifier":"{}""#, "E".repeat(43))));
+        assert!(requests[1].contains(&format!(r#""redirectUri":"{redirect_uri}""#)));
+        for request in [&requests[0], &requests[1]] {
+            let headers = request
+                .split("\r\n\r\n")
+                .next()
+                .unwrap()
+                .to_ascii_lowercase();
+            for forbidden in ["cookie:", "authorization:", "origin:", "sec-fetch-site:"] {
+                assert!(!headers.contains(forbidden), "unexpected {forbidden}");
+            }
+        }
+        assert!(requests[2].starts_with("GET /v1/me "));
+        assert!(requests[2]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer session-token"));
+        assert!(requests[3].starts_with("POST /api/auth/sign-out "));
+        assert!(requests[3]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer rotated-token"));
+        assert!(requests[3]
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"));
+        assert!(requests[3].ends_with("{}"));
+    }
+
+    #[tokio::test]
+    async fn oversized_responses_are_rejected_before_json_parsing() {
+        let (origin, server) =
+            loopback_server(vec![reply("200 OK", "", &"x".repeat(RESPONSE_LIMIT + 1))]);
+        let api = test_api(origin);
+        assert!(matches!(
+            api.start_desktop(
+                "http://127.0.0.1:43210/auth/callback",
+                &"B".repeat(43),
+                &"C".repeat(43),
+            )
+            .await,
+            Err(HttpProblem::InvalidResponse)
+        ));
+        let _ = server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn redirects_are_rejected_and_never_followed() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let target_address = target.local_addr().unwrap();
+        let location = format!("Location: http://{target_address}/capture\r\n");
+        let (origin, server) = loopback_server(vec![reply("302 Found", &location, "{}")]);
+        let api = test_api(origin);
+        assert!(matches!(
+            api.start_desktop(
+                "http://127.0.0.1:43210/auth/callback",
+                &"B".repeat(43),
+                &"C".repeat(43),
+            )
+            .await,
+            Err(HttpProblem::Rejected)
+        ));
+        let _ = server.join().unwrap();
+        assert!(
+            matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn maps_http_statuses_and_retry_after_safely() {
+        assert_eq!(
+            classify_http_error(StatusCode::TOO_MANY_REQUESTS, b"{}", Some(12)),
+            HttpProblem::RateLimited(Some(12))
+        );
+        assert_eq!(
+            classify_http_error(StatusCode::UNAUTHORIZED, b"{}", None),
+            HttpProblem::Unauthorized
+        );
+        assert_eq!(
+            classify_http_error(StatusCode::FORBIDDEN, b"{}", None),
+            HttpProblem::Forbidden
+        );
+        assert_eq!(
+            classify_http_error(
+                StatusCode::BAD_REQUEST,
+                br#"{"error":{"code":"VALIDATION_FAILED"}}"#,
+                None
+            ),
+            HttpProblem::Rejected
+        );
+    }
+
+    #[test]
+    fn session_parser_never_serializes_untrusted_fields_directly() {
+        let wire: MeWire = serde_json::from_slice(
+            br#"{"user":{"id":"u\n1","displayName":"Name\u0000 X","email":"a@example.com","githubLogin":"dev","status":"active"},"session":{"id":"s-1","expiresAt":"2026-10-01T00:00:00Z"},"token":"must-not-escape"}"#,
+        )
+        .unwrap();
+        let user = AuthUser {
+            id: safe_text(&wire.user.id, 128),
+            display_name: safe_text(&wire.user.display_name, 160),
+            email: safe_text(wire.user.email.as_deref().unwrap_or_default(), 254),
+            github_login: safe_text(wire.user.github_login.as_deref().unwrap_or_default(), 64),
+            status: safe_text(&wire.user.status, 32),
+        };
+        let serialized = serde_json::to_string(&user).unwrap();
+        assert!(!serialized.contains("must-not-escape"));
+        assert!(!user.id.contains('\n'));
+        assert!(!user.display_name.contains('\0'));
+    }
+}

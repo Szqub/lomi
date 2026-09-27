@@ -37,6 +37,7 @@ import {
   SettingsSection,
 } from "./settings-ui";
 
+const AccountSettingsPage = lazy(() => import("./auth/AccountSettingsPage"));
 const AndroidSettingsPage = lazy(() => import("./android/AndroidSettingsPage"));
 const AgentControlSettingsPage = lazy(
   () => import("./AgentControlSettingsPage"),
@@ -49,7 +50,8 @@ function SettingsLoading({ title }: { title: string }) {
 export default function SettingsWindow() {
   const [page, setPage] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get("page");
-    return requested === "android" ||
+    return requested === "account" ||
+      requested === "android" ||
       requested === "agent-control" ||
       requested === "chat-ai" ||
       requested === "plugins" ||
@@ -60,7 +62,7 @@ export default function SettingsWindow() {
       : "keybinds";
   });
   const preferences = useKeybindings();
-  useProtectedTheme(page === "agent-control");
+  useProtectedTheme(page === "agent-control" || page === "account");
   const [listening, setListening] = useState(!native);
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [busy, setBusy] = useState(false);
@@ -76,6 +78,7 @@ export default function SettingsWindow() {
       if (
         current &&
         [
+          "account",
           "android",
           "agent-control",
           "chat-ai",
@@ -179,6 +182,14 @@ export default function SettingsWindow() {
         <nav className="settings-navigation" aria-label="Settings pages">
           <button
             className="settings-nav-item"
+            aria-current={page === "account" ? "page" : undefined}
+            onClick={() => setPage("account")}
+          >
+            <ShieldCheck size={16} aria-hidden="true" />
+            Account
+          </button>
+          <button
+            className="settings-nav-item"
             aria-current={page === "keybinds" ? "page" : undefined}
             onClick={() => setPage("keybinds")}
           >
@@ -242,7 +253,11 @@ export default function SettingsWindow() {
             About
           </button>
         </nav>
-        {page === "agent-control" ? (
+        {page === "account" ? (
+          <Suspense fallback={<SettingsLoading title="Account" />}>
+            <AccountSettingsPage />
+          </Suspense>
+        ) : page === "agent-control" ? (
           <Suspense fallback={<SettingsLoading title="Agent control" />}>
             <AgentControlSettingsPage />
           </Suspense>

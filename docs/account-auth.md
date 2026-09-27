@@ -1,0 +1,86 @@
+# Account authentication
+
+Account sign-in is optional. Projects, terminals, local files, plugins, and Chat AI
+provider credentials do not depend on the account service. The account controls
+live in Settings → Account. The titlebar's Sign In button starts the same browser
+flow directly, using persistent storage by default. An existing authorization
+attempt is reopened instead of replaced; the signed-in avatar opens Account settings.
+
+Before starting sign-in, Rust binds an ephemeral listener to `127.0.0.1` and
+creates a random PKCE verifier and state. It sends the S256 challenge, state, and
+exact loopback callback URI to `/v1/desktop/start`, then opens the returned authorization
+URL in the system browser. After GitHub sign-in and approval, the browser redirects
+to the native listener. Rust validates the callback state and exchanges the code
+once through `/v1/desktop/exchange`, then verifies the issued session through
+`/v1/me`. The browser request is Lomi's first-party handshake and does not use
+GitHub's device flow.
+
+The release origin is `https://auth.lomi.dev`, client ID `lomi-desktop`. Debug
+builds use `http://localhost:4321` and `lomi-desktop-dev`. Compile-time
+`LOMI_AUTH_ORIGIN` and `LOMI_AUTH_CLIENT_ID` overrides support a separately
+configured staging environment. Origins are validated by native code; the renderer
+cannot supply a server address, arbitrary browser URL, or Authorization header.
+
+## Boundaries and persistence
+
+`src-tauri/src/auth` owns HTTP, the loopback callback listener, credentials, and
+the state machine.
+`src/auth` renders a sanitized snapshot. IPC and `auth-state-changed` events never
+include the session token, authorization URL, verifier, state, or callback code.
+An attempt snapshot contains only its ID and expiry. Each snapshot has a monotonically
+increasing revision so a delayed reply cannot restore an obsolete account state.
+The existing global trusted-webview guard remains in place. Main and Settings may
+read account state, start sign-in, and reopen the current browser request. Cancel,
+sign-out, and account-portal management remain restricted to Settings. Browser
+children are not authorized app views.
+
+Persistent sessions use a separate OS keyring service namespace and private
+metadata below `account-auth/<environment>` in the application data directory.
+Metadata contains credential references and a cleanup journal, never the token.
+A process lock protects ownership. A durable logout tombstone is written before
+keyring deletion. A failed deletion remains journaled and cannot silently restore
+the signed-out account. Unreadable metadata is preserved for recovery.
+
+The Remember me switch explicitly selects persistent storage or memory for the
+current process. There is no plaintext fallback. Replacing an unresolved persistent
+reference requires a durable tombstone; unreadable or unowned metadata blocks
+replacement. The account keyring service is separate from Chat AI credentials.
+
+Closing Settings or navigating to another settings page does not cancel sign-in.
+Cancel, sign-out, a new attempt, and application exit invalidate native work.
+Late responses cannot publish an old attempt. HTTP has bounded timeouts and
+response sizes, and does not follow redirects. The loopback listener accepts only
+the exact callback route with one valid code and matching state, and closes on
+success, cancellation, or expiry. Code exchange is attempted once because the
+browser code may be single-use.
+
+Offline is an unknown remote state, not proof of an authenticated online session.
+Local sign-out is available without the server; the UI reports when remote
+revocation was not confirmed. Server account status and session validity remain
+the authority for online requests.
+
+## Development and verification
+
+The adjacent `auth-app` and `auth-frontend` repositories contain the API and
+portal. Follow [the deployment guide](https://github.com/lomi-dev/auth-app/blob/main/DEPLOYMENT.md)
+(requires access to the private API repository) and use Bun 1.4.2 there.
+This desktop repository continues to use pnpm and Cargo.
+
+```sh
+pnpm check
+node --experimental-strip-types --test tests/auth-state.test.ts
+pnpm exec playwright test tests/ui/account-settings.spec.ts
+cargo test --manifest-path src-tauri/Cargo.toml --locked auth::
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+```
+
+Native HTTP tests use isolated loopback servers. Opt-in macOS Keychain tests in
+`src-tauri/src/auth/storage.rs` use randomized test service names and must be run
+explicitly with `--ignored` and their exact test names. They never use an existing
+account entry. Browser UI tests mock Tauri IPC and do not qualify native windows.
+
+The implementation was locally checked on macOS ARM64. Real GitHub OAuth,
+production TLS/DNS, release packaging, and Windows/Linux credential stores need
+separate qualification before public release. The full evidence and remaining
+release conditions are recorded in documents 14 and 18 of the adjacent local
+`auth-plan` directory, which is not published to GitHub.

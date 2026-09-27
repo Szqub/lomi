@@ -70,7 +70,7 @@ zip = { version = "4.6", default-features = false, features = ["deflate-flate2-z
 tonic = { version = "0.14.6", default-features = false, features = ["channel", "codegen"] }
 tonic-prost = { version = "0.14.6" }
 prost = { version = "0.14.4" }
-tokio = { version = "1", features = ["time", "sync", "macros", "process", "io-util", "fs"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "process", "io-util", "fs", "net"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 turbojpeg = { version = "1.5.1", default-features = false, features = ["cmake", "require-simd"], optional = true }
