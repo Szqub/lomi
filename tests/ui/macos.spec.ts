@@ -256,6 +256,16 @@ for (const settings of [false, true]) {
     await setFullscreen(false);
     await expect(titlebar).toHaveCSS("padding-left", "110px");
     await expect(titlebar).toHaveCSS("min-height", "55px");
+    await page.keyboard.press("Meta+Digit0");
+    await expect(titlebar).toHaveCSS("padding-left", "88px");
+    await page.keyboard.press("Meta+Equal");
+    await page.keyboard.press("Meta+Equal");
+    await expect(titlebar).toHaveCSS("padding-left", "88px");
+    await expect(titlebar).toHaveCSS("min-height", "44px");
+    const zoomedContent = await titlebar
+      .locator(":scope > :first-child")
+      .boundingBox();
+    expect(zoomedContent!.x).toBeGreaterThanOrEqual(88);
   });
 
   test(`macOS ${settings ? "settings" : "workspace"} leaves room for native controls at minimum size`, async ({

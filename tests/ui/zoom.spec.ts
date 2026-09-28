@@ -65,6 +65,11 @@ test("zoom works on welcome, remembers its level and respects the native macOS t
   expect(await commands(page, "start_terminal")).toHaveLength(0);
   await page.keyboard.press("Meta+Digit0");
   await expect.poll(() => zoom(page)).toBe(1);
+  await page.keyboard.press("Meta+Equal");
+  await page.keyboard.press("Meta+Equal");
+  await expect.poll(() => zoom(page)).toBe(1.2);
+  await expect(page.locator(".titlebar")).toHaveCSS("padding-left", "88px");
+  await expect(page.locator(".titlebar")).toHaveCSS("min-height", "44px");
 });
 
 test("a heavily zoomed minimum window fits the pane without scrolling the workspace", async ({
@@ -75,6 +80,11 @@ test("a heavily zoomed minimum window fits the pane without scrolling the worksp
   await page.setViewportSize({ width: 400, height: 210 });
   await page.goto("/");
   await expect(page.locator(".xterm-screen")).toBeVisible();
+  await expect(page.locator(".titlebar")).toHaveCSS("padding-left", "88px");
+  await expect(page.locator(".titlebar")).toHaveCSS("min-height", "44px");
+  const switcher = page.locator(".project-switcher");
+  const switcherBox = await switcher.boundingBox();
+  expect(switcherBox?.x).toBeGreaterThanOrEqual(88);
   const area = page.locator(".work-area");
   expect(
     await area.evaluate((element) => {
