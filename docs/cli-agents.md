@@ -8,11 +8,12 @@ This does not install the agents or restore their conversations after restart.
 
 The titlebar **+ → Agents** dialog launches the 15 clients listed in MCP settings.
 It shows only executables found in the selected terminal environment and uses
-bundled brand icons from Iconify. Choose a CLI and the number of terminal tabs
-(four by default); all tabs start immediately, including background tabs, in the
-current project folder. Refresh the list after installing a CLI. Launching does
-not change client configuration. Reopening a saved session starts ordinary shells
-without relaunching the agents.
+bundled brand icons from Iconify. Choose a CLI and the number of terminal panels
+(four by default). Lomi opens one new tab with a grid of panels and starts an
+independent CLI process in each panel, in the current project folder. Four panels
+use a two-by-two grid. Refresh the list after installing a CLI. Launching does not
+change client configuration. Reopening a saved session preserves the panel layout
+and starts ordinary shells without relaunching the agents.
 The launcher supports local Bash, Zsh, Fish and POSIX sh on macOS and Linux;
 Windows, PowerShell and WSL launch environments are not supported yet.
 

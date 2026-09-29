@@ -283,15 +283,43 @@ export function newTab(
   cwd: string,
   profileId: string,
   title = "Terminal",
+  paneCount = 1,
 ): TerminalTab {
-  const layout = newPane(cwd);
+  if (!Number.isSafeInteger(paneCount) || paneCount < 1)
+    throw new Error("Enter a whole number of terminals, at least 1.");
+  const terminals = Array.from({ length: paneCount }, () => newPane(cwd));
+  const join = (layouts: Layout[], axis: Split["axis"]): Layout => {
+    if (layouts.length === 1) return layouts[0];
+    const middle = Math.ceil(layouts.length / 2);
+    const first = join(layouts.slice(0, middle), axis);
+    const second = join(layouts.slice(middle), axis);
+    const firstCount = panes(first).length;
+    return {
+      type: "split",
+      id: newId(),
+      axis,
+      ratio: firstCount / (firstCount + panes(second).length),
+      first,
+      second,
+    };
+  };
+  const rowCount = Math.ceil(paneCount / Math.ceil(Math.sqrt(paneCount)));
+  const rows: Layout[] = [];
+  let offset = 0;
+  for (let row = 0; row < rowCount; row++) {
+    const length =
+      Math.floor(paneCount / rowCount) + (row < paneCount % rowCount ? 1 : 0);
+    rows.push(join(terminals.slice(offset, offset + length), "horizontal"));
+    offset += length;
+  }
+  const layout = join(rows, "vertical");
   return {
     type: "terminal",
     id: newId(),
     title,
     profileId,
     layout,
-    activePaneId: layout.id,
+    activePaneId: terminals[0].id,
   };
 }
 export function newWorkspace(

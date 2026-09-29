@@ -33,7 +33,7 @@
       "4"
     )
       throw Error("Expected default count 4.");
-    phase = "four immediate native PTYs and background stream acknowledgements";
+    phase = "four immediate native PTYs in one split tab";
     document.querySelector('.agents-dialog button[type="submit"]').click();
     await wait(async () => {
       const state = await invoke("plugin_smoke_result", {
@@ -56,18 +56,18 @@
     if (launches.some((line) => !line.endsWith("/project")))
       throw Error("Agent cwd changed.");
     const { runningTerminal } = await import("/src/terminal-runtime.ts");
+    const { panes } = await import("/src/model.ts");
     let agentTabs;
     await wait(async () => {
       const saved = await invoke("load_session");
       agentTabs = saved.projects[0].workspaces[0].tabs.filter((tab) =>
         tab.title.startsWith("Cursor CLI"),
       );
-      return agentTabs.length === 4;
+      return agentTabs.length === 1 && panes(agentTabs[0].layout).length === 4;
     });
-    const runtimes = agentTabs.map((tab) => runningTerminal(tab.layout.id));
-    await wait(
-      () => runtimes.filter((runtime) => !runtime.opened).length === 3,
-    );
+    const agentPanes = panes(agentTabs[0].layout);
+    const runtimes = agentPanes.map((pane) => runningTerminal(pane.id));
+    await wait(() => runtimes.every((runtime) => runtime.opened));
     await wait(() =>
       runtimes.every(
         (runtime) =>
@@ -79,18 +79,42 @@
     const tabs = [...document.querySelectorAll('[role="tab"]')].filter((tab) =>
       tab.textContent.includes("Cursor CLI"),
     );
-    if (tabs.length !== 4) throw Error("Expected four Cursor tabs.");
+    if (tabs.length !== 1) throw Error("Expected one Cursor tab.");
+    const panels = [...document.querySelectorAll(".terminal-pane")];
+    if (panels.length !== 4)
+      throw Error("Expected four visible terminal panels.");
+    const bounds = agentPanes.map((pane) =>
+      document
+        .querySelector(`[data-pane-id="${pane.id}"]`)
+        .getBoundingClientRect(),
+    );
+    if (
+      Math.abs(bounds[0].y - bounds[1].y) > 1 ||
+      Math.abs(bounds[2].y - bounds[3].y) > 1 ||
+      Math.abs(bounds[0].x - bounds[2].x) > 1 ||
+      Math.abs(bounds[1].x - bounds[3].x) > 1 ||
+      bounds[1].x <= bounds[0].x ||
+      bounds[2].y <= bounds[0].y
+    )
+      throw Error("Expected a two-by-two terminal grid.");
+    const originalTab = [...document.querySelectorAll('[role="tab"]')].find(
+      (tab) => tab.textContent.trim() === "Terminal",
+    );
+    originalTab.click();
+    await wait(() => document.querySelectorAll(".terminal-pane").length === 1);
+    tabs[0].click();
+    await wait(() => document.querySelectorAll(".terminal-pane").length === 4);
     const titles = new Set();
-    for (const [index, tab] of tabs.entries()) {
-      tab.click();
+    for (const [index, pane] of agentPanes.entries()) {
+      const panel = document.querySelector(`[data-pane-id="${pane.id}"]`);
+      panel.querySelector(".xterm-helper-textarea").focus();
       const expectedTitle = `Agent fixture ${before.terminals[runtimes[index].sessionId]}`;
       await wait(
         () =>
-          tab.getAttribute("aria-selected") === "true" &&
-          document.querySelector(".terminal-title")?.textContent ===
-            expectedTitle,
+          panel.classList.contains("is-active") &&
+          panel.querySelector(".terminal-title")?.textContent === expectedTitle,
       );
-      titles.add(document.querySelector(".terminal-title").textContent);
+      titles.add(panel.querySelector(".terminal-title").textContent);
     }
     if (titles.size !== 4)
       throw Error("Expected four distinct retained titles.");
@@ -109,9 +133,9 @@
       data: {
         checks: [
           "installed-only native discovery",
-          "four immediate PTYs in project cwd",
-          "hidden output flow control",
-          "background title parsing before attachment",
+          "four immediate PTYs in project cwd within one tab",
+          "two-by-two terminal grid",
+          "output flow control and individual pane titles",
           "tab switches retain processes",
         ],
         launches: 4,

@@ -16,6 +16,7 @@ import {
   openFileTab,
   fileTabs,
   panes,
+  layoutPositions,
   removePane,
   removeTabs,
   removeWorkspace,
@@ -54,6 +55,47 @@ function projectSession() {
   const project = newProject(info.directory, info.profiles[0].id);
   return { ...newSession(), projects: [project], activeProjectId: project.id };
 }
+
+test("multi-terminal tabs keep distinct panes and survive session restoration", () => {
+  for (const count of [1, 2, 3, 4, 5, 7, 9, 12, 100]) {
+    const session = projectSession();
+    const workspace = active(session)!.workspace;
+    const tab = newTab("/project/agents", "local:bash", "Agents", count);
+    const terminals = panes(tab.layout);
+    assert.equal(terminals.length, count);
+    assert.equal(new Set(terminals.map((pane) => pane.id)).size, count);
+    assert.equal(tab.activePaneId, terminals[0].id);
+    assert.ok(terminals.every((pane) => pane.cwd === "/project/agents"));
+    workspace.tabs.push(tab);
+    workspace.activeTabId = tab.id;
+    assert.deepEqual(
+      restoreSession(JSON.parse(JSON.stringify(session)), info),
+      session,
+    );
+  }
+});
+
+test("four terminals share one tab in an even two-by-two grid", () => {
+  const tab = newTab("/project", "local:bash", "Agents", 4);
+  const positions = layoutPositions(tab.layout, {
+    width: 1203,
+    height: 803,
+  }).filter(({ layout }) => layout.type === "terminal");
+  assert.deepEqual(
+    positions.map(({ bounds }) => bounds),
+    [
+      { width: 600, height: 400, left: 0, top: 0 },
+      { width: 600, height: 400, left: 603, top: 0 },
+      { width: 600, height: 400, left: 0, top: 403 },
+      { width: 600, height: 400, left: 603, top: 403 },
+    ],
+  );
+});
+
+test("terminal grids reject invalid counts before creating a layout", () => {
+  for (const count of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => newTab("/project", "local:bash", "Agents", count));
+});
 
 test("isolated browser restoration preserves its profile and rejects a malformed descriptor", () => {
   const session = projectSession();

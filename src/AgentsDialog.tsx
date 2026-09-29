@@ -104,7 +104,7 @@ export default function AgentsDialog({
         }}
       >
         <p id={`${id}-description`}>
-          Run installed CLI agents in separate terminal tabs.
+          Run installed CLI agents in separate terminal panels within one tab.
         </p>
         <div className="agents-chooser-heading">
           <span id={`${id}-cli-label`}>Installed CLI</span>

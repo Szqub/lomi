@@ -1056,17 +1056,15 @@ export default function Workbench() {
       .flatMap((project) => project.workspaces)
       .find((workspace) => workspace.id === workspaceId);
     if (!target) throw new Error("The selected workspace was closed.");
-    const added = Array.from({ length: count }, (_, index) =>
-      newTab(cwd, profile.id, `${cliNames[cli]} ${index + 1}`),
-    );
-    const runtimes = added.map((tab) =>
-      terminalFor(panes(tab.layout)[0], profile, cli),
+    const added = newTab(cwd, profile.id, cliNames[cli], count);
+    const runtimes = panes(added.layout).map((pane) =>
+      terminalFor(pane, profile, cli),
     );
     change((state) =>
       updateWorkspace(state, workspaceId, (workspace) => ({
         ...workspace,
-        tabs: [...workspace.tabs, ...added],
-        activeTabId: added[0].id,
+        tabs: [...workspace.tabs, added],
+        activeTabId: added.id,
       })),
     );
     const results = await Promise.allSettled(

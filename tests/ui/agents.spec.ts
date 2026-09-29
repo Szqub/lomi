@@ -21,7 +21,7 @@ async function setInstalledAgents(
   }, agents);
 }
 
-test("Agents lists detected CLIs and starts four terminals in the project", async ({
+test("Agents starts four terminals in a two-by-two grid within one new tab", async ({
   page,
 }, testInfo) => {
   await page.emulateMedia({ colorScheme: "light" });
@@ -67,15 +67,29 @@ test("Agents lists detected CLIs and starts four terminals in the project", asyn
 
   await dialog.getByRole("button", { name: "Launch agents" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("tab")).toHaveCount(5);
-  await expect(page.getByRole("tab", { name: "Cursor CLI 1" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  await expect(page.getByRole("tab")).toHaveCount(2);
+  await expect(
+    page.getByRole("tab", { name: "Cursor CLI", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".terminal-pane")).toHaveCount(4);
+  const panels = await page.locator(".terminal-pane").evaluateAll((panels) =>
+    panels.map((panel) => {
+      const { x, y, width, height } = panel.getBoundingClientRect();
+      return { x, y, width, height };
+    }),
   );
-  for (const suffix of [2, 3, 4])
-    await expect(
-      page.getByRole("tab", { name: `Cursor CLI ${suffix}` }),
-    ).toHaveAttribute("aria-selected", "false");
+  expect(panels[0].y).toBeCloseTo(panels[1].y, 0);
+  expect(panels[2].y).toBeCloseTo(panels[3].y, 0);
+  expect(panels[0].x).toBeCloseTo(panels[2].x, 0);
+  expect(panels[1].x).toBeCloseTo(panels[3].x, 0);
+  expect(panels[1].x).toBeGreaterThan(panels[0].x);
+  expect(panels[2].y).toBeGreaterThan(panels[0].y);
+  for (const panel of panels) {
+    expect(panel.width).toBeGreaterThanOrEqual(240);
+    expect(panel.height).toBeGreaterThanOrEqual(120);
+    expect(panel.width).toBeCloseTo(panels[0].width, 0);
+    expect(panel.height).toBeCloseTo(panels[0].height, 0);
+  }
 
   const agentStarts = () =>
     page.evaluate(() =>
@@ -112,9 +126,11 @@ test("Agents lists detected CLIs and starts four terminals in the project", asyn
       ),
     ),
   ).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("agents-grid-light.png") });
 
   await page.getByRole("tab", { name: "Terminal", exact: true }).click();
-  await page.getByRole("tab", { name: "Cursor CLI 1" }).click();
+  await page.getByRole("tab", { name: "Cursor CLI", exact: true }).click();
+  await expect(page.locator(".terminal-pane")).toHaveCount(4);
   expect((await agentStarts()).length).toBe(4);
 
   await expect
@@ -126,7 +142,7 @@ test("Agents lists detected CLIs and starts four terminals in the project", asyn
         return saved?.projects?.[0]?.workspaces?.[0]?.tabs?.length ?? 0;
       }),
     )
-    .toBe(5);
+    .toBe(2);
   expect(
     await page.evaluate(() =>
       JSON.stringify(
@@ -136,11 +152,11 @@ test("Agents lists detected CLIs and starts four terminals in the project", asyn
   ).toBe(false);
 
   await page.reload();
-  await expect(page.getByRole("tab")).toHaveCount(5);
-  for (const suffix of [1, 2, 3, 4]) {
-    await page.getByRole("tab", { name: `Cursor CLI ${suffix}` }).click();
-    await expect(page.locator(".terminal-host")).toBeVisible();
-  }
+  await expect(page.getByRole("tab")).toHaveCount(2);
+  await page.getByRole("tab", { name: "Cursor CLI", exact: true }).click();
+  await expect(page.locator(".terminal-host")).toHaveCount(4);
+  for (const host of await page.locator(".terminal-host").all())
+    await expect(host).toBeVisible();
   expect(
     await page.evaluate(() =>
       (window as any).__nativeTest.calls
@@ -252,9 +268,14 @@ test("Agents validates the terminal count and supports another installed CLI", a
   await expect(dialog).toBeVisible();
 
   await count.fill("2");
+  await page.setViewportSize({ width: 1440, height: 900 });
   await dialog.getByRole("button", { name: "Launch agents" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("tab")).toHaveCount(3);
+  await expect(page.getByRole("tab")).toHaveCount(2);
+  await expect(
+    page.getByRole("tab", { name: "Claude Code", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".terminal-pane")).toHaveCount(2);
   await expect
     .poll(() =>
       page.evaluate(
@@ -283,7 +304,10 @@ test("a native agent startup error is visible and does not trigger a duplicate s
   await dialog.getByRole("button", { name: "Launch agents" }).click();
 
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole("alert")).toContainText(
+  const startupError = page.getByRole("alert").filter({
+    hasText: "1 of 4 agents could not start",
+  });
+  await expect(startupError).toContainText(
     "1 of 4 agents could not start. Agent CLI failed to start",
   );
   const cliRequests = () =>
@@ -294,11 +318,41 @@ test("a native agent startup error is visible and does not trigger a duplicate s
       ),
     );
   await expect.poll(async () => (await cliRequests()).length).toBe(4);
-  await page.getByRole("tab", { name: "Cursor CLI 1" }).click();
-  for (const suffix of [1, 2, 3, 4])
-    await page.getByRole("tab", { name: `Cursor CLI ${suffix}` }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "1 of 4 agents could not start",
-  );
+  await page.getByRole("tab", { name: "Terminal", exact: true }).click();
+  await page.getByRole("tab", { name: "Cursor CLI", exact: true }).click();
+  for (const panel of await page.locator(".terminal-pane").all())
+    await panel.click({ position: { x: 10, y: 10 } });
+  await expect(startupError).toContainText("1 of 4 agents could not start");
   expect((await cliRequests()).length).toBe(4);
 });
+
+for (const count of [1, 3, 5]) {
+  test(`Agents starts exactly ${count} CLI panels in one new tab`, async ({
+    page,
+  }) => {
+    await mockDesktop(page, false);
+    await page.goto("/");
+    await setInstalledAgents(page, [installedAgents[0]]);
+    const dialog = await openAgents(page);
+    await expect(dialog.getByRole("radio")).toHaveCount(1);
+    await dialog.getByLabel("Number of terminals").fill(String(count));
+    await dialog.getByRole("button", { name: "Launch agents" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await expect(page.locator(".terminal-pane")).toHaveCount(count);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__nativeTest.calls.filter(
+              (call: any) =>
+                call.command === "start_terminal" &&
+                call.args.request.cliLaunch === "cursor",
+            ).length,
+        ),
+      )
+      .toBe(count);
+    for (const panel of await page.locator(".terminal-pane").all())
+      await expect(panel).toBeVisible();
+  });
+}
