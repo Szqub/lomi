@@ -217,9 +217,12 @@ test("the titlebar summarizes the tightest window and details stale multi-agent 
   await expect(menu.getByRole("group")).toHaveCount(2);
   await expect(menu).toContainText("5-hour");
   await expect(menu).toContainText("Weekly");
-  await expect(
-    menu.getByRole("progressbar", { name: "Weekly usage: 87.6% used" }),
-  ).toBeVisible();
+  const weeklyQuota = menu.getByRole("progressbar", {
+    name: "Weekly quota: 12.4% remaining",
+  });
+  await expect(weeklyQuota).toBeVisible();
+  await expect(weeklyQuota).toHaveJSProperty("value", 12.4);
+  await expect(menu).toContainText("876 requests used / 1,000 requests");
   await expect(menu).toContainText("Source · Connected account");
   await expect(menu).toContainText("Usage refresh is limited.");
   await expect(menu).not.toContainText("usage.example");
@@ -258,6 +261,93 @@ test("the titlebar summarizes the tightest window and details stale multi-agent 
   );
   expect(protectedCalls).toHaveLength(0);
   expect(startsAfter).toBe(startsBefore);
+});
+
+test("each CLI quota bar and titlebar use the same remaining percentage", async ({
+  page,
+}) => {
+  await mockDesktop(page, false);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toBeVisible();
+
+  const agents = [
+    { id: "codex-quota", cli: "codex", pid: 601, label: "Codex window" },
+    {
+      id: "claude-quota",
+      cli: "claude",
+      pid: 602,
+      label: "Claude window",
+    },
+    {
+      id: "cursor-quota",
+      cli: "cursor",
+      pid: 603,
+      label: "Cursor window",
+    },
+    { id: "kimi-quota", cli: "kimi", pid: 604, label: "Kimi window" },
+    {
+      id: "agy-quota",
+      cli: "agy",
+      pid: 605,
+      label: "Antigravity window",
+    },
+  ];
+  const contexts = Object.fromEntries(
+    agents.map(({ id, cli, pid }) => [id, context(cli, pid)]),
+  );
+  const quotaEntries = (remainingPercent: number) =>
+    agents.map(({ id, cli, pid, label }) =>
+      entry(id, cli, pid, [
+        {
+          label,
+          remainingPercent,
+          used: null,
+          limit: null,
+          unit: null,
+          resetsAt: null,
+        },
+      ]),
+    );
+
+  await setUsage(page, contexts, quotaEntries(100));
+  const trigger = page.locator(".agent-usage-trigger");
+  await expect(trigger.locator(".agent-usage-trigger-value")).toHaveText(
+    "100%",
+  );
+  await expect(trigger).toHaveAttribute(
+    "aria-label",
+    "CLI account usage, 100% remaining across 5 agents",
+  );
+  await trigger.click();
+  const menu = page.locator(".agent-usage-menu");
+
+  const expectRemaining = async (remainingPercent: number) => {
+    await expect(trigger.locator(".agent-usage-trigger-value")).toHaveText(
+      `${remainingPercent}%`,
+    );
+    await expect(trigger).toHaveAttribute(
+      "title",
+      new RegExp(`: ${remainingPercent}% remaining`),
+    );
+    await expect(menu.getByRole("progressbar")).toHaveCount(agents.length);
+    for (const agent of agents) {
+      const quota = menu.getByRole("progressbar", {
+        name: `${agent.label} quota: ${remainingPercent}% remaining`,
+      });
+      await expect(quota).toHaveJSProperty("value", remainingPercent);
+    }
+  };
+
+  await expectRemaining(100);
+  for (const remainingPercent of [75, 0]) {
+    await setUsage(page, contexts, quotaEntries(remainingPercent));
+    const callsBefore = (await usageCalls(page)).length;
+    await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+    await expect
+      .poll(async () => (await usageCalls(page)).length)
+      .toBeGreaterThan(callsBefore);
+    await expectRemaining(remainingPercent);
+  }
 });
 
 test("keyboard, outside click, and agent removal dismiss the anchored usage menu", async ({

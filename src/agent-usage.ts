@@ -6,6 +6,7 @@ export type AgentUsageStatus =
 
 export interface AgentUsageWindow {
   label: string;
+  /** Remaining quota: 0 means exhausted, 100 means fully available. Native adapters normalize providers to this scale. */
   remainingPercent: number | null;
   used: number | null;
   limit: number | null;

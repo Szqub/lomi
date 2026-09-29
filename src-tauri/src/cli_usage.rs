@@ -2687,6 +2687,16 @@ mod tests {
         assert_eq!(parsed[2].label, "code review · 15-minute");
         assert_eq!(parsed[2].remaining_percent, Some(25.0));
         assert_eq!(parsed[2].unit, None);
+
+        for (used_percent, remaining_percent) in [(0, 100.0), (25, 75.0), (100, 0.0)] {
+            let parsed = parse_codex_usage(&json!({
+                "rate_limit": {
+                    "primary_window": {"used_percent": used_percent}
+                }
+            }))
+            .unwrap();
+            assert_eq!(parsed[0].remaining_percent, Some(remaining_percent));
+        }
     }
 
     #[test]
@@ -2694,13 +2704,19 @@ mod tests {
         let parsed = parse_claude_usage(&json!({
             "five_hour": {"utilization": 42.25, "resets_at": "2026-09-29T10:00:00+02:00"},
             "seven_day": {"utilization": 15},
+            "seven_day_opus": {"utilization": 100},
+            "seven_day_sonnet": {"utilization": 0},
+            "seven_day_oauth_apps": {"utilization": 25},
             "unknown": {"utilization": 99}
         }))
         .unwrap();
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.len(), 5);
         assert_eq!(parsed[0].remaining_percent, Some(57.75));
         assert_eq!(parsed[0].resets_at, Some(1_790_668_800_000));
         assert_eq!(parsed[1].label, "Weekly");
+        assert_eq!(parsed[2].remaining_percent, Some(0.0));
+        assert_eq!(parsed[3].remaining_percent, Some(100.0));
+        assert_eq!(parsed[4].remaining_percent, Some(75.0));
     }
 
     #[test]
@@ -2713,6 +2729,13 @@ mod tests {
         assert_eq!(parsed[0].remaining_percent, Some(52.0));
         assert_eq!(parsed[0].resets_at, Some(1_790_678_400_000));
         assert_eq!(parsed[0].used, None);
+        for (used_percent, remaining_percent) in [(0, 100.0), (25, 75.0), (100, 0.0)] {
+            let parsed = parse_cursor_usage(&json!({
+                "planUsage": {"totalPercentUsed": used_percent}
+            }))
+            .unwrap();
+            assert_eq!(parsed[0].remaining_percent, Some(remaining_percent));
+        }
     }
 
     #[test]
@@ -2740,6 +2763,11 @@ mod tests {
         assert_eq!(parsed[2].remaining_percent, Some(100.0));
         assert_eq!(parsed[3].label, "Monthly code");
         assert_eq!(parsed[3].remaining_percent, Some(0.0));
+        let exhausted = parse_kimi_usage(&json!({
+            "usages": {"limit_5h": {"used_ratio": 1.0}}
+        }))
+        .unwrap();
+        assert_eq!(exhausted[0].remaining_percent, Some(0.0));
     }
 
     #[test]

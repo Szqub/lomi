@@ -766,8 +766,9 @@ mod tests {
             "status": "SUCCESS",
             "command": {"name": "usage", "data": {"groups": [
                 {"name": "Models", "buckets": [
-                    {"id": "pro", "name": "Pro", "window": "5h", "remaining_fraction": 0.0, "reset_time": "2026-10-01T10:00:00Z"},
-                    {"id": "weekly", "name": "Pro", "window": "weekly", "remaining_fraction": 0.25}
+                    {"id": "pro", "name": "Pro", "window": "5h", "remaining_fraction": 1.0, "reset_time": "2026-10-01T10:00:00Z"},
+                    {"id": "weekly", "name": "Pro", "window": "weekly", "remaining_fraction": 0.75},
+                    {"id": "exhausted", "name": "Pro", "window": "monthly", "remaining_fraction": 0.0}
                 ]}
             ]}},
             "conversation_id": "",
@@ -884,14 +885,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_grouped_quotas_without_inverting_and_accepts_zero() {
+    fn parses_grouped_quotas_as_remaining_fractions() {
         let windows = parse_usage_response(&fixture()).unwrap();
-        assert_eq!(windows.len(), 2);
+        assert_eq!(windows.len(), 3);
         assert_eq!(windows[0].label, "Models · Pro · 5h");
-        assert_eq!(windows[0].remaining_percent, Some(0.0));
+        assert_eq!(windows[0].remaining_percent, Some(100.0));
         assert_eq!(windows[0].resets_at, Some(1_790_848_800_000));
-        assert_eq!(windows[1].remaining_percent, Some(25.0));
+        assert_eq!(windows[1].remaining_percent, Some(75.0));
         assert_eq!(windows[1].resets_at, None);
+        assert_eq!(windows[2].remaining_percent, Some(0.0));
     }
 
     #[test]
@@ -900,10 +902,13 @@ mod tests {
         value["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = json!(1.01);
         value["command"]["data"]["groups"][0]["buckets"][1]["reset_time"] = json!("not-a-date");
         let windows = parse_usage_response(&value).unwrap();
-        assert_eq!(windows.len(), 1);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].remaining_percent, Some(75.0));
         assert_eq!(windows[0].resets_at, None);
+        assert_eq!(windows[1].remaining_percent, Some(0.0));
 
         value["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = json!(-0.1);
+        value["command"]["data"]["groups"][0]["buckets"][2]["remaining_fraction"] = json!(-0.1);
         assert!(parse_usage_response(&value).is_err());
     }
 

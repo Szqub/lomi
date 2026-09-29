@@ -157,7 +157,9 @@ or acronym.
   or verified read-only CLI reports, and shares bounded requests with scoped
   caching. Keep credentials out of webviews; never initiate CLI login or infer
   subscription quota from transcript tokens. Antigravity uses its version-gated
-  native `/usage` report without an agent turn. Unsupported agents remain visible
+  native `/usage` report without an agent turn. Every percentage and progress
+  fill shows remaining quota: 100% available, 0% exhausted. Normalize provider
+  reports in native readers. Unsupported agents remain visible
   with an explicit availability status; see `docs/cli-agents.md`.
 - `src-tauri/src/shell.rs` discovers shell environments and quotes dropped paths;
   `src-tauri/shell/` contains integration hooks. Do not edit user shell profiles.

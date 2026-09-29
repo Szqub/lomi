@@ -698,7 +698,7 @@ function UsageWindow({ window }: { window: AgentUsageWindow }) {
   const reset = formatReset(window.resetsAt);
   const amount =
     used && limit
-      ? `${used} / ${limit}`
+      ? `${used} used / ${limit}`
       : used
         ? `${used} used`
         : limit
@@ -718,8 +718,8 @@ function UsageWindow({ window }: { window: AgentUsageWindow }) {
       {remaining !== null && (
         <progress
           max={100}
-          value={100 - remaining}
-          aria-label={`${window.label || "Quota window"} usage: ${formatPercent(100 - remaining)} used`}
+          value={remaining}
+          aria-label={`${window.label || "Quota window"} quota: ${formatPercent(remaining)} remaining`}
         />
       )}
       <div className="agent-usage-window-meta">
