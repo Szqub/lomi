@@ -573,9 +573,290 @@ fn environment_path(value: Option<&[u8]>) -> Option<PathBuf> {
     value.map(|value| PathBuf::from(std::ffi::OsString::from_vec(value.to_vec())))
 }
 
-#[cfg(all(windows, test))]
+#[cfg(windows)]
 fn environment_path(value: Option<&[u8]>) -> Option<PathBuf> {
     value.map(|value| PathBuf::from(String::from_utf8_lossy(value).into_owned()))
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UsageProcessPaths {
+    pub has_auth_argument_override: bool,
+    pub home: Option<PathBuf>,
+    pub codex_home: Option<PathBuf>,
+    pub claude_config_dir: Option<PathBuf>,
+    pub claude_secure_storage_config_dir: Option<PathBuf>,
+    pub claude_secure_storage_config_dir_set: bool,
+    pub cursor_config_dir: Option<PathBuf>,
+    pub kimi_code_home: Option<PathBuf>,
+    pub xdg_config_home: Option<PathBuf>,
+    pub user: Option<String>,
+    pub has_openai_api_key: bool,
+    pub has_openai_custom_base_url: bool,
+    pub has_claude_auth_override: bool,
+    pub has_cursor_api_key: bool,
+    pub has_cursor_custom_backend: bool,
+    pub has_cursor_custom_config_dir: bool,
+    pub cursor_credential_store: Option<String>,
+    pub kimi_code_base_url: Option<String>,
+    pub kimi_code_oauth_host: Option<String>,
+    pub kimi_oauth_host: Option<String>,
+    pub has_kimi_model_name_override: bool,
+    pub is_legacy_kimi_cli: bool,
+}
+
+impl UsageProcessPaths {
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
+    pub(crate) fn from_entries(entries: &[&[u8]]) -> Self {
+        let path = |name| environment_path(environment_value(entries, name));
+        let string = |name| {
+            environment_value(entries, name)
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(str::to_owned)
+                .filter(|value| !value.is_empty())
+        };
+        let enabled = |name| {
+            string(name).is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+        };
+        Self {
+            home: path(b"HOME="),
+            codex_home: path(b"CODEX_HOME="),
+            claude_config_dir: path(b"CLAUDE_CONFIG_DIR="),
+            claude_secure_storage_config_dir: path(b"CLAUDE_SECURESTORAGE_CONFIG_DIR="),
+            claude_secure_storage_config_dir_set: entries
+                .iter()
+                .any(|entry| entry.starts_with(b"CLAUDE_SECURESTORAGE_CONFIG_DIR=")),
+            cursor_config_dir: path(b"CURSOR_CONFIG_DIR="),
+            kimi_code_home: path(b"KIMI_CODE_HOME="),
+            xdg_config_home: path(b"XDG_CONFIG_HOME="),
+            user: string(b"USER="),
+            has_openai_api_key: environment_value(entries, b"OPENAI_API_KEY=").is_some(),
+            has_openai_custom_base_url: [
+                b"OPENAI_BASE_URL=".as_slice(),
+                b"OPENAI_API_BASE=".as_slice(),
+            ]
+            .iter()
+            .any(|name| environment_value(entries, name).is_some()),
+            has_claude_auth_override: [
+                b"ANTHROPIC_API_KEY=".as_slice(),
+                b"ANTHROPIC_AUTH_TOKEN=".as_slice(),
+                b"ANTHROPIC_BASE_URL=".as_slice(),
+                b"CLAUDE_CODE_OAUTH_TOKEN=".as_slice(),
+                b"CLAUDE_CODE_OAUTH_REFRESH_TOKEN=".as_slice(),
+                b"CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR=".as_slice(),
+                b"CLAUDE_CODE_CUSTOM_OAUTH_URL=".as_slice(),
+                b"CLAUDE_CODE_OAUTH_CLIENT_ID=".as_slice(),
+                b"CLAUDE_CODE_API_BASE_URL=".as_slice(),
+                b"CLAUDE_LOCAL_OAUTH_API_BASE=".as_slice(),
+            ]
+            .iter()
+            .any(|name| environment_value(entries, name).is_some())
+                || [
+                    b"CLAUDE_CODE_USE_BEDROCK=".as_slice(),
+                    b"CLAUDE_CODE_USE_VERTEX=".as_slice(),
+                    b"CLAUDE_CODE_USE_FOUNDRY=".as_slice(),
+                ]
+                .iter()
+                .any(|name| enabled(name)),
+            has_cursor_custom_config_dir: environment_value(entries, b"CURSOR_CONFIG_DIR=")
+                .is_some(),
+            cursor_credential_store: string(b"AGENT_CLI_CREDENTIAL_STORE="),
+            has_cursor_api_key: [
+                b"CURSOR_API_KEY=".as_slice(),
+                b"CURSOR_AUTH_TOKEN=".as_slice(),
+            ]
+            .iter()
+            .any(|name| environment_value(entries, name).is_some()),
+            has_cursor_custom_backend: [
+                b"CURSOR_BASE_URL=".as_slice(),
+                b"CURSOR_API_BASE_URL=".as_slice(),
+                b"CURSOR_API_ENDPOINT=".as_slice(),
+            ]
+            .iter()
+            .any(|name| environment_value(entries, name).is_some()),
+            kimi_code_base_url: string(b"KIMI_CODE_BASE_URL="),
+            kimi_code_oauth_host: string(b"KIMI_CODE_OAUTH_HOST="),
+            kimi_oauth_host: string(b"KIMI_OAUTH_HOST="),
+            // Current Kimi Code only synthesizes a temporary provider when
+            // KIMI_MODEL_NAME is set. KIMI_API_KEY/KIMI_BASE_URL are names in
+            // provider config, not process-level credential overrides.
+            has_kimi_model_name_override: string(b"KIMI_MODEL_NAME=").is_some(),
+            is_legacy_kimi_cli: false,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn directory_for(&self, cli: TitleCli) -> Result<PathBuf, String> {
+        let path = match cli {
+            TitleCli::Codex => self
+                .codex_home
+                .clone()
+                .or_else(|| self.home.as_ref().map(|path| path.join(".codex")))
+                .ok_or("Cannot locate the running Codex configuration directory.")?,
+            TitleCli::Claude => self
+                .claude_config_dir
+                .clone()
+                .or_else(|| self.home.as_ref().map(|path| path.join(".claude")))
+                .ok_or("Cannot locate the running Claude Code configuration directory.")?,
+            TitleCli::Cursor => self
+                .home
+                .as_ref()
+                .map(|home| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        home.join(".cursor")
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        self.xdg_config_home
+                            .as_ref()
+                            .map(|path| path.join("cursor"))
+                            .unwrap_or_else(|| home.join(".config/cursor"))
+                    }
+                })
+                .ok_or("Cannot locate the running Cursor configuration directory.")?,
+            TitleCli::Kimi => self
+                .kimi_code_home
+                .clone()
+                .or_else(|| self.home.as_ref().map(|path| path.join(".kimi-code")))
+                .ok_or("Cannot locate the running Kimi Code configuration directory.")?,
+            _ => return Err("Usage credentials are not available for this CLI.".into()),
+        };
+        if !path.is_absolute() {
+            return Err("The running CLI configuration directory is not absolute.".into());
+        }
+        Ok(path)
+    }
+
+    pub(crate) fn cursor_cli_config_directory(&self) -> Result<PathBuf, String> {
+        let path = self
+            .cursor_config_dir
+            .clone()
+            .or_else(|| {
+                self.xdg_config_home
+                    .as_ref()
+                    .map(|path| path.join("cursor"))
+            })
+            .or_else(|| self.home.as_ref().map(|path| path.join(".cursor")))
+            .ok_or("Cannot locate the running Cursor configuration directory.")?;
+        if !path.is_absolute() {
+            return Err("The running Cursor configuration directory is not absolute.".into());
+        }
+        Ok(path)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn usage_process_paths(process: TitleProcess) -> Result<UsageProcessPaths, String> {
+    let bytes = process_environment(process.pid)?;
+    let mut paths =
+        UsageProcessPaths::from_entries(&bytes.split(|byte| *byte == 0).collect::<Vec<_>>());
+    let mut args = Vec::new();
+    fs::File::open(format!("/proc/{}/cmdline", process.pid))
+        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut args))
+        .map_err(|_| "Cannot read the running CLI arguments.")?;
+    if args.len() as u64 > LIMIT {
+        return Err("CLI arguments exceed 1 MiB.".into());
+    }
+    let executable = fs::read_link(format!("/proc/{}/exe", process.pid))
+        .map_err(|_| "Cannot read the running CLI executable.")?;
+    let argv = args.split(|byte| *byte == 0).collect::<Vec<_>>();
+    paths.has_auth_argument_override =
+        usage_auth_argument_override(process.cli, cli_arguments(process.cli, &executable, &argv)?);
+    paths.is_legacy_kimi_cli = is_legacy_kimi_python(&executable, &argv);
+    Ok(paths)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn usage_process_paths(process: TitleProcess) -> Result<UsageProcessPaths, String> {
+    let bytes = macos_process::process_args(process.pid)
+        .ok_or("Cannot read the running CLI environment.")?;
+    let parsed = parse_process_args(&bytes).ok_or("Cannot parse the running CLI environment.")?;
+    let executable = macos_process::process_path(process.pid)
+        .ok_or("Cannot read the running CLI executable.")?;
+    let mut paths = UsageProcessPaths::from_entries(&parsed.environment);
+    paths.has_auth_argument_override = usage_auth_argument_override(
+        process.cli,
+        cli_arguments(process.cli, &executable, &parsed.argv)?,
+    );
+    paths.is_legacy_kimi_cli = is_legacy_kimi_python(&executable, &parsed.argv);
+    Ok(paths)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn is_legacy_kimi_python(executable: &Path, argv: &[&[u8]]) -> bool {
+    executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(python_runtime)
+        && identify_python(argv) == Some(TitleCli::Kimi)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn usage_auth_argument_override(cli: TitleCli, arguments: &[&[u8]]) -> bool {
+    let arguments = arguments
+        .iter()
+        .copied()
+        .take_while(|argument| *argument != b"--")
+        .collect::<Vec<_>>();
+    arguments.iter().enumerate().any(|(index, argument)| {
+        let flag = argument
+            .split(|byte| *byte == b'=')
+            .next()
+            .unwrap_or_default();
+        match cli {
+            TitleCli::Codex => {
+                if matches!(flag, b"--profile" | b"-p" | b"--oss" | b"--local-provider")
+                    || (argument.starts_with(b"-p") && argument.len() > 2)
+                {
+                    return true;
+                }
+                let config = if matches!(flag, b"--config" | b"-c") {
+                    argument
+                        .strip_prefix(b"--config=")
+                        .or_else(|| argument.strip_prefix(b"-c="))
+                        .or_else(|| arguments.get(index + 1).copied())
+                } else {
+                    argument.strip_prefix(b"-c")
+                };
+                config.is_some_and(|config| {
+                    let key = config
+                        .split(|byte| *byte == b'=')
+                        .next()
+                        .unwrap_or_default()
+                        .trim_ascii();
+                    matches!(
+                        key,
+                        b"cli_auth_credentials_store"
+                            | b"model_provider"
+                            | b"chatgpt_base_url"
+                            | b"forced_login_method"
+                            | b"forced_chatgpt_workspace_id"
+                            | b"experimental_bearer_token"
+                    ) || key.starts_with(b"model_providers.")
+                })
+            }
+            TitleCli::Claude => matches!(
+                flag,
+                b"--settings" | b"--setting-sources" | b"--api-key" | b"--auth-token"
+            ),
+            TitleCli::Cursor => matches!(
+                flag,
+                b"--api-key" | b"--auth-token" | b"--endpoint" | b"-e" | b"--team-id"
+            ),
+            TitleCli::Kimi => matches!(flag, b"--model" | b"-m"),
+            _ => false,
+        }
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn usage_process_paths(_process: TitleProcess) -> Result<UsageProcessPaths, String> {
+    Err("Native account usage is currently available on Linux and macOS.".into())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -1221,6 +1502,145 @@ pub async fn enable_cli_titles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_auth_overrides_do_not_read_an_unrelated_saved_login() {
+        for (cli, arguments) in [
+            (
+                TitleCli::Cursor,
+                vec![b"--auth-token=other-account".as_slice()],
+            ),
+            (
+                TitleCli::Cursor,
+                vec![b"-e".as_slice(), b"https://custom.invalid"],
+            ),
+            (TitleCli::Claude, vec![b"--settings=custom.json".as_slice()]),
+            (TitleCli::Codex, vec![b"-pteam".as_slice()]),
+            (TitleCli::Codex, vec![b"--oss".as_slice()]),
+            (
+                TitleCli::Codex,
+                vec![b"-c".as_slice(), b"model_provider = 'local'"],
+            ),
+            (
+                TitleCli::Codex,
+                vec![b"--config=cli_auth_credentials_store='ephemeral'".as_slice()],
+            ),
+            (
+                TitleCli::Codex,
+                vec![b"-cmodel_providers.openai.base_url='https://custom.invalid'".as_slice()],
+            ),
+            (TitleCli::Kimi, vec![b"--model=other-provider".as_slice()]),
+            (TitleCli::Kimi, vec![b"-m".as_slice(), b"other-model"]),
+        ] {
+            assert!(usage_auth_argument_override(cli, &arguments));
+        }
+        assert!(!usage_auth_argument_override(
+            TitleCli::Codex,
+            &[
+                b"-c",
+                b"model_reasoning_effort='high'",
+                b"--model",
+                b"gpt-5"
+            ],
+        ));
+        assert!(!usage_auth_argument_override(
+            TitleCli::Claude,
+            &[b"--model", b"opus", b"--", b"--settings=prompt-text"],
+        ));
+        let paths = UsageProcessPaths::from_entries(&[
+            b"HOME=/tmp/usage-fixture",
+            b"CURSOR_AUTH_TOKEN=other-account",
+        ]);
+        assert!(paths.has_cursor_api_key);
+        let kimi = UsageProcessPaths::from_entries(&[
+            b"HOME=/process-home",
+            b"KIMI_CODE_HOME=/process-kimi",
+            b"KIMI_CODE_BASE_URL=https://api.kimi.ai/coding/v1",
+            b"KIMI_CODE_OAUTH_HOST=https://auth.kimi.ai",
+            b"KIMI_MODEL_PROVIDER=other",
+            b"KIMI_MODEL_NAME=temporary-model",
+        ]);
+        assert_eq!(
+            kimi.directory_for(TitleCli::Kimi).unwrap(),
+            PathBuf::from("/process-kimi")
+        );
+        assert_eq!(
+            kimi.kimi_code_base_url.as_deref(),
+            Some("https://api.kimi.ai/coding/v1")
+        );
+        assert!(kimi.has_kimi_model_name_override);
+    }
+
+    #[test]
+    fn kimi_process_auth_names_are_not_overrides_and_only_model_name_selects_a_provider() {
+        let ordinary = UsageProcessPaths::from_entries(&[
+            b"HOME=/process-home",
+            b"KIMI_API_KEY=legacy-api-key",
+            b"KIMI_BASE_URL=https://legacy.invalid/v1",
+            b"KIMI_MODEL_API_KEY=temporary-api-key",
+            b"KIMI_MODEL_THINKING_EFFORT=max",
+        ]);
+        assert!(!ordinary.has_kimi_model_name_override);
+
+        let temporary_model = UsageProcessPaths::from_entries(&[
+            b"HOME=/process-home",
+            b"KIMI_MODEL_NAME=temporary-model",
+            b"KIMI_MODEL_API_KEY=temporary-api-key",
+            b"KIMI_MODEL_BASE_URL=https://temporary.invalid/v1",
+        ]);
+        assert!(temporary_model.has_kimi_model_name_override);
+    }
+
+    #[test]
+    fn legacy_python_kimi_is_distinguished_from_native_kimi() {
+        assert!(is_legacy_kimi_python(
+            Path::new("/usr/bin/python3"),
+            &[b"python3", b"-m", b"kimi_cli"]
+        ));
+        assert!(is_legacy_kimi_python(
+            Path::new("/usr/bin/python3.12"),
+            &[b"python3.12", b"-m", b"kimi_code"]
+        ));
+        assert!(!is_legacy_kimi_python(
+            Path::new("/usr/local/bin/kimi"),
+            &[b"kimi"]
+        ));
+    }
+
+    #[test]
+    fn usage_credentials_follow_only_the_running_process_directories() {
+        let paths = UsageProcessPaths::from_entries(&[
+            b"HOME=/process-home",
+            b"CODEX_HOME=/process-codex",
+            b"CLAUDE_CONFIG_DIR=/process-claude",
+            b"CLAUDE_SECURESTORAGE_CONFIG_DIR=",
+            b"XDG_CONFIG_HOME=/process-xdg",
+        ]);
+        assert_eq!(
+            paths.directory_for(TitleCli::Codex).unwrap(),
+            PathBuf::from("/process-codex")
+        );
+        assert_eq!(
+            paths.directory_for(TitleCli::Claude).unwrap(),
+            PathBuf::from("/process-claude")
+        );
+        assert!(paths.claude_secure_storage_config_dir_set);
+        assert_eq!(paths.claude_secure_storage_config_dir, None);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            paths.directory_for(TitleCli::Cursor).unwrap(),
+            PathBuf::from("/process-home/.cursor")
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            paths.directory_for(TitleCli::Cursor).unwrap(),
+            PathBuf::from("/process-xdg/cursor")
+        );
+        assert_eq!(
+            paths.cursor_cli_config_directory().unwrap(),
+            PathBuf::from("/process-xdg/cursor")
+        );
+    }
 
     #[test]
     fn fixture_cli_process() {

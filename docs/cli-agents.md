@@ -53,7 +53,7 @@ Settings for its default user configuration; Lomi does not guess the active file
 | [Freebuff CLI](https://github.com/CodebuffAI/freebuff/blob/main/sdk/src/agents/load-mcp-config.ts)              | `freebuff`                 | `~/.agents/mcp.json`, separate from Freebuff's profile directory                                                      |
 | [Trae Agent](https://github.com/bytedance/trae-agent/blob/main/trae_agent/utils/config.py)                      | `trae-cli`                 | Manual project/selected `trae_config.yaml`; no shared user registry                                                   |
 | [SWE-agent](https://github.com/SWE-agent/SWE-agent/blob/main/docs/config/config.md)                             | `sweagent`                 | No documented native MCP client                                                                                       |
-| Antigravity CLI                                                                                                 | `agy`                      | `~/.gemini/config/mcp_config.json`                                                                                    |
+| [Antigravity CLI](https://antigravity.google/docs/mcp/)                                                         | `agy`                      | `~/.gemini/config/mcp_config.json`                                                                                    |
 
 Supported environment overrides include `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `COPILOT_HOME`, `XDG_CONFIG_HOME` (OpenCode, Kilo, Amp and Goose), `OPENCODE_CONFIG`,
@@ -62,6 +62,15 @@ Supported environment overrides include `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `INTERPRETER_HOME`, `GROK_HOME`, `JUNIE_HOME` and `DEEPAGENTS_HOME`.
 `GEMINI_CLI_HOME` is the parent of `.gemini`. `GOOSE_PATH_ROOT` contains the
 `config/config.yaml` path. Relative overrides are rejected.
+
+Antigravity CLI's current MCP documentation retains the global
+`~/.gemini/config/mcp_config.json` path and also supports workspace-local
+`.agents/mcp_config.json`. Lomi's automatic setup registers the global server.
+A blank Antigravity MCP file is treated as uninitialized configuration:
+inspection leaves it untouched, and explicit installation initializes the
+`mcpServers` object while backing up the exact original file. Nonblank invalid
+JSON still blocks automatic setup. Remote Antigravity servers use `serverUrl`;
+Lomi registers a local `command` and `args` entry.
 
 Cline's documentation names two layouts. Without `CLINE_DATA_DIR`, Lomi only
 writes when exactly one documented file already exists; otherwise initialize MCP
@@ -111,9 +120,76 @@ needs a separately installed MCP extension. Aider and official SWE-agent remain
 usable as terminal programs, but cannot be given a native MCP configuration that
 their current contracts do not provide.
 
+## Account usage in the titlebar
+
+When a recognized agent runs in a local Lomi terminal, a compact usage control
+appears beside the account/settings control. It includes agents in background
+tabs and workspaces. The percentage means **remaining account quota**, using the
+most restrictive reported window. Click or right-click it to see each agent's
+windows, reset times, last successful update and availability. Keyboard users can
+open it with Enter or Arrow Down and dismiss it with Escape.
+
+Lomi checks usage every 15 seconds while agents are running, and when the window
+regains focus or the details menu opens. Refresh requests share an in-flight
+read and native cache for the same credentials. Provider throttling delays further
+requests, including manual refreshes. A transient service error retains the last
+successful values with an explicit stale indication; signing out or changing credentials
+does not carry another account's values forward.
+
+Account quota and a conversation's context window are different. Lomi does not
+estimate subscription quota from tokens, prompts, transcripts or terminal output.
+All agents in the catalog can appear in this control. Numeric quota requires a
+provider-specific reader and a compatible existing login. Provider-dependent
+clients such as OpenCode, Aider and Goose do not have one universal account limit;
+the details show an unavailable status when Lomi has no verified account reader.
+This describes Lomi's current coverage, rather than assuming the provider has no
+usage API.
+
+| Reader      | Existing login                                  | Reported quota                                                               |
+| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| Codex       | ChatGPT account in the running CLI's Codex home | Primary and secondary account windows, including additional reported buckets |
+| Claude Code | Claude account OAuth with profile access        | Five-hour and supported weekly subscription/model windows                    |
+| Cursor CLI  | The CLI's existing OAuth credential store       | Included plan usage for the current billing period                           |
+| Kimi Code   | Existing Kimi Code OAuth credentials            | Five-hour, weekly and monthly windows reported by the account                |
+
+These readers follow [Codex's backend client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs),
+Claude's account usage response, the installed Cursor CLI's DashboardService
+`GetCurrentPeriodUsage` contract and [Kimi Code's managed usage reader](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts).
+API-key and custom-provider accounts are not assumed to share a saved OAuth
+subscription. Login expiry is reported without modifying the CLI's authentication.
+
+The Kimi reader uses the current native Kimi Code client's selected managed
+provider, regional endpoint and file credentials in `KIMI_CODE_HOME` (by default
+`~/.kimi-code`). The legacy Python client uses a separate store and reports
+unavailable; Lomi does not substitute a different client's saved account.
+
+Gemini CLI remains recognized, with usage available in the CLI itself. Lomi does
+not reuse its OAuth credentials to call Code Assist: Google's [Gemini CLI terms
+notice](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md)
+prohibits that direct access from third-party software.
+
+Usage requests and credential reads run natively. Credentials never enter the
+webview, and the feature does not modify CLI configuration, refresh login tokens,
+restart terminals or send model requests. Only the trusted main app can inspect
+usage for a verified CLI process in one of its own terminal sessions. Custom
+providers, API-key authentication and expired logins may not expose plan quota.
+
+Some providers expose usage through private client endpoints rather than stable
+public APIs. Their response formats and availability can change independently of
+Lomi; errors appear in the details without inventing a percentage. Native tests
+use isolated processes and credentials; UI tests use provider response fixtures.
+
+On macOS, `node --experimental-strip-types tests/native/run-agent-usage-smoke.mjs`
+exercises the native command, process ownership, titlebar menu, terminal continuity and settings-window
+denial in an isolated app profile. Its optional `--live-all` probe reads the
+existing Codex, Claude, Cursor and current Kimi Code accounts using inert process
+fixtures. It reports availability without recording credentials, launching agent
+sessions or sending model requests.
+
 ## Qualification
 
-The adapters follow official documentation/source reviewed on 2026-09-24.
+The title, notification and MCP adapters follow official documentation/source
+reviewed on 2026-09-24. The account usage readers were reviewed on 2026-09-29.
 Automated tests cover registration formats, preservation/conflicts, process
 identification, environment paths and the opt-in Settings/status-bar workflow.
 This is not an end-to-end qualification of installed/authenticated versions of

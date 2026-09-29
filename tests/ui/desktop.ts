@@ -131,6 +131,10 @@ export async function mockDesktop(
         dismissedCliIntegrations: new Map<string, boolean>(),
         cliIntegrationError: "",
         cliIntegrationSaveDelay: 0,
+        cliUsageEntries: [] as any[],
+        cliUsageCalls: [] as { targets: any[]; force: boolean }[],
+        cliUsageDelay: 0,
+        cliUsageError: "",
         mcpClients: [] as any[],
         mcpInstallErrors: {} as Record<string, string>,
         agentNotificationSetup: {
@@ -1165,6 +1169,30 @@ export async function mockDesktop(
           }
           if (command === "inspect_cli_titles")
             return desktop.__nativeTest.cliTitleSetup;
+          if (command === "inspect_cli_usage") {
+            const mock = desktop.__nativeTest;
+            mock.cliUsageCalls.push({
+              targets: structuredClone(args.targets),
+              force: args.force,
+            });
+            if (mock.cliUsageDelay)
+              await new Promise((resolve) =>
+                setTimeout(resolve, mock.cliUsageDelay),
+              );
+            if (mock.cliUsageError) throw new Error(mock.cliUsageError);
+            return {
+              entries: mock.cliUsageEntries
+                .filter((entry: any) =>
+                  args.targets.some(
+                    (target: any) =>
+                      target.id === entry.id &&
+                      target.process.cli === entry.process.cli &&
+                      target.process.pid === entry.process.pid,
+                  ),
+                )
+                .map((entry: any) => structuredClone(entry)),
+            };
+          }
           if (command === "enable_cli_titles") {
             await new Promise((resolve) =>
               setTimeout(resolve, desktop.__nativeTest.cliTitleSaveDelay),

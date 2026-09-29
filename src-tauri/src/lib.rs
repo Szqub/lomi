@@ -20,6 +20,7 @@ mod cli_integrations;
 mod cli_mcp;
 mod cli_notifications;
 mod cli_titles;
+mod cli_usage;
 #[cfg(all(feature = "mcp-probe", target_os = "macos"))]
 #[path = "../../tests/native/mcp-browser-support.rs"]
 mod mcp_browser_probe;
@@ -157,6 +158,7 @@ pub fn run() {
         .manage(browser::Browsers::default())
         .manage(terminal::Terminals::default())
         .manage(cli_titles::CliTitleConfig::default())
+        .manage(cli_usage::CliUsage::default())
         .manage(cli_integrations::CliIntegrations::default())
         .manage(files::SessionFile::default())
         .manage(files::search::ProjectSearch::default())
@@ -452,6 +454,7 @@ pub fn run() {
                 terminal::clipboard::paste_terminal_clipboard,
                 terminal::terminal_contexts,
                 cli_titles::inspect_cli_titles,
+                cli_usage::inspect_cli_usage,
                 agent_notifications::request_agent_notification_setup,
                 agent_notifications::inspect_agent_notifications,
                 agent_notifications::enable_agent_notifications,

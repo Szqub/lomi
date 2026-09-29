@@ -151,6 +151,13 @@ or acronym.
   agy's supplied JSON state, reading current conversation names from its local
   annotation files without starting the GUI or reading transcripts. Never
   configure a CLI silently or restart it automatically.
+- `src/AgentUsage.tsx` observes the existing terminal-context stream and shows
+  remaining account quota beside the titlebar account/settings control. Native
+  `cli_usage.rs` verifies owned CLI processes, reads their existing credential
+  stores and shares bounded, provider-specific requests with account-scoped
+  caching. Keep credentials out of webviews; never refresh CLI logins or infer
+  subscription quota from transcript tokens. Unsupported agents remain visible
+  with an explicit availability status; see `docs/cli-agents.md`.
 - `src-tauri/src/shell.rs` discovers shell environments and quotes dropped paths;
   `src-tauri/shell/` contains integration hooks. Do not edit user shell profiles.
 - `src-tauri/src/files.rs` handles file access and session saving;

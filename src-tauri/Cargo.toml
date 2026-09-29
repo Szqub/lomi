@@ -50,6 +50,8 @@ portable-pty = "0.9"
 dunce = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+futures-util = "=0.3.34"
 quick-xml = "0.41"
 percent-encoding = "2"
 sha2 = "0.10"

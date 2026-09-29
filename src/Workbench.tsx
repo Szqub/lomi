@@ -119,6 +119,7 @@ import {
 import type { TerminalContext } from "./terminal-runtime";
 import { dropPaths, terminalAtNativePosition } from "./file-drag";
 import { IconButton, Modal, WindowControls } from "./ui";
+import { useAgentUsage } from "./AgentUsage";
 import Explorer from "./Explorer";
 import ProjectSwitcher from "./ProjectSwitcher";
 import SourceControl from "./SourceControl";
@@ -619,6 +620,7 @@ export default function Workbench() {
     setError,
     setPaneNotice,
   );
+  const agentUsage = useAgentUsage();
   const agentNotifications = useAgentNotifications(
     session,
     terminalPreferences.ready && terminalPreferences.value.agentNotifications,
@@ -914,6 +916,7 @@ export default function Workbench() {
         .then((contexts) => {
           const directories = observeTerminalContexts(contexts);
           void cliIntegrations.observe(contexts);
+          agentUsage.observe(contexts);
           setSession((state) =>
             state ? updateDirectories(state, directories) : state,
           );
@@ -921,7 +924,7 @@ export default function Workbench() {
         .catch(() => {});
     }, 1000);
     return () => clearInterval(timer);
-  }, [info, cliIntegrations.observe]);
+  }, [info, cliIntegrations.observe, agentUsage.observe]);
   useEffect(() => {
     if (!info) return;
     let current = true;
@@ -1692,6 +1695,7 @@ export default function Workbench() {
             <header className="titlebar" data-tauri-drag-region>
               {projectPicker}
               <div className="titlebar-space" data-tauri-drag-region />
+              {agentUsage.bar}
               <TitlebarAccount
                 key="account"
                 onError={setError}
@@ -2248,6 +2252,7 @@ export default function Workbench() {
               }
             />
             <div className="titlebar-space" data-tauri-drag-region />
+            {agentUsage.bar}
             <TitlebarAccount
               key="account"
               onError={setError}
