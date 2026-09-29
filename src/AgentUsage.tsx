@@ -7,8 +7,9 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { CircleAlert, Gauge, RefreshCw } from "lucide-react";
+import { CircleAlert, RefreshCw } from "lucide-react";
 import { api, native } from "./api";
+import { CliAgentIcon } from "./CliAgentIcon";
 import {
   agentUsageTargetBatches,
   agentUsageSignature,
@@ -20,6 +21,7 @@ import {
   validRemainingPercent,
 } from "./agent-usage";
 import { cliNames } from "./cli-agents";
+import type { CliAgent } from "./cli-agents";
 import type { TerminalContext } from "./terminal-runtime";
 import "./agent-usage.css";
 
@@ -387,36 +389,61 @@ function AgentUsageBar({
 
   const entryFor = (target: AgentUsageTarget) =>
     entries.find((entry) => sameProcess(target, entry)) ?? null;
-  const worst = worstRemainingWindow(entries);
+  const providers = (Object.keys(cliNames) as CliAgent[]).flatMap((cli) => {
+    const providerTargets = targets.filter(
+      (target) => target.process.cli === cli,
+    );
+    if (providerTargets.length === 0) return [];
+
+    const providerEntries = providerTargets.map((target) => entryFor(target));
+    const matchingEntries = providerEntries.filter(
+      (entry): entry is AgentUsageEntry => entry !== null,
+    );
+    const worst = worstRemainingWindow(matchingEntries);
+    const remainingPercent = worst?.window.remainingPercent ?? null;
+    const stale = providerEntries.some((entry) =>
+      isStale(entry, requestFailed, now),
+    );
+    const statuses = [
+      ...new Set(
+        providerEntries.map((entry) => entryStatus(entry, requestFailed, now)),
+      ),
+    ];
+    const reasons = [
+      ...new Set(
+        providerEntries
+          .map(
+            (entry) =>
+              safeMessage(entry?.message ?? null) ?? entryDescription(entry),
+          )
+          .filter((reason): reason is string => Boolean(reason)),
+      ),
+    ];
+    const otherStatuses = statuses.filter((status) => status !== "Current");
+    const status =
+      remainingPercent === null
+        ? statuses.join(", ")
+        : `${formatPercent(remainingPercent)} remaining${stale ? ", stale data" : ""}${otherStatuses.length ? `; ${otherStatuses.join(", ")}` : ""}`;
+    const tone = worst ? windowTone(worst.window) : "unknown";
+    const summary = `${cliNames[cli]} · ${status}${remainingPercent === null && reasons.length ? ` · ${reasons.join("; ")}` : ""}`;
+
+    return [
+      {
+        cli,
+        remainingPercent,
+        stale,
+        status,
+        tone,
+        summary,
+        title: `${summary} · ${providerTargets.length} active session${providerTargets.length === 1 ? "" : "s"}`,
+      },
+    ];
+  });
   const count = targets.length;
-  const worstEntryStale = worst
-    ? isStale(worst.entry, requestFailed, now)
-    : false;
-  const displayPercent = worst
-    ? formatPercent(worst.window.remainingPercent!)
-    : "—";
-  const unavailableEntry = targets
-    .map(entryFor)
-    .find((entry) => entry && entry.status !== "ready");
-  const unavailableReason = requestFailed
-    ? "The latest usage check failed."
-    : checking
-      ? "Usage is being checked."
-      : unavailableEntry?.status === "unauthenticated"
-        ? "The CLI account is not connected."
-        : unavailableEntry?.status === "unsupported"
-          ? "Usage is unavailable in the current CLI mode."
-          : unavailableEntry?.status === "rate-limited"
-            ? "The account is limiting usage checks."
-            : unavailableEntry?.status === "error"
-              ? "The latest usage check failed."
-              : "No quota data is available yet.";
-  const title = worst
-    ? `${cliNames[worst.entry.process.cli]} · ${worst.window.label}: ${displayPercent} remaining${worstEntryStale ? " · stale data" : ""}. Open account usage details.`
-    : `${unavailableReason} Open account usage details for ${count} active CLI agent${count === 1 ? "" : "s"}.`;
-  const label = worst
-    ? `CLI account usage, ${displayPercent} remaining${count > 1 ? ` across ${count} agents` : ""}${worstEntryStale ? ", stale data" : ""}`
-    : `CLI account usage unavailable${count > 1 ? `, ${count} agents` : ""}: ${unavailableReason}`;
+  const title = `${providers.map(({ title }) => title).join("; ")}. Open account usage details.`;
+  const label = `CLI account usage. ${providers
+    .map(({ summary }) => summary)
+    .join("; ")}. Activate to open account usage details.`;
 
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
@@ -482,19 +509,12 @@ function AgentUsageBar({
 
   if (!count) return null;
 
-  const tone = worst
-    ? windowTone(worst.window)
-    : requestFailed
-      ? "stale"
-      : "unknown";
-
   return (
     <>
       <button
         ref={trigger}
         type="button"
         className="agent-usage-trigger"
-        data-tone={tone}
         title={title}
         aria-label={label}
         aria-haspopup="menu"
@@ -505,6 +525,20 @@ function AgentUsageBar({
           show();
         }}
         onKeyDown={(event) => {
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            const list = event.currentTarget.querySelector<HTMLElement>(
+              ".agent-usage-trigger-list",
+            );
+            if (list && list.scrollWidth > list.clientWidth) {
+              event.preventDefault();
+              event.stopPropagation();
+              list.scrollBy({
+                left: event.key === "ArrowRight" ? 48 : -48,
+                behavior: "auto",
+              });
+            }
+            return;
+          }
           if (
             event.key === "ArrowDown" ||
             event.key === "ContextMenu" ||
@@ -516,16 +550,26 @@ function AgentUsageBar({
           }
         }}
       >
-        <Gauge size={13} strokeWidth={1.8} aria-hidden="true" />
-        <span className="agent-usage-trigger-value">{displayPercent}</span>
-        {count > 1 && (
-          <span className="agent-usage-count" aria-hidden="true">
-            {count}
-          </span>
-        )}
-        {worstEntryStale && (
-          <span className="agent-usage-stale-dot" aria-hidden="true" />
-        )}
+        <span className="agent-usage-trigger-list" aria-hidden="true">
+          {providers.map((provider) => (
+            <span
+              key={provider.cli}
+              className="agent-usage-summary"
+              data-cli={provider.cli}
+              data-tone={provider.tone}
+              data-stale={provider.stale || undefined}
+              title={provider.title}
+            >
+              <CliAgentIcon cli={provider.cli} />
+              <span className="agent-usage-trigger-value">
+                {provider.remainingPercent === null
+                  ? "—"
+                  : formatPercent(provider.remainingPercent)}
+              </span>
+              {provider.stale && <span className="agent-usage-stale-dot" />}
+            </span>
+          ))}
+        </span>
       </button>
       {open &&
         createPortal(

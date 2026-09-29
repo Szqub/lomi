@@ -152,8 +152,10 @@ or acronym.
   annotation files without starting the GUI or reading transcripts. Never
   configure a CLI silently or restart it automatically.
 - `src/AgentUsage.tsx` observes the existing terminal-context stream and shows
-  remaining account quota beside the titlebar account/settings control. Native
-  `cli_usage.rs` verifies owned CLI processes, reads existing credential stores
+  each active CLI provider's icon and remaining account quota beside the
+  titlebar account/settings control. Show one summary per provider using its
+  tightest remaining quota across sessions; the menu keeps session details.
+  Native `cli_usage.rs` verifies owned CLI processes, reads existing credential stores
   or verified read-only CLI reports, and shares bounded requests with scoped
   caching. Keep credentials out of webviews; never initiate CLI login or infer
   subscription quota from transcript tokens. Antigravity uses its version-gated
