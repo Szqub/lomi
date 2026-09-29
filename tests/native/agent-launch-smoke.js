@@ -65,8 +65,9 @@
       return agentTabs.length === 4;
     });
     const runtimes = agentTabs.map((tab) => runningTerminal(tab.layout.id));
-    if (runtimes.filter((runtime) => !runtime.opened).length !== 3)
-      throw Error("Expected three unattached background terminal runtimes.");
+    await wait(
+      () => runtimes.filter((runtime) => !runtime.opened).length === 3,
+    );
     await wait(() =>
       runtimes.every(
         (runtime) =>

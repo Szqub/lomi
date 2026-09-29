@@ -32,7 +32,9 @@ pub fn result(
                         let denied=false;
                         try{{await invoke('installed_agent_clis',{{profileId:'local:zsh',cwd:{}}});}}catch{{denied=true;}}
                         if(!denied)throw Error('Settings allowed terminal agent discovery');
-                        await invoke('plugin_smoke_result',{{stage:'passed',data:{{...{},settingsDenied:denied}}}});
+                        const clients=await invoke('inspect_mcp_clients');
+                        if(clients.length!==1||clients[0].cli!=='cursor')throw Error('MCP settings did not list only the installed Cursor fixture');
+                        await invoke('plugin_smoke_result',{{stage:'passed',data:{{...{},settingsDenied:denied,mcpClients:clients.map(client=>client.cli)}}}});
                     }}catch(error){{
                         await invoke('plugin_smoke_result',{{stage:'failed',data:{{error:String(error)}}}});
                     }}

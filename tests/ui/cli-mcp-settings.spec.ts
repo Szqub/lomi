@@ -460,3 +460,70 @@ test("shows the selected catalog and installs only pending clients", async ({
     page.getByRole("button", { name: "Set up all eligible clients (0)" }),
   ).toBeDisabled();
 });
+
+test("refresh removes unavailable clients from selection and bulk setup", async ({
+  page,
+}, testInfo) => {
+  await setup(page);
+  await chooseClient(page, "Codex");
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.mcpClients = mock.mcpClients.filter(
+      (client: any) => client.cli !== "codex" && client.cli !== "claude",
+    );
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Choose a client", exact: true }),
+  ).toBeVisible();
+  const agents = clientList(page);
+  await expect(agents.getByRole("button")).toHaveCount(2);
+  await expect(clientButton(page, "Codex")).toHaveCount(0);
+  await expect(clientButton(page, "Claude Code")).toHaveCount(0);
+  await page
+    .locator("details.agent-control-details > summary")
+    .filter({ hasText: "All client configurations" })
+    .click();
+  await expect(page.locator(".agent-setup-client-list > li")).toHaveCount(2);
+  await page
+    .getByRole("button", { name: "Set up all eligible clients (1)" })
+    .click();
+  expect(
+    (await calls(page, "install_mcp_client")).map((call: any) => call.args.cli),
+  ).toEqual(["agy"]);
+
+  await page.evaluate(() => {
+    (window as any).__nativeTest.mcpClients = [];
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(agents).toHaveCount(0);
+  await expect(
+    page.getByText("No supported CLI clients were found in your shell.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Set up all eligible clients/ }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("no-installed-clients.png"),
+  });
+});
+
+test("an empty installation list can be refreshed after installing a CLI", async ({
+  page,
+}) => {
+  await setup(page, []);
+  await expect(
+    page.getByText("No supported CLI clients were found in your shell.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await page.evaluate((client) => {
+    (window as any).__nativeTest.mcpClients = [client];
+  }, clients[0]);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(clientList(page).getByRole("button")).toHaveCount(1);
+  await expect(clientButton(page, "Codex")).toBeVisible();
+  expect(await calls(page, "install_mcp_client")).toHaveLength(0);
+});

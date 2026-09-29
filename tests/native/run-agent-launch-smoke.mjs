@@ -13,13 +13,18 @@ const appData = join(homedir(), "Library/Application Support", identifier);
 const projectPath = join(directory, "project");
 const shellHome = join(directory, "shell-home");
 const bin = join(directory, "fixture bin");
+const startupDelay = Number(
+  process.env.LOMI_AGENT_LAUNCH_SMOKE_STARTUP_DELAY_SECONDS ?? 0,
+);
+if (!Number.isFinite(startupDelay) || startupDelay < 0 || startupDelay > 10)
+  throw Error("Choose a fixture shell startup delay between 0 and 10 seconds.");
 for (const path of [appData, projectPath, shellHome, bin])
   await mkdir(path, { recursive: true });
 const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
 for (const file of [".zshrc", ".zprofile"])
   await writeFile(
     join(shellHome, file),
-    `export PATH=${quote(bin)}:/usr/bin:/bin\nexport HISTFILE=/dev/null\n`,
+    `${file === ".zshrc" && startupDelay ? `/bin/sleep ${startupDelay}\n` : ""}export PATH=${quote(bin)}:/usr/bin:/bin\nexport HISTFILE=/dev/null\n`,
   );
 const executable = join(bin, "cursor-agent");
 await writeFile(

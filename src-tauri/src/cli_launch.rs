@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     io::Read,
     path::{Path, PathBuf},
@@ -16,7 +16,7 @@ use std::{
 };
 use tauri::{State, Window};
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROBE_OUTPUT_LIMIT: u64 = 32 * 1024;
 const PROBE_MARKER: &[u8] = b"LOMI_AGENT_CLI_PROBE:";
 
@@ -179,6 +179,22 @@ pub(crate) fn resolve_cli(
                 cli.name()
             )
         })
+}
+
+pub(crate) fn installed_local_clis(shells: &Shells) -> Result<HashSet<TitleCli>, String> {
+    let profile = shells
+        .profiles
+        .iter()
+        .find(|profile| {
+            profile.distro.is_none()
+                && matches!(profile.kind.as_str(), "bash" | "zsh" | "fish" | "sh")
+        })
+        .ok_or("No supported local shell is available to detect installed CLI clients.")?;
+    Ok(
+        resolve_all(profile, &profile.home, &shells.integration, None)?
+            .into_keys()
+            .collect(),
+    )
 }
 
 fn spec(cli: TitleCli) -> Option<CliSpec> {
@@ -501,6 +517,76 @@ mod tests {
     }
 
     #[test]
+    fn settings_detects_installed_clients_without_launching_and_refreshes_after_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("agent home");
+        let bin = root.path().join("agent bin");
+        fs::create_dir_all(home.join(".gemini")).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(home.join(".gemini/settings.json"), "{}").unwrap();
+        let launched = root.path().join("launched");
+        for alias in ["codex", "kilocode", "claude"] {
+            let executable = bin.join(alias);
+            fs::write(
+                &executable,
+                format!(
+                    "#!/bin/sh\nprintf launched > {}\n",
+                    shell::quote(launched.to_str().unwrap(), "bash").unwrap()
+                ),
+            )
+            .unwrap();
+            let mode = if alias == "claude" { 0o644 } else { 0o755 };
+            fs::set_permissions(&executable, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::create_dir(bin.join("gemini")).unwrap();
+        std::os::unix::fs::symlink(bin.join("missing"), bin.join("cursor-agent")).unwrap();
+        let shell_rc = format!(
+            "export PATH={}\nclaude() {{ :; }}\n",
+            shell::quote(bin.to_str().unwrap(), "bash").unwrap()
+        );
+        fs::write(home.join(".bashrc"), format!("/bin/sleep 5\n{shell_rc}")).unwrap();
+        let mut profile = bash_profile(&home);
+        let wrapper = root.path().join("fixture-bash");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nexport HOME={}\nexec {} \"$@\"\n",
+                shell::quote(home.to_str().unwrap(), "bash").unwrap(),
+                shell::quote(&profile.program, "bash").unwrap()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        profile.program = wrapper.to_string_lossy().into_owned();
+        let mut unsupported = profile.clone();
+        unsupported.kind = "pwsh".into();
+        let mut remote = profile.clone();
+        remote.distro = Some("test-wsl".into());
+        let integration = root.path().join("integration");
+        shell::prepare(&integration).unwrap();
+        let shells = Shells {
+            profiles: vec![unsupported, remote, profile],
+            integration,
+        };
+
+        assert_eq!(
+            installed_local_clis(&shells).unwrap(),
+            HashSet::from([TitleCli::Codex, TitleCli::Kilo])
+        );
+        assert!(!launched.exists());
+        fs::write(home.join(".bashrc"), shell_rc).unwrap();
+        fs::remove_file(bin.join("codex")).unwrap();
+        assert_eq!(
+            installed_local_clis(&shells).unwrap(),
+            HashSet::from([TitleCli::Kilo])
+        );
+        fs::remove_file(bin.join("kilocode")).unwrap();
+        assert!(installed_local_clis(&shells).unwrap().is_empty());
+        assert!(home.join(".gemini/settings.json").is_file());
+        assert!(!launched.exists());
+    }
+
+    #[test]
     fn non_executable_path_is_ignored() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("codex");
@@ -554,7 +640,7 @@ mod tests {
             .stderr(Stdio::null());
         let start = Instant::now();
         let result = run_bounded_probe(command);
-        assert!(start.elapsed() < Duration::from_secs(6));
+        assert!(start.elapsed() < PROBE_TIMEOUT + Duration::from_secs(2));
         assert!(result.is_err());
         if let Ok(pid) = fs::read_to_string(pid_file) {
             let pid: i32 = pid.trim().parse().unwrap();

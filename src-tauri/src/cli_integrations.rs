@@ -1,7 +1,7 @@
 use crate::{
     cli_config, cli_mcp,
     cli_titles::{self, CliTitleConfig, TitleCli, TitleProcess},
-    terminal::Terminals,
+    terminal::{Shells, Terminals},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -258,15 +258,23 @@ fn default_mcp_path(cli: TitleCli) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn inspect_mcp_clients(
+pub async fn inspect_mcp_clients(
     window: Window,
     app: tauri::AppHandle,
     config: State<'_, CliTitleConfig>,
+    shells: State<'_, Shells>,
 ) -> Result<Vec<McpClientStatus>, String> {
     settings(&window)?;
+    let shells = shells.inner().clone();
+    let installed = tauri::async_runtime::spawn_blocking(move || {
+        crate::cli_launch::installed_local_clis(&shells)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     let _guard = config.0.lock().map_err(|error| error.to_string())?;
     Ok(TitleCli::MCP_CLIENTS
         .into_iter()
+        .filter(|cli| installed.contains(cli))
         .map(|cli| {
             if let Some(reason) = cli_mcp::manual_reason(cli) {
                 return McpClientStatus {

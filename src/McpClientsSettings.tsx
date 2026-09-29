@@ -206,7 +206,7 @@ export function McpClientsSettings({
           )}
           {loadError && (
             <SettingsNotice tone="error">
-              Could not read client configurations: {loadError}
+              Could not check installed clients: {loadError}
             </SettingsNotice>
           )}
           {error && <SettingsNotice tone="error">{error}</SettingsNotice>}
@@ -214,13 +214,14 @@ export function McpClientsSettings({
 
           {loading && !clients.length ? (
             <p className="settings-help" role="status">
-              Checking client configurations…
+              Checking installed clients…
             </p>
           ) : !clients.length ? (
             !loadError &&
             native && (
               <p className="settings-empty">
-                No supported client configurations were found.
+                No supported CLI clients were found in your shell. Install a
+                CLI, then refresh.
               </p>
             )
           ) : (
@@ -434,7 +435,7 @@ export function McpClientsSettings({
           </p>
           {loadError && (
             <SettingsNotice tone="error">
-              Could not read client configurations: {loadError}
+              Could not check installed clients: {loadError}
             </SettingsNotice>
           )}
           {error && <SettingsNotice tone="error">{error}</SettingsNotice>}

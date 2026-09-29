@@ -18,8 +18,11 @@ Windows, PowerShell and WSL launch environments are not supported yet.
 
 Settings → Agent control → MCP clients lists Claude, Codex, Gemini, Copilot,
 Cursor, OpenCode, OpenClaw, Hermes, Kilo, Qwen, Kiro, Vibe, Kimi, Grok and
-Antigravity. **Install** registers Lomi in the selected user configuration, and
-**Install for all supported clients** applies only to this list. Local running agents also offer
+Antigravity only when their executables are found in the default supported local
+shell environment. Existing configuration files alone do not count as an
+installation. Refresh the list after installing or removing a CLI.
+**Install** registers Lomi in the selected user configuration, and
+**Install for all supported clients** applies only to installed clients. Local running agents also offer
 applicable integrations in the status bar. Inspection never writes configuration;
 installation requires a click. Client approval and Lomi pairing still apply.
 
