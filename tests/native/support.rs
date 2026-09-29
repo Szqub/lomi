@@ -1,4 +1,6 @@
 use tauri::{Manager, Window};
+#[path = "agent-launch-support.rs"]
+mod agent_launch_smoke;
 #[path = "agent-usage-support.rs"]
 mod agent_usage_smoke;
 #[path = "explorer-clipboard-support.rs"]
@@ -15,6 +17,10 @@ fn entry_script(source: &str, data: &serde_json::Value) -> String {
     source.replace("SMOKE_ENTRY", &serde_json::to_string(data).unwrap())
 }
 pub fn page(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayload<'_>) {
+    if std::env::var_os("LOMI_AGENT_LAUNCH_SMOKE_DIRECTORY").is_some() {
+        agent_launch_smoke::page(webview, payload);
+        return;
+    }
     if std::env::var_os("LOMI_USAGE_SMOKE_DIRECTORY").is_some() {
         agent_usage_smoke::page(webview, payload);
         return;
@@ -73,6 +79,9 @@ pub fn plugin_smoke_result(
 ) -> Result<serde_json::Value, String> {
     if !matches!(window.label(), "main" | "settings") {
         return Err("Unknown test caller.".into());
+    }
+    if std::env::var_os("LOMI_AGENT_LAUNCH_SMOKE_DIRECTORY").is_some() {
+        return agent_launch_smoke::result(&app, &stage, data);
     }
     if std::env::var_os("LOMI_USAGE_SMOKE_DIRECTORY").is_some() {
         return agent_usage_smoke::result(&app, &stage, data);

@@ -316,6 +316,83 @@ pub fn build(
     cwd: &str,
     integration: &Path,
 ) -> Result<(CommandBuilder, String), String> {
+    build_with_startup(profile, cwd, integration, None)
+}
+
+pub fn build_with_cli(
+    profile: &Profile,
+    cwd: &str,
+    integration: &Path,
+    program: &Path,
+    argument: Option<&str>,
+) -> Result<(CommandBuilder, String), String> {
+    if profile.distro.is_some() {
+        return Err("Agent launch is not supported in WSL terminals yet.".into());
+    }
+    if !matches!(profile.kind.as_str(), "bash" | "zsh" | "fish" | "sh") {
+        return Err(format!(
+            "Agent launch is not supported in {} terminals yet.",
+            profile.name
+        ));
+    }
+    let (mut command, cwd) = build_with_command(
+        profile,
+        cwd,
+        integration,
+        cli_startup(profile.kind.as_str())?,
+    )?;
+    if profile.kind == "fish" {
+        command.arg(program);
+        if let Some(argument) = argument {
+            command.arg(argument);
+        }
+    } else {
+        command.arg("lomi-cli-launch");
+        command.arg(program);
+        if let Some(argument) = argument {
+            command.arg(argument);
+        }
+    }
+    Ok((command, cwd))
+}
+
+pub fn build_with_command(
+    profile: &Profile,
+    cwd: &str,
+    integration: &Path,
+    startup: &str,
+) -> Result<(CommandBuilder, String), String> {
+    if profile.distro.is_some() {
+        return Err("This startup command is not supported in WSL terminals.".into());
+    }
+    if !matches!(profile.kind.as_str(), "bash" | "zsh" | "fish" | "sh") {
+        return Err(format!(
+            "This startup command is not supported in {} terminals.",
+            profile.name
+        ));
+    }
+    build_with_startup(profile, cwd, integration, Some(startup))
+}
+
+const POSIX_CLI_STARTUP: &str =
+    "if [ -n \"${2-}\" ]; then exec \"$1\" \"$2\"; else exec \"$1\"; fi";
+const FISH_CLI_STARTUP: &str =
+    "if test -n \"$argv[2]\"\n    exec \"$argv[1]\" \"$argv[2]\"\nelse\n    exec \"$argv[1]\"\nend";
+
+fn cli_startup(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "bash" | "zsh" | "sh" => Ok(POSIX_CLI_STARTUP),
+        "fish" => Ok(FISH_CLI_STARTUP),
+        _ => Err("Agent launch is not supported by this shell.".into()),
+    }
+}
+
+fn build_with_startup(
+    profile: &Profile,
+    cwd: &str,
+    integration: &Path,
+    startup: Option<&str>,
+) -> Result<(CommandBuilder, String), String> {
     let cwd = if let Some(distro) = &profile.distro {
         wsl_path(distro, cwd)?
     } else {
@@ -377,6 +454,9 @@ pub fn build(
     match profile.kind.as_str() {
         "bash" => {
             command.args(["--rcfile", &join("bash.sh"), "-i"]);
+            if let Some(startup) = startup {
+                command.args(["-c", startup]);
+            }
         }
         "zsh" => {
             command.env(
@@ -392,13 +472,16 @@ pub fn build(
                 command.arg("-l");
             }
             command.arg("-i");
+            if let Some(startup) = startup {
+                command.args(["-c", startup]);
+            }
         }
         "fish" => {
-            command.args([
-                "-i",
-                "-C",
-                &format!("source {}", quote(&join("fish.fish"), "fish")?),
-            ]);
+            let integration_script = format!("source {}", quote(&join("fish.fish"), "fish")?);
+            command.args(["-i", "-C", &integration_script]);
+            if let Some(startup) = startup {
+                command.args(["-c", startup]);
+            }
         }
         "pwsh" | "powershell" => {
             // Inline the bundled hook so Restricted execution policy does not block
@@ -411,6 +494,9 @@ pub fn build(
             ]);
         }
         "cmd" => {
+            if startup.is_some() {
+                return Err("Agent launch is not supported in cmd terminals yet.".into());
+            }
             command.args(["/Q", "/D", "/V:OFF"]);
             command.env(
                 "PROMPT",
@@ -419,6 +505,9 @@ pub fn build(
         }
         _ => {
             command.arg("-i");
+            if let Some(startup) = startup {
+                command.args(["-c", startup]);
+            }
         }
     }
     Ok((command, cwd))

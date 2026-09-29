@@ -146,6 +146,7 @@ export class TerminalRuntime {
     readonly paneId: string,
     readonly profile: ShellProfile,
     cwd: string,
+    private readonly cliLaunch?: CliAgent,
   ) {
     this.agentStart = agentStarts.get(paneId);
     agentStarts.delete(paneId);
@@ -659,6 +660,13 @@ export class TerminalRuntime {
     }
   }
 
+  async startInBackground() {
+    // xterm can parse and acknowledge output before attach reuses this startPromise.
+    await this.start();
+    if (this.snapshot.status === "error")
+      throw new Error(this.snapshot.error ?? "Terminal could not start.");
+  }
+
   private start() {
     if (this.startPromise) return this.startPromise;
     this.startPromise = (async () => {
@@ -709,6 +717,7 @@ export class TerminalRuntime {
                   nonce: this.agentStart.nonce,
                 }
               : null,
+            cliLaunch: this.cliLaunch ?? null,
           },
           output,
           exited,
@@ -978,10 +987,11 @@ const runtimes = new Map<string, TerminalRuntime>();
 export function terminalFor(
   pane: Pane,
   profile: ShellProfile,
+  cliLaunch?: CliAgent,
 ): TerminalRuntime {
   let runtime = runtimes.get(pane.id);
   if (!runtime) {
-    runtime = new TerminalRuntime(pane.id, profile, pane.cwd);
+    runtime = new TerminalRuntime(pane.id, profile, pane.cwd, cliLaunch);
     runtimes.set(pane.id, runtime);
   }
   return runtime;

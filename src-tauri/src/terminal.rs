@@ -237,6 +237,8 @@ pub struct StartRequest {
     rows: u16,
     #[serde(default)]
     agent_ticket: Option<AgentTicket>,
+    #[serde(default)]
+    cli_launch: Option<crate::cli_catalog::TitleCli>,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +246,13 @@ pub struct StartRequest {
 struct AgentTicket {
     operation_id: String,
     nonce: String,
+}
+
+fn validate_start_request(request: &StartRequest) -> Result<(), String> {
+    if request.agent_ticket.is_some() && request.cli_launch.is_some() {
+        return Err("Agent control terminals cannot launch a separate CLI.".into());
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -390,6 +399,7 @@ impl Terminals {
         exited: Channel<Exit>,
         #[cfg(unix)] control: Option<Arc<Mutex<TerminalControl>>>,
     ) -> Result<Started, String> {
+        validate_start_request(&request)?;
         if request.id.is_empty() || request.id.len() > 128 {
             return Err("Invalid terminal identifier.".into());
         }
@@ -399,7 +409,19 @@ impl Terminals {
             .find(|profile| profile.id == request.profile_id)
             .cloned()
             .ok_or("The selected shell is no longer installed. Choose another shell.")?;
-        let (command, cwd) = shell::build(&profile, &request.cwd, &shells.integration)?;
+        let (command, cwd) = if let Some(cli) = request.cli_launch {
+            let resolved =
+                crate::cli_launch::resolve_cli(&profile, &request.cwd, &shells.integration, cli)?;
+            shell::build_with_cli(
+                &profile,
+                &request.cwd,
+                &shells.integration,
+                &resolved.program,
+                resolved.argument,
+            )?
+        } else {
+            shell::build(&profile, &request.cwd, &shells.integration)?
+        };
         let pair = native_pty_system()
             .openpty(size(request.cols, request.rows)?)
             .map_err(|error| error.to_string())?;
@@ -933,6 +955,7 @@ pub async fn start_terminal(
     exited: Channel<Exit>,
 ) -> Result<Started, String> {
     main_window(&window)?;
+    validate_start_request(&request)?;
     let state = state.inner().clone();
     let shells = shells.inner().clone();
     #[cfg(unix)]
@@ -1159,6 +1182,146 @@ mod tests {
         assert!(size(80, 1001).is_err());
         assert!(size(80, 24).is_ok());
     }
+    #[test]
+    fn agent_control_ticket_cannot_be_combined_with_cli_launch() {
+        let request = StartRequest {
+            id: "test".into(),
+            profile_id: "local:bash".into(),
+            cwd: "/tmp".into(),
+            cols: 80,
+            rows: 24,
+            agent_ticket: Some(AgentTicket {
+                operation_id: "operation".into(),
+                nonce: "nonce".into(),
+            }),
+            cli_launch: Some(crate::cli_catalog::TitleCli::Codex),
+        };
+        assert!(validate_start_request(&request).is_err());
+    }
+    #[test]
+    fn start_request_accepts_camel_case_cli_launch_without_agent_ticket() {
+        let request: StartRequest = serde_json::from_value(serde_json::json!({
+            "id": "test",
+            "profileId": "local:bash",
+            "cwd": "/tmp",
+            "cols": 80,
+            "rows": 24,
+            "cliLaunch": "codex"
+        }))
+        .unwrap();
+        assert_eq!(
+            request.cli_launch,
+            Some(crate::cli_catalog::TitleCli::Codex)
+        );
+        assert!(request.agent_ticket.is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cli_launch_resolves_rc_path_and_starts_once_in_the_pty() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("test home");
+        let bin = root.path().join("cli path with 'quote");
+        let cwd = root.path().join("project");
+        let integration = root.path().join("integration");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        shell::prepare(&integration).unwrap();
+        fs::write(
+            home.join(".bashrc"),
+            format!(
+                "export PATH={}:\"$PATH\"\n",
+                shell::quote(&bin.to_string_lossy(), "bash").unwrap()
+            ),
+        )
+        .unwrap();
+
+        let marker = root.path().join("launch-count");
+        let cli = bin.join("codex");
+        fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf x >> {}\nprintf '__LOMI_CLI_LAUNCH_READY__\\n'\nexec /bin/sleep 30\n",
+                shell::quote(&marker.to_string_lossy(), "bash").unwrap()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let wrapper = root.path().join("selected-bash");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nexport HOME={}\nexec /bin/bash \"$@\"\n",
+                shell::quote(&home.to_string_lossy(), "bash").unwrap()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        let profile = Profile {
+            id: "test:bash".into(),
+            name: "bash".into(),
+            kind: "bash".into(),
+            program: wrapper.to_string_lossy().into_owned(),
+            distro: None,
+            home: home.to_string_lossy().into_owned(),
+        };
+        let shells = Shells {
+            profiles: vec![profile.clone()],
+            integration,
+        };
+        let manager = Terminals::default();
+        let (send, receive) = mpsc::channel();
+        let ack = manager.clone();
+        let output = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                ack.acknowledge("cli-test", bytes.len());
+                let _ = send.send(bytes);
+            }
+            Ok(())
+        });
+        let exited = Channel::new(|_| Ok(()));
+        manager
+            .start(
+                &shells,
+                StartRequest {
+                    id: "cli-test".into(),
+                    profile_id: profile.id,
+                    cwd: cwd.to_string_lossy().into_owned(),
+                    cols: 80,
+                    rows: 24,
+                    agent_ticket: None,
+                    cli_launch: Some(crate::cli_catalog::TitleCli::Codex),
+                },
+                output,
+                exited,
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut received = Vec::new();
+        while !String::from_utf8_lossy(&received).contains("__LOMI_CLI_LAUNCH_READY__")
+            && Instant::now() < deadline
+        {
+            if let Ok(bytes) = receive.recv_timeout(Duration::from_millis(100)) {
+                received.extend(bytes);
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&received).contains("__LOMI_CLI_LAUNCH_READY__"),
+            "CLI did not write to its PTY: {}",
+            String::from_utf8_lossy(&received)
+        );
+        assert_eq!(fs::read_to_string(marker).unwrap(), "x");
+        manager.stop_all();
+    }
     #[cfg(windows)]
     #[test]
     fn process_snapshot_detects_child_without_powershell() {
@@ -1218,6 +1381,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    cli_launch: None,
                 },
                 output,
                 exited,
@@ -1424,6 +1588,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    cli_launch: None,
                 },
                 output,
                 exited,

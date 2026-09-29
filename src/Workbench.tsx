@@ -114,6 +114,7 @@ import {
   configureTerminals,
   observeTerminalContexts,
   runningTerminal,
+  terminalFor,
 } from "./terminal-runtime";
 import type { TerminalContext } from "./terminal-runtime";
 import { dropPaths, terminalAtNativePosition } from "./file-drag";
@@ -166,6 +167,9 @@ import {
 } from "./application-close";
 import { useCliIntegrations } from "./CliIntegrations";
 import { useAgentNotifications } from "./AgentNotifications";
+import AgentsDialog from "./AgentsDialog";
+import { cliNames } from "./cli-agents";
+import type { CliAgent } from "./cli-agents";
 import {
   absoluteFilePath,
   applyFileChange,
@@ -630,6 +634,11 @@ export default function Workbench() {
   const folderPickerBusy = useRef(false);
   const [browsing, setBrowsing] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [agentsTarget, setAgentsTarget] = useState<{
+    workspaceId: string;
+    profile: ShellProfile;
+    cwd: string;
+  } | null>(null);
   const [terminalOverview, setTerminalOverview] = useState(false);
   usePointerFocus(
     preferences.focusFollowsPointer && !terminalOverview,
@@ -1017,6 +1026,58 @@ export default function Workbench() {
         activeTabId: added.id,
       }));
     });
+  const openAgents = () => {
+    const state = currentSession.current;
+    const selection = state && active(state);
+    if (!selection || !info) return;
+    const profileId =
+      info.platform !== "windows" && selection.tab.type === "terminal"
+        ? selection.tab.profileId
+        : defaultProfileId;
+    const profile = info.profiles.find((profile) => profile.id === profileId);
+    if (!profile) {
+      setError(
+        "Choose an installed terminal environment before launching agents.",
+      );
+      return;
+    }
+    setAgentsTarget({
+      workspaceId: selection.workspace.id,
+      profile,
+      cwd: selection.project.path,
+    });
+  };
+  const launchAgents = async (cli: CliAgent, count: number) => {
+    if (!agentsTarget || !Number.isSafeInteger(count) || count < 1)
+      throw new Error("Choose a CLI and a positive number of terminals.");
+    const { workspaceId, profile, cwd } = agentsTarget;
+    const state = currentSession.current;
+    const target = state?.projects
+      .flatMap((project) => project.workspaces)
+      .find((workspace) => workspace.id === workspaceId);
+    if (!target) throw new Error("The selected workspace was closed.");
+    const added = Array.from({ length: count }, (_, index) =>
+      newTab(cwd, profile.id, `${cliNames[cli]} ${index + 1}`),
+    );
+    const runtimes = added.map((tab) =>
+      terminalFor(panes(tab.layout)[0], profile, cli),
+    );
+    change((state) =>
+      updateWorkspace(state, workspaceId, (workspace) => ({
+        ...workspace,
+        tabs: [...workspace.tabs, ...added],
+        activeTabId: added[0].id,
+      })),
+    );
+    const results = await Promise.allSettled(
+      runtimes.map((runtime) => runtime.startInBackground()),
+    );
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length)
+      setError(
+        `${failures.length} of ${count} agents could not start. ${errorMessage(failures[0].reason)}`,
+      );
+  };
   const addChat = async () => {
     const state = currentSession.current;
     const selection = state && active(state);
@@ -2179,6 +2240,7 @@ export default function Workbench() {
               newTabTitle={shortcutTitle("New tab", bindings.newTab)}
               onNew={() => addTab()}
               onNewChat={() => void addChat()}
+              onNewAgents={openAgents}
               onNewAndroid={() =>
                 change((state) => {
                   const added = newAndroidTab();
@@ -2774,6 +2836,14 @@ export default function Workbench() {
           )}
           {dialog && (
             <AppDialog dialog={dialog} onClose={() => setDialog(null)} />
+          )}
+          {agentsTarget && (
+            <AgentsDialog
+              profile={agentsTarget.profile}
+              cwd={agentsTarget.cwd}
+              onClose={() => setAgentsTarget(null)}
+              onLaunch={launchAgents}
+            />
           )}
           {updater.dialog}
           {closeGuard.dialog}

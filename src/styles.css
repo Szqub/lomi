@@ -3013,6 +3013,84 @@ svg {
   gap: var(--space-8);
   margin-top: var(--space-20);
 }
+.agents-dialog .modal-surface {
+  max-height: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.agents-chooser-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--font-size-12);
+  color: var(--color-surface-variant-text);
+  margin-bottom: var(--space-8);
+}
+.agents-scan-status:not(:empty) {
+  padding: var(--space-12) 0;
+  font-size: var(--font-size-12);
+  color: var(--color-surface-variant-text);
+}
+.agents-cli-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.dialog-form .agents-cli-option {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-12);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-12);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--color-surface-text);
+  cursor: pointer;
+}
+.agents-cli-option:has(:checked) {
+  background: var(--color-surface-container-high);
+  border-color: var(--color-outline);
+}
+.agents-cli-option input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+.agents-cli-identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.agents-cli-identity code,
+.agents-directory {
+  font-size: var(--font-size-11);
+  color: var(--color-surface-variant-text);
+}
+.dialog-form .agents-count {
+  margin-top: var(--space-20);
+}
+.agents-count input {
+  width: 100%;
+}
+.agents-directory {
+  display: flex;
+  gap: var(--space-8);
+  margin: var(--space-12) 0;
+  min-width: 0;
+}
+.agents-directory code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .close-progress-dialog .modal-surface {
   display: flex;
   flex-direction: column;

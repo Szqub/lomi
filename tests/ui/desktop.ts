@@ -124,6 +124,19 @@ export async function mockDesktop(
         busyTerminals: [] as string[],
         terminalProcessError: "",
         terminalProcessDelay: 0,
+        installedAgentClis: [] as {
+          cli: string;
+          name: string;
+          command: string;
+        }[],
+        installedAgentCliCalls: [] as {
+          profileId: string;
+          cwd: string;
+        }[],
+        installedAgentCliError: "",
+        installedAgentCliDelay: 0,
+        agentStartupFailures: 0,
+        agentStartupError: "Agent CLI failed to start",
         cliTitleSetup: null,
         cliTitleError: "",
         cliTitleSaveDelay: 0,
@@ -1143,6 +1156,11 @@ export async function mockDesktop(
             return;
           }
           if (command === "start_terminal") {
+            const mock = desktop.__nativeTest;
+            if (args.request.cliLaunch && mock.agentStartupFailures > 0) {
+              mock.agentStartupFailures--;
+              throw new Error(mock.agentStartupError);
+            }
             sessions.set(args.request.id, { output: args.output.id, index: 0 });
             setTimeout(
               () =>
@@ -1153,6 +1171,17 @@ export async function mockDesktop(
               desktop.__nativeTest.terminalOutputDelay,
             );
             return { cwd: args.request.cwd, profileId: args.request.profileId };
+          }
+          if (command === "installed_agent_clis") {
+            const mock = desktop.__nativeTest;
+            mock.installedAgentCliCalls.push(structuredClone(args));
+            if (mock.installedAgentCliDelay)
+              await new Promise((resolve) =>
+                setTimeout(resolve, mock.installedAgentCliDelay),
+              );
+            if (mock.installedAgentCliError)
+              throw new Error(mock.installedAgentCliError);
+            return structuredClone(mock.installedAgentClis);
           }
           if (command === "terminal_contexts")
             return desktop.__nativeTest.terminalContexts;

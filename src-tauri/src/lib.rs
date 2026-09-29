@@ -17,6 +17,7 @@ mod chat_probe;
 mod cli_catalog;
 mod cli_config;
 mod cli_integrations;
+mod cli_launch;
 mod cli_mcp;
 mod cli_notifications;
 mod cli_titles;
@@ -260,6 +261,7 @@ pub fn run() {
                 cli_integrations::enable_cli_integration,
                 cli_integrations::inspect_mcp_clients,
                 cli_integrations::install_mcp_client,
+                cli_launch::installed_agent_clis,
                 agent_control::agent_control_state,
                 agent_control::agent_control_startup_state,
                 agent_control::agent_control_startup_decide,

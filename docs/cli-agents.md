@@ -6,6 +6,16 @@ native executables, documented Node/Bun launchers and Python console scripts;
 inline code, prompt arguments and remote SSH commands are not agent identities.
 This does not install the agents or restore their conversations after restart.
 
+The titlebar **+ → Agents** dialog launches the 15 clients listed in MCP settings.
+It shows only executables found in the selected terminal environment and uses
+bundled brand icons from Iconify. Choose a CLI and the number of terminal tabs
+(four by default); all tabs start immediately, including background tabs, in the
+current project folder. Refresh the list after installing a CLI. Launching does
+not change client configuration. Reopening a saved session starts ordinary shells
+without relaunching the agents.
+The launcher supports local Bash, Zsh, Fish and POSIX sh on macOS and Linux;
+Windows, PowerShell and WSL launch environments are not supported yet.
+
 Settings → Agent control → MCP clients lists Claude, Codex, Gemini, Copilot,
 Cursor, OpenCode, OpenClaw, Hermes, Kilo, Qwen, Kiro, Vibe, Kimi, Grok and
 Antigravity. **Install** registers Lomi in the selected user configuration, and
