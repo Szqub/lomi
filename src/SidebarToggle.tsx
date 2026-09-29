@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
@@ -17,6 +18,8 @@ export default function SidebarToggle({
   active,
   disabled,
   title,
+  className = "icon-button",
+  children,
   onToggle,
   onMove,
 }: {
@@ -25,6 +28,8 @@ export default function SidebarToggle({
   active: boolean;
   disabled?: boolean;
   title: string;
+  className?: string;
+  children?: ReactNode;
   onToggle: () => void;
   onMove: (side: SidebarSide) => void;
 }) {
@@ -74,6 +79,7 @@ export default function SidebarToggle({
     <>
       <IconButton
         title={title}
+        className={className}
         aria-pressed={active}
         disabled={disabled}
         aria-haspopup="menu"
@@ -100,17 +106,18 @@ export default function SidebarToggle({
           }
         }}
       >
-        {panel === "terminalOverview" ? (
-          <LayoutGrid size={15} />
-        ) : panel === "workspaces" ? (
-          <Layers size={15} />
-        ) : panel === "git" ? (
-          <GitBranch size={15} />
-        ) : side === "left" ? (
-          <PanelLeft size={15} />
-        ) : (
-          <PanelRight size={15} />
-        )}
+        {children ??
+          (panel === "terminalOverview" ? (
+            <LayoutGrid size={15} />
+          ) : panel === "workspaces" ? (
+            <Layers size={15} />
+          ) : panel === "git" ? (
+            <GitBranch size={15} />
+          ) : side === "left" ? (
+            <PanelLeft size={15} />
+          ) : (
+            <PanelRight size={15} />
+          ))}
       </IconButton>
       {anchor &&
         createPortal(

@@ -89,7 +89,7 @@ test("opposite panels stay open together, relocate their controls and preserve t
   await page.keyboard.press("Control+Shift+g");
   await expect(sidebar(page, "files")).toBeVisible();
   await expect(sidebar(page, "git")).toHaveCount(0);
-  await page.getByTitle("Show source control", { exact: true }).click();
+  await toggle(page, "git").click();
   await expect(sidebar(page, "git")).toBeVisible();
   await expect.poll(async () => (await saved(page))?.rightSidebar).toBe("git");
   await page.reload();

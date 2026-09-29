@@ -76,7 +76,6 @@ import {
   moveTab,
   movePane,
   moveSidebar,
-  showSidebar,
   toggleSidebar,
   newPane,
   newProject,
@@ -2582,6 +2581,7 @@ export default function Workbench() {
               >
                 <SidebarToggle
                   panel={panel}
+                  className={panel === "git" ? "branch-status" : "icon-button"}
                   side={session.sidebarSides[panel]}
                   active={sidebarOpen(panel)}
                   title={
@@ -2601,27 +2601,21 @@ export default function Workbench() {
                   onMove={(side) =>
                     change((state) => moveSidebar(state, panel, side))
                   }
-                />
-                {panel === "git" && git.repositories.length > 0 && (
-                  <>
-                    <span className="status-divider" />
-                    <button
-                      className="branch-status"
-                      title="Show source control"
-                      onClick={() =>
-                        change((state) => showSidebar(state, "git"))
-                      }
-                    >
+                >
+                  {panel === "git" ? (
+                    <>
                       <GitBranch size={12} />
-                      {git.repositories.length === 1
-                        ? git.repositories[0].branch
-                        : `${git.repositories.length} repositories`}
+                      {git.repositories.length === 0
+                        ? "Source Control"
+                        : git.repositories.length === 1
+                          ? git.repositories[0].branch
+                          : `${git.repositories.length} repositories`}
                       {totalGitChanges > 0 && (
                         <span className="count-badge">{totalGitChanges}</span>
                       )}
-                    </button>
-                  </>
-                )}
+                    </>
+                  ) : undefined}
+                </SidebarToggle>
               </div>
             ))}
             <div
