@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { newProject, newSession, newTab } from "../../src/model";
 import { mockDesktop } from "./desktop";
 
 const zoom = (page: Page) =>
@@ -72,19 +73,96 @@ test("zoom works on welcome, remembers its level and respects the native macOS t
   await expect(page.locator(".titlebar")).toHaveCSS("min-height", "44px");
 });
 
-test("a heavily zoomed minimum window fits the pane without scrolling the workspace", async ({
+test("a heavily zoomed minimum window keeps titlebar controls reachable", async ({
   page,
-}) => {
-  await mockDesktop(page, true, undefined, undefined, {}, "macos");
+}, testInfo) => {
+  const project = newProject("/project", "local:bash");
+  const workspace = project.workspaces[0];
+  workspace.tabs = Array.from({ length: 3 }, (_, index) =>
+    newTab("/project", "local:bash", `Terminal ${index + 1}`),
+  );
+  workspace.activeTabId = workspace.tabs[0].id;
+  await mockDesktop(
+    page,
+    true,
+    { ...newSession(), projects: [project], activeProjectId: project.id },
+    undefined,
+    {},
+    "macos",
+  );
   await page.addInitScript(() => localStorage.setItem("lomi.zoom.main", "200"));
   await page.setViewportSize({ width: 400, height: 210 });
   await page.goto("/");
   await expect(page.locator(".xterm-screen")).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(3);
   await expect(page.locator(".titlebar")).toHaveCSS("padding-left", "88px");
   await expect(page.locator(".titlebar")).toHaveCSS("min-height", "44px");
   const switcher = page.locator(".project-switcher");
   const switcherBox = await switcher.boundingBox();
   expect(switcherBox?.x).toBeGreaterThanOrEqual(88);
+  const projectButton = page.locator(".project-switcher");
+  const accountButton = page.getByRole("button", { name: "Open account menu" });
+  const rightArrow = page.getByRole("button", { name: "Scroll tabs right" });
+  await expect(rightArrow).toBeEnabled();
+  const navigation = page.locator(".tab-navigation");
+  const account = page.locator(".titlebar-account-control");
+  const navigationBox = (await navigation.boundingBox())!;
+  const accountBox = (await account.boundingBox())!;
+  expect(navigationBox.x + navigationBox.width).toBeLessThanOrEqual(
+    accountBox.x,
+  );
+  for (const target of [projectButton, rightArrow, account]) {
+    expect(
+      await target.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          bounds.left + bounds.width / 2,
+          bounds.top + bounds.height / 2,
+        );
+        return hit === element || element.contains(hit);
+      }),
+    ).toBe(true);
+  }
+  const clickCenter = async (target: typeof projectButton) => {
+    const box = (await target.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  };
+  await clickCenter(projectButton);
+  await expect(projectButton).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await clickCenter(accountButton);
+  await expect(accountButton).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  const strip = page.locator(".tab-strip");
+  const initialScrollLeft = await strip.evaluate(
+    (element) => element.scrollLeft,
+  );
+  await clickCenter(rightArrow);
+  await expect
+    .poll(() => strip.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(initialScrollLeft);
+  const newTabButton = page.getByRole("button", { name: /^New tab/ });
+  let newTabInView = false;
+  for (let index = 0; index < 20; index++) {
+    newTabInView = await newTabButton.evaluate((button) => {
+      const buttonBounds = button.getBoundingClientRect();
+      const stripBounds = button.closest(".tab-strip")!.getBoundingClientRect();
+      return (
+        buttonBounds.left >= stripBounds.left &&
+        buttonBounds.right <= stripBounds.right
+      );
+    });
+    if (newTabInView) break;
+    await page.getByRole("button", { name: "Scroll tabs right" }).click();
+  }
+  expect(newTabInView).toBe(true);
+  await clickCenter(newTabButton);
+  await expect(
+    page.getByRole("menuitem", { name: "New terminal" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("zoomed-minimum-titlebar.png"),
+  });
   const area = page.locator(".work-area");
   expect(
     await area.evaluate((element) => {

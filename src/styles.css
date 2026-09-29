@@ -4403,6 +4403,15 @@ svg {
     max-width: 180px;
   }
 }
+@media (max-width: 600px) {
+  :root[data-platform="macos"] .titlebar > .titlebar-project {
+    min-width: 64px;
+    flex-shrink: 1;
+  }
+  :root[data-platform="macos"] .titlebar > .tab-bar {
+    min-width: 116px;
+  }
+}
 @media (max-width: 720px) {
   .settings-page {
     padding: min(var(--settings-page-padding), var(--space-20));
