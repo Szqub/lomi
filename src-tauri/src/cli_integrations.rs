@@ -391,6 +391,36 @@ mod tests {
             .error
             .is_some());
     }
+
+    #[test]
+    fn agy_blank_mcp_inspection_has_a_revision_without_writing() {
+        for original in [b"".as_slice(), b" \t\r\n".as_slice()] {
+            let temp = tempfile::tempdir().unwrap();
+            let mcp = temp.path().join("mcp_config.json");
+            std::fs::write(&mcp, original).unwrap();
+            let registration = cli_mcp::Registration {
+                command: "/Applications/Lomi.app/Contents/MacOS/lomi".into(),
+                args: vec![
+                    "--mcp".into(),
+                    "--discovery-file".into(),
+                    "/private/control/discovery.json".into(),
+                    "--discovery-key".into(),
+                    "a".repeat(64),
+                ],
+            };
+
+            let status = inspect_feature(Feature::Mcp, Ok(mcp.clone()), |_, source| {
+                cli_mcp::configured(TitleCli::Agy, source, Some(&registration))
+            });
+
+            assert!(status.error.is_none());
+            assert!(!status.configured);
+            assert!(status.revision.is_some());
+            assert_eq!(status.path, mcp.to_string_lossy());
+            assert_eq!(std::fs::read(&mcp).unwrap(), original);
+        }
+    }
+
     #[test]
     fn unsupported_features_are_never_offered_for_new_cli_clients() {
         let features = inspect_features(

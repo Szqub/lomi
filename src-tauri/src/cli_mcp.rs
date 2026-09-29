@@ -295,13 +295,22 @@ fn json_options(cli: TitleCli) -> jsonc_parser::ParseOptions {
     }
 }
 
+fn json_source(cli: TitleCli, source: &str) -> &str {
+    if cli == TitleCli::Agy
+        && source
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        "{}"
+    } else {
+        source
+    }
+}
+
 pub(crate) fn json_document(cli: TitleCli, source: Option<&str>) -> Result<Value, String> {
-    let parsed = jsonc_parser::parse_to_ast(
-        source.unwrap_or("{}"),
-        &Default::default(),
-        &json_options(cli),
-    )
-    .map_err(|_| "CLI configuration is not valid JSON/JSONC. The file was left intact.")?;
+    let source = json_source(cli, source.unwrap_or("{}"));
+    let parsed = jsonc_parser::parse_to_ast(source, &Default::default(), &json_options(cli))
+        .map_err(|_| "CLI configuration is not valid JSON/JSONC. The file was left intact.")?;
     fn validate(value: &jsonc_parser::ast::Value<'_>, depth: usize) -> Result<(), String> {
         if depth > 64 {
             return Err("CLI configuration nesting exceeds 64 levels.".into());
@@ -333,7 +342,7 @@ pub(crate) fn json_document(cli: TitleCli, source: Option<&str>) -> Result<Value
     if ast.as_object().is_none() {
         return Err("CLI configuration must be an object.".into());
     }
-    jsonc_parser::parse_to_serde_value(source.unwrap_or("{}"), &json_options(cli))
+    jsonc_parser::parse_to_serde_value(source, &json_options(cli))
         .map_err(|_| "CLI configuration is not valid JSON/JSONC. The file was left intact.".into())
 }
 
@@ -387,6 +396,7 @@ pub(crate) fn set_json(
     value: &Value,
 ) -> Result<String, String> {
     use jsonc_parser::common::Ranged;
+    let source = json_source(cli, source);
     let parsed = jsonc_parser::parse_to_ast(source, &Default::default(), &json_options(cli))
         .map_err(|e| e.to_string())?;
     let root = parsed.value.ok_or("CLI configuration must be an object.")?;
@@ -578,6 +588,7 @@ pub(crate) fn configured(
         && entry.get("transport").is_none_or(|value| value == "stdio")
         && entry["disabled"] != true
         && entry["enabled"] != false
+        && (cli != TitleCli::Agy || entry.get("serverUrl").is_none())
         && entry.get("url").is_none()
         && entry.get("httpUrl").is_none()
         && !doc
@@ -746,6 +757,9 @@ pub(crate) fn enable(
         }
         object.remove("url");
         object.remove("httpUrl");
+        if cli == TitleCli::Agy {
+            object.remove("serverUrl");
+        }
         let mut keys = json_keys(cli).to_vec();
         keys.push("lomi");
         let mut output = set_json(cli, source.as_deref().unwrap_or("{}\n"), &keys, &entry)?;
@@ -818,6 +832,136 @@ mod tests {
             assert!(enable(cli, &path, None, &registration()).is_err());
         }
     }
+    #[test]
+    fn agy_blank_config_is_installable_with_exact_revision_and_backup() {
+        for source in ["", " \t\r\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mcp_config.json");
+            std::fs::write(&path, source.as_bytes()).unwrap();
+
+            assert!(!configured(TitleCli::Agy, Some(source), Some(&registration())).unwrap());
+            assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+
+            enable(
+                TitleCli::Agy,
+                &path,
+                cli_config::revision(Some(source)).as_deref(),
+                &registration(),
+            )
+            .unwrap();
+
+            let output = std::fs::read_to_string(&path).unwrap();
+            let doc = json_document(TitleCli::Agy, Some(&output)).unwrap();
+            assert_eq!(doc["mcpServers"]["lomi"]["command"], registration().command);
+            assert_eq!(
+                doc["mcpServers"]["lomi"]["args"],
+                json!(registration().args)
+            );
+            assert!(configured(TitleCli::Agy, Some(&output), Some(&registration())).unwrap());
+
+            let backups = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("lomi-backup"))
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1);
+            assert_eq!(std::fs::read(backups[0].path()).unwrap(), source.as_bytes());
+        }
+    }
+
+    #[test]
+    fn agy_blank_and_missing_files_refuse_stale_revisions_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let blank_path = dir.path().join("blank.json");
+        std::fs::write(&blank_path, "").unwrap();
+        assert!(enable(TitleCli::Agy, &blank_path, None, &registration()).is_err());
+        assert!(enable(
+            TitleCli::Agy,
+            &blank_path,
+            Some("stale-revision"),
+            &registration()
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&blank_path).unwrap(), b"");
+
+        let missing_path = dir.path().join("missing.json");
+        assert!(enable(
+            TitleCli::Agy,
+            &missing_path,
+            Some("stale-revision"),
+            &registration()
+        )
+        .is_err());
+        assert!(!missing_path.exists());
+    }
+
+    #[test]
+    fn agy_only_accepts_json_whitespace_and_preserves_malformed_files() {
+        assert!(json_document(TitleCli::Cursor, Some(" \t\r\n")).is_err());
+        for source in ["not json", "\u{00a0}"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mcp_config.json");
+            std::fs::write(&path, source.as_bytes()).unwrap();
+            assert!(configured(TitleCli::Agy, Some(source), Some(&registration())).is_err());
+            assert!(enable(
+                TitleCli::Agy,
+                &path,
+                cli_config::revision(Some(source)).as_deref(),
+                &registration()
+            )
+            .is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+        }
+    }
+
+    #[test]
+    fn agy_remote_server_url_is_not_local_and_owned_hybrid_is_repaired() {
+        let expected = registration();
+        let dir = tempfile::tempdir().unwrap();
+        for (index, server_url) in [Value::Null, json!("https://old.example/mcp")]
+            .into_iter()
+            .enumerate()
+        {
+            let path = dir.path().join(format!("hybrid-{index}.json"));
+            let hybrid = json!({
+                "mcpServers": {"lomi": {
+                    "command": &expected.command,
+                    "args": &expected.args,
+                    "serverUrl": server_url,
+                    "env": {"KEEP": "value"}
+                }}
+            })
+            .to_string();
+            std::fs::write(&path, &hybrid).unwrap();
+            assert!(!configured(TitleCli::Agy, Some(&hybrid), Some(&expected)).unwrap());
+            enable(
+                TitleCli::Agy,
+                &path,
+                cli_config::revision(Some(&hybrid)).as_deref(),
+                &expected,
+            )
+            .unwrap();
+            let upgraded_source = std::fs::read_to_string(&path).unwrap();
+            let upgraded = json_document(TitleCli::Agy, Some(&upgraded_source)).unwrap();
+            assert!(upgraded["mcpServers"]["lomi"].get("serverUrl").is_none());
+            assert_eq!(upgraded["mcpServers"]["lomi"]["env"]["KEEP"], "value");
+            assert!(configured(TitleCli::Agy, Some(&upgraded_source), Some(&expected)).unwrap());
+        }
+
+        let remote_path = dir.path().join("remote.json");
+        let remote = r#"{"mcpServers":{"lomi":{"serverUrl":"https://remote.example/mcp"}}}"#;
+        std::fs::write(&remote_path, remote).unwrap();
+        assert!(!configured(TitleCli::Agy, Some(remote), Some(&expected)).unwrap());
+        assert!(enable(
+            TitleCli::Agy,
+            &remote_path,
+            cli_config::revision(Some(remote)).as_deref(),
+            &expected
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(remote_path).unwrap(), remote);
+    }
+
     #[test]
     fn foreign_lomi_entries_and_invalid_files_are_never_overwritten() {
         for (cli, source) in [
