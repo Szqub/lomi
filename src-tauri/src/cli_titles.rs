@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 #[cfg(any(target_os = "linux", test))]
 use std::fs;
 use std::{
+    ffi::OsString,
     io::Read,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -578,9 +579,58 @@ fn environment_path(value: Option<&[u8]>) -> Option<PathBuf> {
     value.map(|value| PathBuf::from(String::from_utf8_lossy(value).into_owned()))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn usage_subprocess_environment(entries: &[&[u8]]) -> Vec<(OsString, OsString)> {
+    const ALLOWED: &[&[u8]] = &[
+        b"HOME",
+        b"USER",
+        b"PATH",
+        b"TMPDIR",
+        b"TMP",
+        b"TEMP",
+        b"LANG",
+        b"LC_ALL",
+        b"LC_CTYPE",
+        b"LC_MESSAGES",
+        b"LC_COLLATE",
+        b"LC_MONETARY",
+        b"LC_NUMERIC",
+        b"LC_TIME",
+        b"XDG_CONFIG_HOME",
+        b"XDG_CACHE_HOME",
+        b"XDG_DATA_HOME",
+        b"XDG_STATE_HOME",
+        b"XDG_RUNTIME_DIR",
+    ];
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'=')?;
+            let (name, value) = entry.split_at(separator);
+            let value = value.get(1..)?;
+            ALLOWED
+                .contains(&name)
+                .then(|| (os_string_from_bytes(name), os_string_from_bytes(value)))
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn os_string_from_bytes(bytes: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.to_vec())
+}
+
+#[cfg(not(unix))]
+fn os_string_from_bytes(bytes: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct UsageProcessPaths {
     pub has_auth_argument_override: bool,
+    pub executable: Option<PathBuf>,
+    pub subprocess_environment: Vec<(OsString, OsString)>,
     pub home: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
     pub claude_config_dir: Option<PathBuf>,
@@ -623,6 +673,7 @@ impl UsageProcessPaths {
             })
         };
         Self {
+            subprocess_environment: usage_subprocess_environment(entries),
             home: path(b"HOME="),
             codex_home: path(b"CODEX_HOME="),
             claude_config_dir: path(b"CLAUDE_CONFIG_DIR="),
@@ -724,6 +775,11 @@ impl UsageProcessPaths {
                 .clone()
                 .or_else(|| self.home.as_ref().map(|path| path.join(".kimi-code")))
                 .ok_or("Cannot locate the running Kimi Code configuration directory.")?,
+            TitleCli::Agy => self
+                .home
+                .as_ref()
+                .map(|path| path.join(".gemini/antigravity-cli"))
+                .ok_or("Cannot locate the running Antigravity CLI configuration directory.")?,
             _ => return Err("Usage credentials are not available for this CLI.".into()),
         };
         if !path.is_absolute() {
@@ -764,6 +820,7 @@ pub(crate) fn usage_process_paths(process: TitleProcess) -> Result<UsageProcessP
     }
     let executable = fs::read_link(format!("/proc/{}/exe", process.pid))
         .map_err(|_| "Cannot read the running CLI executable.")?;
+    paths.executable = Some(executable.clone());
     let argv = args.split(|byte| *byte == 0).collect::<Vec<_>>();
     paths.has_auth_argument_override =
         usage_auth_argument_override(process.cli, cli_arguments(process.cli, &executable, &argv)?);
@@ -779,6 +836,7 @@ pub(crate) fn usage_process_paths(process: TitleProcess) -> Result<UsageProcessP
     let executable = macos_process::process_path(process.pid)
         .ok_or("Cannot read the running CLI executable.")?;
     let mut paths = UsageProcessPaths::from_entries(&parsed.environment);
+    paths.executable = Some(executable.clone());
     paths.has_auth_argument_override = usage_auth_argument_override(
         process.cli,
         cli_arguments(process.cli, &executable, &parsed.argv)?,
@@ -809,6 +867,10 @@ fn usage_auth_argument_override(cli: TitleCli, arguments: &[&[u8]]) -> bool {
             .next()
             .unwrap_or_default();
         match cli {
+            TitleCli::Agy => matches!(
+                flag,
+                b"--api-key" | b"--auth" | b"--auth-token" | b"--provider" | b"--model-provider"
+            ),
             TitleCli::Codex => {
                 if matches!(flag, b"--profile" | b"-p" | b"--oss" | b"--local-provider")
                     || (argument.starts_with(b"-p") && argument.len() > 2)

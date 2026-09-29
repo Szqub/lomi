@@ -1,8 +1,12 @@
 (async () => {
   const invoke = window.__TAURI_INTERNALS__.invoke;
   const directory = SMOKE_DIRECTORY;
+  const agyExecutable = SMOKE_AGY_EXECUTABLE;
+  const agyHome = SMOKE_AGY_HOME;
   const liveHome = SMOKE_LIVE_HOME;
   const liveKimiHome = SMOKE_LIVE_KIMI_HOME;
+  const liveAgyExecutable = SMOKE_LIVE_AGY_EXECUTABLE;
+  const liveAgyHome = SMOKE_LIVE_AGY_HOME;
   const liveMode = SMOKE_LIVE_MODE;
   const liveProviders = [];
   const offlineProviders = [];
@@ -221,8 +225,155 @@
         stoppedKimiEntry.process.pid === kimiProcess.pid,
       stoppedMessage: stoppedKimiEntry.message,
     });
+
+    checkpoint = "Antigravity native usage fixture";
+    await invoke("write_terminal", {
+      id,
+      data: `PATH=${quote(directory + "/agy-bin")}:$PATH HOME=${quote(agyHome)} ${quote(agyExecutable)} 120\r`,
+    });
+    let agyProcess;
+    await wait(async () => {
+      agyProcess = (await invoke("terminal_contexts"))[id]?.titleCli;
+      return agyProcess?.cli === "agy";
+    });
+    if (!Number.isSafeInteger(agyProcess.pid) || agyProcess.pid <= 0)
+      throw Error("Antigravity detection did not include the running CLI PID");
+    const agyTarget = { id, process: agyProcess };
+    const agySnapshot = await invoke("inspect_cli_usage", {
+      targets: [agyTarget],
+      force: false,
+    });
+    const agyEntry = agySnapshot.entries.find(
+      (entry) => entry.id === id && entry.process?.pid === agyProcess.pid,
+    );
+    const expectedAgyReset = Date.parse("2099-01-01T00:00:00Z");
+    const hasAgyPercent = (entry, expected) =>
+      entry?.windows.some(
+        (usageWindow) =>
+          typeof usageWindow.remainingPercent === "number" &&
+          Math.abs(usageWindow.remainingPercent - expected) < 1e-8,
+      );
+    const agyResetFieldVerified =
+      Array.isArray(agyEntry?.windows) &&
+      agyEntry.windows.length === 2 &&
+      agyEntry.windows.every(
+        (usageWindow) => usageWindow.resetsAt === expectedAgyReset,
+      );
+    const agyNumericWindows = (agyEntry?.windows ?? []).filter(
+      (usageWindow) =>
+        typeof usageWindow.remainingPercent === "number" &&
+        Number.isFinite(usageWindow.remainingPercent),
+    ).length;
+    if (
+      agyEntry?.status !== "ready" ||
+      agyEntry.process?.cli !== "agy" ||
+      agyNumericWindows !== 2 ||
+      !hasAgyPercent(agyEntry, 81) ||
+      !hasAgyPercent(agyEntry, 44) ||
+      !agyResetFieldVerified
+    )
+      throw Error(
+        "Antigravity's exact readonly usage command did not return the isolated quota fixture",
+      );
+    await wait(() => document.querySelector(".agent-usage-trigger"));
+    document.querySelector(".agent-usage-trigger").click();
+    await wait(() => document.querySelector(".agent-usage-menu"));
+    const agyMenu = document.querySelector(".agent-usage-menu");
+    if (
+      document
+        .querySelector(".agent-usage-trigger-value")
+        ?.textContent.trim() !== "44%" ||
+      !agyMenu.textContent.includes("Antigravity CLI") ||
+      !agyMenu.textContent.includes("44% remaining")
+    )
+      throw Error("Antigravity usage details did not show its quota fixture");
+
+    await invoke("plugin_smoke_result", {
+      stage: "agy-fixture-decline",
+      data: {},
+    });
+    await wait(() =>
+      document
+        .querySelector(".agent-usage-menu")
+        ?.textContent.includes("7% remaining"),
+    );
+    if (
+      document
+        .querySelector(".agent-usage-trigger-value")
+        ?.textContent.trim() !== "7%"
+    )
+      throw Error(
+        "Antigravity titlebar usage did not show the declined quota fixture",
+      );
+    const declinedAgyEntry = await invoke("inspect_cli_usage", {
+      targets: [agyTarget],
+      force: false,
+    }).then((snapshot) =>
+      snapshot.entries.find(
+        (entry) => entry.id === id && entry.process?.pid === agyProcess.pid,
+      ),
+    );
+    if (
+      declinedAgyEntry?.status !== "ready" ||
+      declinedAgyEntry.windows.length !== 2 ||
+      !hasAgyPercent(declinedAgyEntry, 12) ||
+      !hasAgyPercent(declinedAgyEntry, 7) ||
+      !declinedAgyEntry.windows.every(
+        (usageWindow) => usageWindow.resetsAt === expectedAgyReset,
+      )
+    )
+      throw Error("Antigravity refresh did not use the changed quota fixture");
+    document
+      .querySelector(".agent-usage-menu")
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    await wait(() => !document.querySelector(".agent-usage-menu"));
+    await invoke("write_terminal", { id, data: "\u0003" });
+    await wait(async () => !(await invoke("terminal_contexts"))[id]?.titleCli);
+    const stoppedAgy = await invoke("inspect_cli_usage", {
+      targets: [agyTarget],
+      force: true,
+    });
+    const stoppedAgyEntry = stoppedAgy.entries.find((entry) => entry.id === id);
+    if (
+      stoppedAgyEntry?.status !== "error" ||
+      stoppedAgyEntry.process?.cli !== "agy" ||
+      stoppedAgyEntry.process?.pid !== agyProcess.pid ||
+      !stoppedAgyEntry.message?.includes("no longer running") ||
+      stoppedAgyEntry.windows.length
+    )
+      throw Error(
+        "Stopped Antigravity process did not reject its cached usage result",
+      );
+    await wait(() => !document.querySelector(".agent-usage-trigger"));
+    await waitPrompt();
+    offlineProviders.push({
+      cli: "agy",
+      status: agyEntry.status,
+      numericWindows: agyNumericWindows,
+      processPidOwned:
+        agyEntry.process.cli === "agy" &&
+        agyEntry.process.pid === agyProcess.pid,
+      declinedRefreshVerified: declinedAgyEntry.status === "ready",
+      resetFieldVerified: agyResetFieldVerified,
+      declinedResetFieldVerified: declinedAgyEntry.windows.every(
+        (usageWindow) => usageWindow.resetsAt === expectedAgyReset,
+      ),
+      menuVerified: true,
+      stoppedStatus: stoppedAgyEntry.status,
+      stoppedProcessPidOwned:
+        stoppedAgyEntry.process.cli === "agy" &&
+        stoppedAgyEntry.process.pid === agyProcess.pid,
+    });
+
     if (liveMode) {
-      const probeLiveProvider = async (cli, executable, commandPrefix = "") => {
+      const probeLiveProvider = async (
+        cli,
+        executable,
+        commandPrefix = "",
+        { includeMessage = true, verifyAgyTurnGuard = false } = {},
+      ) => {
         checkpoint = `live account usage: ${cli}`;
         let status = "not-detected";
         let message = "The inert CLI fixture was not detected.";
@@ -232,7 +383,11 @@
         try {
           await invoke("write_terminal", {
             id,
-            data: `${commandPrefix}${quote(directory + "/" + executable)} 120\r`,
+            data: `${commandPrefix}${quote(
+              executable.startsWith("/")
+                ? executable
+                : directory + "/" + executable,
+            )} 120\r`,
           });
           launched = true;
           try {
@@ -291,7 +446,10 @@
           status,
           numericWindows,
           readNumericWindows: numericWindows > 0,
-          message,
+          ...(includeMessage ? { message } : {}),
+          ...(verifyAgyTurnGuard
+            ? { zeroModelTurnGuardPassed: status === "ready" }
+            : {}),
         });
       };
 
@@ -309,6 +467,19 @@
           "kimi",
           "kimi",
           `KIMI_CODE_HOME=${quote(liveKimiHome)} `,
+        );
+      }
+      if (liveMode === "agy") {
+        if (
+          typeof liveAgyExecutable !== "string" ||
+          typeof liveAgyHome !== "string"
+        )
+          throw Error("The live Antigravity fixture was not prepared");
+        await probeLiveProvider(
+          "agy",
+          liveAgyExecutable,
+          `PATH=${quote(directory + "/live-agy-bin")}:$PATH HOME=${quote(liveAgyHome)} `,
+          { includeMessage: false, verifyAgyTurnGuard: true },
         );
       }
     }

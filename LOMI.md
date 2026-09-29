@@ -153,10 +153,11 @@ or acronym.
   configure a CLI silently or restart it automatically.
 - `src/AgentUsage.tsx` observes the existing terminal-context stream and shows
   remaining account quota beside the titlebar account/settings control. Native
-  `cli_usage.rs` verifies owned CLI processes, reads their existing credential
-  stores and shares bounded, provider-specific requests with account-scoped
-  caching. Keep credentials out of webviews; never refresh CLI logins or infer
-  subscription quota from transcript tokens. Unsupported agents remain visible
+  `cli_usage.rs` verifies owned CLI processes, reads existing credential stores
+  or verified read-only CLI reports, and shares bounded requests with scoped
+  caching. Keep credentials out of webviews; never initiate CLI login or infer
+  subscription quota from transcript tokens. Antigravity uses its version-gated
+  native `/usage` report without an agent turn. Unsupported agents remain visible
   with an explicit availability status; see `docs/cli-agents.md`.
 - `src-tauri/src/shell.rs` discovers shell environments and quotes dropped paths;
   `src-tauri/shell/` contains integration hooks. Do not edit user shell profiles.

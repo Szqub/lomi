@@ -5,8 +5,9 @@ import {
   writeFile,
   copyFile,
 } from "node:fs/promises";
+import { accessSync, constants } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { newSession, newProject } from "../../src/model.ts";
 
@@ -17,14 +18,21 @@ const directory = await mkdtemp(join(tmpdir(), "lomi-usage-native-"));
 const identifier = `dev.lomi.usage-smoke-${Date.now()}`;
 const requestedLiveMode = process.argv.includes("--live-all")
   ? "all"
-  : process.argv.includes("--live")
-    ? "codex"
-    : null;
+  : process.argv.includes("--live-agy")
+    ? "agy"
+    : process.argv.includes("--live")
+      ? "codex"
+      : null;
 const appData = join(homedir(), "Library/Application Support", identifier);
 const folder = join(directory, "project");
+const fixtureData = join(directory, "agy-usage.json");
+const offlineAgyHome = join(directory, "agy-home");
+const offlineAgySettings = join(offlineAgyHome, ".gemini/antigravity-cli");
 await mkdir(folder);
 await mkdir(join(directory, "codex-home"));
 await mkdir(join(directory, "kimi-home"));
+await mkdir(offlineAgySettings, { recursive: true });
+await writeFile(join(offlineAgySettings, "settings.json"), "{}\n");
 await mkdir(join(directory, "shell-home"));
 await mkdir(appData, { recursive: true });
 // Native executable identities exercise process inspection without launching an AI request.
@@ -36,6 +44,108 @@ for (const name of ["codex", "aider", "claude", "cursor-agent", "kimi"]) {
     "-",
     join(directory, name),
   ]);
+}
+
+const cStringLiteral = (value) =>
+  `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t")}"`;
+const envelope = (shortWindow, longWindow) =>
+  JSON.stringify({
+    status: "SUCCESS",
+    num_turns: 0,
+    conversation_id: "",
+    duration_seconds: 0,
+    response: "",
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      thinking_tokens: 0,
+      cache_read_tokens: 0,
+      total_tokens: 0,
+    },
+    command: {
+      name: "usage",
+      data: {
+        description: "Account quota",
+        groups: [
+          {
+            name: "Plan",
+            description: "",
+            buckets: [
+              {
+                id: "short-window",
+                name: "Short window",
+                window: "5h",
+                remaining_fraction: shortWindow / 100,
+                reset_time: "2099-01-01T00:00:00Z",
+                description: "",
+              },
+              {
+                id: "long-window",
+                name: "Long window",
+                window: "weekly",
+                remaining_fraction: longWindow / 100,
+                reset_time: "2099-01-01T00:00:00Z",
+                description: "",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+await writeFile(fixtureData, envelope(81, 44));
+
+const compileAgyFixture = async (executable, realAgy = null) => {
+  await mkdir(dirname(executable), { recursive: true });
+  const sdkPath = execFileSync(
+    "/usr/bin/xcrun",
+    ["--sdk", "macosx", "--show-sdk-path"],
+    { encoding: "utf8" },
+  ).trim();
+  const args = [
+    "clang",
+    "-isysroot",
+    sdkPath,
+    "-std=c11",
+    "-O2",
+    `-DAGY_FIXTURE_JSON_PATH=${cStringLiteral(fixtureData)}`,
+  ];
+  if (realAgy) args.push(`-DAGY_REAL_EXECUTABLE=${cStringLiteral(realAgy)}`);
+  args.push(join(root, "tests/native/agent-usage-fixture.c"), "-o", executable);
+  execFileSync("/usr/bin/xcrun", args);
+  execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", executable]);
+};
+
+const agyExecutable = join(directory, "agy-bin", "agy");
+await compileAgyFixture(agyExecutable);
+let liveAgyExecutable = null;
+if (requestedLiveMode === "agy") {
+  const candidates = [
+    ...(process.env.PATH ?? "")
+      .split(delimiter)
+      .map((path) => join(path, "agy")),
+    join(homedir(), ".local/bin/agy"),
+    "/opt/homebrew/bin/agy",
+  ];
+  const realAgy = candidates.find((candidate) => {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!realAgy)
+    throw Error(
+      "--live-agy requires an installed Antigravity CLI in PATH or ~/.local/bin/agy.",
+    );
+  liveAgyExecutable = join(directory, "live-agy-bin", "agy");
+  await compileAgyFixture(liveAgyExecutable, realAgy);
 }
 const project = newProject(folder, "local:zsh");
 const tab = project.workspaces[0].tabs[0];
@@ -80,6 +190,9 @@ const child = spawn(
     env: {
       ...process.env,
       LOMI_USAGE_SMOKE_DIRECTORY: directory,
+      LOMI_USAGE_SMOKE_AGY_EXECUTABLE: agyExecutable,
+      LOMI_USAGE_SMOKE_AGY_FIXTURE_DATA: fixtureData,
+      LOMI_USAGE_SMOKE_AGY_HOME: offlineAgyHome,
       ZDOTDIR: join(directory, "shell-home"),
       HISTFILE: "/dev/null",
       ...(requestedLiveMode
@@ -87,6 +200,12 @@ const child = spawn(
             LOMI_USAGE_SMOKE_LIVE_HOME:
               process.env.CODEX_HOME || join(homedir(), ".codex"),
             LOMI_USAGE_SMOKE_LIVE_KIMI_HOME: join(homedir(), ".kimi-code"),
+            ...(requestedLiveMode === "agy"
+              ? {
+                  LOMI_USAGE_SMOKE_LIVE_AGY_EXECUTABLE: liveAgyExecutable,
+                  LOMI_USAGE_SMOKE_LIVE_AGY_HOME: homedir(),
+                }
+              : {}),
             LOMI_USAGE_SMOKE_LIVE_MODE: requestedLiveMode,
           }
         : {}),

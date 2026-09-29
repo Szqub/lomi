@@ -22,6 +22,8 @@ use std::{
 use tauri::{State, Window};
 use tokio::sync::{Mutex, Semaphore};
 
+mod agy;
+
 const MAX_TARGETS: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CREDENTIAL_BYTES: usize = 256 * 1024;
@@ -206,6 +208,9 @@ async fn inspect_target(
             );
         }
     };
+    if process.cli == TitleCli::Agy {
+        return inspect_agy_target(terminals, state, target, paths, force).await;
+    }
     let namespace_paths = paths.clone();
     let namespace_result = tauri::async_runtime::spawn_blocking(move || {
         native_namespace(process.cli, &namespace_paths)
@@ -426,10 +431,260 @@ async fn inspect_target(
     }
 }
 
+async fn inspect_agy_target(
+    terminals: &Terminals,
+    state: &CliUsage,
+    target: UsageTarget,
+    paths: UsageProcessPaths,
+    force: bool,
+) -> UsageEntry {
+    let process = target.process;
+    let context = match tauri::async_runtime::spawn_blocking(move || agy::prepare(&paths)).await {
+        Ok(Ok(context)) => context,
+        _ => {
+            return empty_entry(
+                target,
+                UsageStatus::Error,
+                "Cannot safely read Antigravity CLI account settings.",
+                Some(source_name(TitleCli::Agy)),
+            );
+        }
+    };
+    if !terminal_process_is_current(terminals, &target.id, process) {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "The CLI is no longer running in this terminal. Check usage again.",
+            None,
+        );
+    }
+    let key = agy_cache_key(&context);
+    let observed_generation = current_generation(state, &key.namespace).await;
+    let Some(generation) = activate_identity(state, &key, observed_generation).await else {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    };
+    if let Some(message) = context.unsupported_message {
+        return empty_entry(
+            target,
+            UsageStatus::Unsupported,
+            message,
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+
+    let request_lock = request_lock(state, &key).await;
+    let _guard = request_lock.lock().await;
+    if !terminal_process_is_current(terminals, &target.id, process)
+        || verify_agy_context_current(terminals, &target.id, state, process, &key, generation).await
+            != Some(generation)
+    {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+    if let Some(cached) = cached_snapshot(state, &key, force).await {
+        if terminal_process_is_current(terminals, &target.id, process)
+            && verify_agy_context_current(terminals, &target.id, state, process, &key, generation)
+                .await
+                == Some(generation)
+        {
+            return entry_from_snapshot(target, cached);
+        }
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+
+    let _slot = match state.network_slots.acquire().await {
+        Ok(slot) => slot,
+        Err(_) => {
+            return match failed_snapshot_clearing_values(
+                state,
+                &key,
+                FetchFailure {
+                    status: UsageStatus::Error,
+                    message:
+                        "Antigravity usage checks are temporarily unavailable. Try again shortly.",
+                    retry_after: None,
+                },
+                generation,
+            )
+            .await
+            {
+                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                None => empty_entry(
+                    target,
+                    UsageStatus::Error,
+                    "Antigravity account context changed while usage was being checked. Try again.",
+                    Some(source_name(TitleCli::Agy)),
+                ),
+            };
+        }
+    };
+    if !terminal_process_is_current(terminals, &target.id, process)
+        || verify_agy_context_current(terminals, &target.id, state, process, &key, generation).await
+            != Some(generation)
+    {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+    if !mark_request_started(state, &key, force, generation).await {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+    let version_context = context.clone();
+    let version_probe =
+        tauri::async_runtime::spawn_blocking(move || agy::check_version(&version_context)).await;
+    let version_result = match version_probe {
+        Ok(result) => result,
+        Err(_) => Err(FetchFailure {
+            status: UsageStatus::Error,
+            message: "Antigravity usage checks are temporarily unavailable. Try again shortly.",
+            retry_after: None,
+        }),
+    };
+    if !terminal_process_is_current(terminals, &target.id, process)
+        || verify_agy_context_current(terminals, &target.id, state, process, &key, generation).await
+            != Some(generation)
+    {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "Antigravity account context changed while usage was being checked. Try again.",
+            Some(source_name(TitleCli::Agy)),
+        );
+    }
+    let result = match version_result {
+        Ok(()) => {
+            match tauri::async_runtime::spawn_blocking(move || agy::read_usage(&context)).await {
+                Ok(result) => result,
+                Err(_) => Err(FetchFailure {
+                    status: UsageStatus::Error,
+                    message:
+                        "Antigravity usage checks are temporarily unavailable. Try again shortly.",
+                    retry_after: None,
+                }),
+            }
+        }
+        Err(failure) => Err(failure),
+    };
+    if !terminal_process_is_current(terminals, &target.id, process)
+        || verify_agy_context_current(terminals, &target.id, state, process, &key, generation).await
+            != Some(generation)
+    {
+        return empty_entry(
+            target,
+            UsageStatus::Error,
+            "The CLI is no longer running in this terminal. Check usage again.",
+            None,
+        );
+    }
+    match result {
+        Ok(windows) => {
+            let snapshot = UsageSnapshot {
+                status: UsageStatus::Ready,
+                windows,
+                updated_at: Some(now_ms()),
+                retry_at: None,
+                message: None,
+                source: Some(source_name(TitleCli::Agy)),
+                next_retry: None,
+                last_success: Some(Instant::now()),
+                last_forced: force.then(Instant::now),
+                failure_count: 0,
+                last_used: Instant::now(),
+            };
+            if !store_snapshot(state, key, generation, snapshot.clone()).await {
+                return empty_entry(
+                    target,
+                    UsageStatus::Error,
+                    "Antigravity account context changed while usage was being checked. Try again.",
+                    Some(source_name(TitleCli::Agy)),
+                );
+            }
+            entry_from_snapshot(target, snapshot)
+        }
+        Err(failure) => {
+            match failed_snapshot_clearing_values(state, &key, failure, generation).await {
+                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                None => empty_entry(
+                    target,
+                    UsageStatus::Error,
+                    "Antigravity account context changed while usage was being checked. Try again.",
+                    Some(source_name(TitleCli::Agy)),
+                ),
+            }
+        }
+    }
+}
+
+fn agy_cache_key(context: &agy::Context) -> CacheKey {
+    CacheKey {
+        namespace: UsageNamespace {
+            cli: TitleCli::Agy,
+            directory: context.directory.clone(),
+            store: format!("agy-cli-managed-{}", context.identity),
+        },
+        identity: "agy-cli-managed".to_owned(),
+    }
+}
+
+async fn verify_agy_context_current(
+    terminals: &Terminals,
+    id: &str,
+    state: &CliUsage,
+    process: TitleProcess,
+    expected_key: &CacheKey,
+    expected_generation: u64,
+) -> Option<u64> {
+    let paths =
+        tauri::async_runtime::spawn_blocking(move || cli_titles::usage_process_paths(process))
+            .await
+            .ok()?
+            .ok()?;
+    if !terminal_process_is_current(terminals, id, process) {
+        return None;
+    }
+    let context = tauri::async_runtime::spawn_blocking(move || agy::prepare(&paths))
+        .await
+        .ok()?
+        .ok()?;
+    if !terminal_process_is_current(terminals, id, process) {
+        return None;
+    }
+    let current_key = agy_cache_key(&context);
+    let observed_generation = current_generation(state, &current_key.namespace).await;
+    if current_key != *expected_key {
+        let _ = activate_identity(state, &current_key, observed_generation).await;
+        return None;
+    }
+    let generation = activate_identity(state, &current_key, observed_generation).await?;
+    (generation == expected_generation).then_some(generation)
+}
+
 fn supports_usage(cli: TitleCli) -> bool {
     matches!(
         cli,
-        TitleCli::Codex | TitleCli::Claude | TitleCli::Cursor | TitleCli::Kimi
+        TitleCli::Codex | TitleCli::Claude | TitleCli::Cursor | TitleCli::Kimi | TitleCli::Agy
     )
 }
 
@@ -439,6 +694,7 @@ fn source_name(cli: TitleCli) -> String {
         TitleCli::Claude => "claude",
         TitleCli::Cursor => "cursor",
         TitleCli::Kimi => "kimi",
+        TitleCli::Agy => "agy",
         _ => "cli",
     }
     .to_owned()
@@ -447,6 +703,7 @@ fn source_name(cli: TitleCli) -> String {
 fn unsupported_message(cli: TitleCli) -> &'static str {
     match cli {
         TitleCli::Gemini => "Gemini CLI does not expose a quota check that Lomi can safely call.",
+        TitleCli::Agy => "Antigravity CLI usage is not available for this account or version.",
         TitleCli::Cursor => "Cursor account usage is not available for this account or plan.",
         TitleCli::Claude => {
             "Claude Code account usage is not available for this authentication mode."
@@ -1774,6 +2031,36 @@ async fn failed_snapshot(
     retry_after: Option<Duration>,
     expected_generation: u64,
 ) -> Option<UsageSnapshot> {
+    failed_snapshot_with_policy(
+        state,
+        key,
+        FetchFailure {
+            status,
+            message,
+            retry_after,
+        },
+        expected_generation,
+        true,
+    )
+    .await
+}
+
+async fn failed_snapshot_clearing_values(
+    state: &CliUsage,
+    key: &CacheKey,
+    failure: FetchFailure,
+    expected_generation: u64,
+) -> Option<UsageSnapshot> {
+    failed_snapshot_with_policy(state, key, failure, expected_generation, false).await
+}
+
+async fn failed_snapshot_with_policy(
+    state: &CliUsage,
+    key: &CacheKey,
+    failure: FetchFailure,
+    expected_generation: u64,
+    preserve_values: bool,
+) -> Option<UsageSnapshot> {
     let mut cache = state.cache.lock().await;
     if cache
         .generation
@@ -1786,14 +2073,21 @@ async fn failed_snapshot(
         return None;
     }
     let previous = cache.records.get(key).cloned();
+    if !preserve_values {
+        cache
+            .records
+            .retain(|old_key, _| old_key.namespace != key.namespace);
+    }
     let count = previous
         .as_ref()
         .map(|snapshot| snapshot.failure_count.saturating_add(1))
         .unwrap_or(1);
-    let delay = retry_after.unwrap_or_else(|| backoff_delay(count, status));
+    let delay = failure
+        .retry_after
+        .unwrap_or_else(|| backoff_delay(count, failure.status));
     let next_retry = Instant::now() + delay;
     let mut snapshot = previous.unwrap_or_else(|| UsageSnapshot {
-        status,
+        status: failure.status,
         windows: Vec::new(),
         updated_at: None,
         retry_at: None,
@@ -1805,8 +2099,13 @@ async fn failed_snapshot(
         failure_count: 0,
         last_used: Instant::now(),
     });
-    snapshot.status = status;
-    snapshot.message = Some(message.to_owned());
+    snapshot.status = failure.status;
+    snapshot.message = Some(failure.message.to_owned());
+    if !preserve_values {
+        snapshot.windows.clear();
+        snapshot.updated_at = None;
+        snapshot.last_success = None;
+    }
     snapshot.retry_at =
         Some(now_ms().saturating_add(delay.as_millis().min(i64::MAX as u128) as i64));
     snapshot.next_retry = Some(next_retry);

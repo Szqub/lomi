@@ -131,10 +131,11 @@ open it with Enter or Arrow Down and dismiss it with Escape.
 
 Lomi checks usage every 15 seconds while agents are running, and when the window
 regains focus or the details menu opens. Refresh requests share an in-flight
-read and native cache for the same credentials. Provider throttling delays further
-requests, including manual refreshes. A transient service error retains the last
-successful values with an explicit stale indication; signing out or changing credentials
-does not carry another account's values forward.
+read and native cache for the same account or process context. Provider throttling
+delays further requests, including manual refreshes. A transient HTTP service
+error retains the last successful values with an explicit stale indication;
+signing out or changing credentials does not carry another account's values
+forward.
 
 Account quota and a conversation's context window are different. Lomi does not
 estimate subscription quota from tokens, prompts, transcripts or terminal output.
@@ -145,18 +146,33 @@ the details show an unavailable status when Lomi has no verified account reader.
 This describes Lomi's current coverage, rather than assuming the provider has no
 usage API.
 
-| Reader      | Existing login                                  | Reported quota                                                               |
-| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| Codex       | ChatGPT account in the running CLI's Codex home | Primary and secondary account windows, including additional reported buckets |
-| Claude Code | Claude account OAuth with profile access        | Five-hour and supported weekly subscription/model windows                    |
-| Cursor CLI  | The CLI's existing OAuth credential store       | Included plan usage for the current billing period                           |
-| Kimi Code   | Existing Kimi Code OAuth credentials            | Five-hour, weekly and monthly windows reported by the account                |
+| Reader          | Existing login                                  | Reported quota                                                               |
+| --------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| Codex           | ChatGPT account in the running CLI's Codex home | Primary and secondary account windows, including additional reported buckets |
+| Claude Code     | Claude account OAuth with profile access        | Five-hour and supported weekly subscription/model windows                    |
+| Cursor CLI      | The CLI's existing OAuth credential store       | Included plan usage for the current billing period                           |
+| Kimi Code       | Existing Kimi Code OAuth credentials            | Five-hour, weekly and monthly windows reported by the account                |
+| Antigravity CLI | The running CLI's existing account login        | Shared model-group quota buckets and their reported reset times              |
 
 These readers follow [Codex's backend client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs),
 Claude's account usage response, the installed Cursor CLI's DashboardService
 `GetCurrentPeriodUsage` contract and [Kimi Code's managed usage reader](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts).
 API-key and custom-provider accounts are not assumed to share a saved OAuth
-subscription. Login expiry is reported without modifying the CLI's authentication.
+subscription. The HTTP readers report login expiry without modifying the CLI's
+authentication.
+
+Antigravity uses the installed CLI's supported `-p /usage --output-format json`
+report. Its [CLI changelog](https://antigravity.google/docs/changelog/)
+documents this read-only command from version 1.1.11: it does not start an agent
+turn, spend model quota or create a conversation. Lomi checks the executable's
+version before invoking it and accepts compatible stable 1.x versions. The query
+uses the running process's account context, reads shared group/bucket limits and
+refreshes on the same titlebar schedule. Its process-context cache lasts at most
+five seconds after a successful read. Command failures clear numeric values;
+Lomi cannot inspect the CLI-managed authentication to qualify an old account's
+saved quota. API-key mode remains unavailable. See the
+[headless output contract](https://antigravity.google/docs/cli/headless/) and
+[model quota panel](https://antigravity.google/docs/cli/commands/usage/).
 
 The Kimi reader uses the current native Kimi Code client's selected managed
 provider, regional endpoint and file credentials in `KIMI_CODE_HOME` (by default
@@ -169,8 +185,9 @@ notice](https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos
 prohibits that direct access from third-party software.
 
 Usage requests and credential reads run natively. Credentials never enter the
-webview, and the feature does not modify CLI configuration, refresh login tokens,
-restart terminals or send model requests. Only the trusted main app can inspect
+webview, and Lomi does not modify CLI configuration, initiate login, restart
+terminals or send model requests. The Antigravity command handles its own normal
+credential and quota-cache maintenance. Only the trusted main app can inspect
 usage for a verified CLI process in one of its own terminal sessions. Custom
 providers, API-key authentication and expired logins may not expose plan quota.
 
@@ -185,6 +202,8 @@ denial in an isolated app profile. Its optional `--live-all` probe reads the
 existing Codex, Claude, Cursor and current Kimi Code accounts using inert process
 fixtures. It reports availability without recording credentials, launching agent
 sessions or sending model requests.
+The separate `--live-agy` mode verifies the Antigravity read-only report through
+an inert native fixture and the installed CLI, without recording quota values.
 
 ## Qualification
 
@@ -196,3 +215,9 @@ This is not an end-to-end qualification of installed/authenticated versions of
 all agents. Process inspection is macOS/Linux only; WSL and Windows agent
 inspection are not added by this change. Existing generic terminal behavior is
 unchanged on those platforms.
+
+Antigravity usage was qualified on macOS ARM64 with agy 1.2.13. The native
+fixture verified automatic percentage changes in the titlebar and details menu,
+reset times and stopped-process rejection. The live read returned four numeric
+quota windows and passed the zero-agent-turn response guard. Other platforms
+were not independently qualified for this reader.
