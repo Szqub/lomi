@@ -271,7 +271,17 @@ fn probe_script(kind: &str, names: &[&str]) -> Result<String, String> {
 fn run_bounded_probe(mut command: Command) -> Result<Vec<u8>, String> {
     use std::os::{fd::AsRawFd, unix::process::CommandExt};
 
-    command.process_group(0);
+    // Interactive shells can stop with SIGTTIN in a background process group
+    // when the app was launched from a terminal. Detach the probe from that
+    // controlling terminal while retaining its own group for bounded cleanup.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("Cannot inspect the selected shell environment: {error}"))?;
@@ -621,6 +631,106 @@ mod tests {
         assert_eq!(SPECS.map(|spec| spec.cli), TitleCli::MCP_CLIENTS);
         assert_eq!(spec(TitleCli::Kiro).unwrap().argument, Some("chat"));
         assert_eq!(spec(TitleCli::Openclaw).unwrap().argument, Some("tui"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discovery_from_a_controlling_terminal_does_not_stop_the_probe() {
+        const CHILD_ENV: &str = "LOMI_CLI_DISCOVERY_TTY_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            assert!(fs::File::open("/dev/tty").is_ok());
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("shell home");
+            let bin = root.path().join("agent bin");
+            let integration = root.path().join("integration");
+            fs::create_dir_all(&home).unwrap();
+            fs::create_dir_all(&bin).unwrap();
+            shell::prepare(&integration).unwrap();
+            let launched = root.path().join("launched");
+            let codex = bin.join("codex");
+            fs::write(
+                &codex,
+                format!(
+                    "#!/bin/sh\nprintf launched > {}\n",
+                    shell::quote(launched.to_str().unwrap(), "sh").unwrap()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(
+                home.join(".zshrc"),
+                format!(
+                    "export PATH={}:/usr/bin:/bin\n",
+                    shell::quote(bin.to_str().unwrap(), "zsh").unwrap()
+                ),
+            )
+            .unwrap();
+            let wrapper = root.path().join("selected-zsh");
+            fs::write(
+                &wrapper,
+                format!(
+                    "#!/bin/sh\nexport LOMI_ZDOTDIR={}\nexec /bin/zsh \"$@\"\n",
+                    shell::quote(home.to_str().unwrap(), "sh").unwrap()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+            let profile = Profile {
+                id: "test:zsh".into(),
+                name: "zsh".into(),
+                kind: "zsh".into(),
+                program: wrapper.to_string_lossy().into_owned(),
+                distro: None,
+                home: home.to_string_lossy().into_owned(),
+            };
+            let start = Instant::now();
+            let found = resolve_all(&profile, &profile.home, &integration, Some(&home)).unwrap();
+            assert_eq!(
+                found[&TitleCli::Codex].program,
+                codex.canonicalize().unwrap()
+            );
+            let shells = Shells {
+                profiles: vec![profile],
+                integration,
+            };
+            assert_eq!(
+                installed_local_clis(&shells).unwrap(),
+                HashSet::from([TitleCli::Codex])
+            );
+            assert!(!launched.exists());
+            assert!(start.elapsed() < Duration::from_secs(5));
+            return;
+        }
+
+        // A separate test process gives the caller a real controlling terminal
+        // without changing the session or environment of other test threads.
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = portable_pty::CommandBuilder::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "cli_launch::tests::discovery_from_a_controlling_terminal_does_not_stop_the_probe",
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        command.env(CHILD_ENV, "1");
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let reading = thread::spawn(move || {
+            let mut output = String::new();
+            let _ = reader.read_to_string(&mut output);
+            output
+        });
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let status = child.wait().unwrap();
+        let output = reading.join().unwrap();
+        assert!(status.success(), "{output}");
     }
 
     #[test]
