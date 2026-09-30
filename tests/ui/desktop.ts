@@ -29,9 +29,13 @@ export async function mockDesktop(
     { content: string; revision: string; encoding: string; readOnly: boolean }
   > = {},
   platform: "linux" | "macos" | "windows" = "linux",
+  agents: {
+    installed?: { cli: string; name: string; command: string }[];
+    blocked?: boolean;
+  } = {},
 ) {
   await page.addInitScript(
-    ({ repository, saved, gitHistory, editorFiles, platform }) => {
+    ({ repository, saved, gitHistory, editorFiles, platform, agents }) => {
       Object.defineProperty(navigator, "platform", {
         configurable: true,
         value:
@@ -124,7 +128,7 @@ export async function mockDesktop(
         busyTerminals: [] as string[],
         terminalProcessError: "",
         terminalProcessDelay: 0,
-        installedAgentClis: [] as {
+        installedAgentClis: (agents.installed ?? []) as {
           cli: string;
           name: string;
           command: string;
@@ -135,6 +139,8 @@ export async function mockDesktop(
         }[],
         installedAgentCliError: "",
         installedAgentCliDelay: 0,
+        installedAgentCliBlocked: agents.blocked ?? false,
+        installedAgentCliReleases: [] as (() => void)[],
         agentStartupFailures: 0,
         agentStartupError: "Agent CLI failed to start",
         cliTitleSetup: null,
@@ -1175,6 +1181,10 @@ export async function mockDesktop(
           if (command === "installed_agent_clis") {
             const mock = desktop.__nativeTest;
             mock.installedAgentCliCalls.push(structuredClone(args));
+            if (mock.installedAgentCliBlocked)
+              await new Promise<void>((resolve) =>
+                mock.installedAgentCliReleases.push(resolve),
+              );
             if (mock.installedAgentCliDelay)
               await new Promise((resolve) =>
                 setTimeout(resolve, mock.installedAgentCliDelay),
@@ -1350,7 +1360,7 @@ export async function mockDesktop(
         },
       };
     },
-    { repository, saved, gitHistory, editorFiles, platform },
+    { repository, saved, gitHistory, editorFiles, platform, agents },
   );
 }
 

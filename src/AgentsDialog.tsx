@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { api, errorMessage } from "./api";
+import { errorMessage } from "./api";
 import { CliAgentIcon } from "./CliAgentIcon";
 import type { CliAgent } from "./cli-agents";
 import type { ShellProfile } from "./model";
 import { RefreshCw } from "./icons";
 import { Modal } from "./ui";
 
-interface InstalledCli {
-  cli: CliAgent;
-  name: string;
-  command: string;
+import {
+  cachedInstalledAgentClis,
+  loadInstalledAgentClis,
+  type InstalledCli,
+} from "./installed-agent-clis";
+
+function defaultCli(clients: InstalledCli[]) {
+  return (clients.find((client) => client.cli === "cursor") ?? clients[0])?.cli;
 }
 
 export default function AgentsDialog({
@@ -27,41 +31,46 @@ export default function AgentsDialog({
   const refreshButton = useRef<HTMLButtonElement>(null);
   const request = useRef(0);
   const launching = useRef(false);
-  const [clients, setClients] = useState<InstalledCli[]>([]);
-  const [selected, setSelected] = useState<CliAgent>();
+  const [clients, setClients] = useState<InstalledCli[]>(
+    () => cachedInstalledAgentClis(profile, cwd) ?? [],
+  );
+  const [selected, setSelected] = useState<CliAgent | undefined>(() =>
+    defaultCli(cachedInstalledAgentClis(profile, cwd) ?? []),
+  );
   const [count, setCount] = useState("4");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => cachedInstalledAgentClis(profile, cwd) === undefined,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const refresh = useCallback(async () => {
-    const generation = ++request.current;
-    setLoading(true);
-    setClients([]);
-    setError("");
-    try {
-      const installed = await api<InstalledCli[]>("installed_agent_clis", {
-        profileId: profile.id,
-        cwd,
-      });
-      if (generation !== request.current) return;
-      setClients(installed);
-      setSelected((previous) =>
-        installed.some((client) => client.cli === previous)
-          ? previous
-          : (
-              installed.find((client) => client.cli === "cursor") ??
-              installed[0]
-            )?.cli,
-      );
-    } catch (cause) {
-      if (generation === request.current) setError(errorMessage(cause));
-    } finally {
-      if (generation === request.current) setLoading(false);
-    }
-  }, [profile.id, cwd]);
+  const refresh = useCallback(
+    async (force = false) => {
+      const generation = ++request.current;
+      setLoading(true);
+      setError("");
+      try {
+        const installed = await loadInstalledAgentClis(profile, cwd, force);
+        if (generation !== request.current) return;
+        setClients(installed);
+        setSelected((previous) =>
+          installed.some((client) => client.cli === previous)
+            ? previous
+            : defaultCli(installed),
+        );
+      } catch (cause) {
+        if (generation === request.current) setError(errorMessage(cause));
+      } finally {
+        if (generation === request.current) setLoading(false);
+      }
+    },
+    [profile, cwd],
+  );
 
   useEffect(() => {
+    const cached = cachedInstalledAgentClis(profile, cwd) ?? [];
+    setClients(cached);
+    setSelected(defaultCli(cached));
     void refresh();
     return () => {
       ++request.current;
@@ -81,7 +90,7 @@ export default function AgentsDialog({
         className="dialog-form"
         onSubmit={async (event) => {
           event.preventDefault();
-          if (launching.current || loading || !clients.length) return;
+          if (launching.current || !clients.length) return;
           const amount = Number(count);
           if (!Number.isSafeInteger(amount) || amount < 1) {
             setError("Enter a whole number of terminals, at least 1.");
@@ -114,14 +123,16 @@ export default function AgentsDialog({
             className="icon-button"
             aria-label="Refresh installed CLI"
             disabled={loading || busy}
-            onClick={() => void refresh()}
+            onClick={() => void refresh(true)}
           >
             <RefreshCw size={15} aria-hidden="true" />
           </button>
         </div>
         <div className="agents-scan-status" role="status">
           {loading
-            ? "Looking for installed agents…"
+            ? clients.length
+              ? "Refreshing installed agents…"
+              : "Looking for installed agents…"
             : !error && !clients.length
               ? "No supported agent CLI found. Install a CLI, then refresh."
               : ""}
@@ -184,7 +195,7 @@ export default function AgentsDialog({
           <button
             type="submit"
             className="button button-primary"
-            disabled={loading || busy || !clients.length}
+            disabled={busy || !clients.length}
           >
             {busy ? "Launching…" : "Launch agents"}
           </button>

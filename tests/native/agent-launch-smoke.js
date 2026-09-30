@@ -14,15 +14,28 @@
   let phase = "initial terminal";
   try {
     await wait(() => document.querySelector(".xterm"));
+    phase = "background CLI discovery";
+    const { cachedInstalledAgentClis } =
+      await import("/src/installed-agent-clis.ts");
+    const info = await invoke("app_info");
+    const session = await invoke("load_session");
+    const project = session.projects[0];
+    const profile = info.profiles.find((profile) => profile.id === "local:zsh");
+    if (!profile) throw Error("Expected the native zsh fixture.");
+    await wait(() => cachedInstalledAgentClis(profile, project.path));
     phase = "installed-only dialog";
     document.querySelector('[aria-label^="New tab"]').click();
     await wait(() =>
       document.querySelector('[role="menuitem"][aria-label="Agents"]'),
     );
+    const openedAt = performance.now();
     document.querySelector('[role="menuitem"][aria-label="Agents"]').click();
     await wait(() =>
       document.querySelector('.agents-dialog input[type="radio"]'),
     );
+    const initialListMs = performance.now() - openedAt;
+    if (initialListMs > 500)
+      throw Error(`Warmed CLI list took ${initialListMs.toFixed(0)} ms.`);
     const radios = [
       ...document.querySelectorAll('.agents-dialog input[type="radio"]'),
     ];
@@ -33,6 +46,23 @@
       "4"
     )
       throw Error("Expected default count 4.");
+    phase = "instant cached reopen";
+    document
+      .querySelector('.agents-dialog button[type="button"].button')
+      .click();
+    await wait(() => !document.querySelector(".agents-dialog"));
+    document.querySelector('[aria-label^="New tab"]').click();
+    await wait(() =>
+      document.querySelector('[role="menuitem"][aria-label="Agents"]'),
+    );
+    const reopenedAt = performance.now();
+    document.querySelector('[role="menuitem"][aria-label="Agents"]').click();
+    await wait(() =>
+      document.querySelector('.agents-dialog input[type="radio"]'),
+    );
+    const reopenedListMs = performance.now() - reopenedAt;
+    if (reopenedListMs > 500)
+      throw Error(`Reopened CLI list took ${reopenedListMs.toFixed(0)} ms.`);
     phase = "four immediate native PTYs in one split tab";
     document.querySelector('.agents-dialog button[type="submit"]').click();
     await wait(async () => {
@@ -133,12 +163,15 @@
       data: {
         checks: [
           "installed-only native discovery",
+          "background discovery and instant cached dialog reopen",
           "four immediate PTYs in project cwd within one tab",
           "two-by-two terminal grid",
           "output flow control and individual pane titles",
           "tab switches retain processes",
         ],
         launches: 4,
+        initialListMs,
+        reopenedListMs,
       },
     });
   } catch (error) {

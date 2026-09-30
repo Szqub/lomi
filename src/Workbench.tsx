@@ -168,6 +168,7 @@ import {
 import { useCliIntegrations } from "./CliIntegrations";
 import { useAgentNotifications } from "./AgentNotifications";
 import AgentsDialog from "./AgentsDialog";
+import { loadInstalledAgentClis } from "./installed-agent-clis";
 import { cliNames } from "./cli-agents";
 import type { CliAgent } from "./cli-agents";
 import {
@@ -254,6 +255,21 @@ export default function Workbench() {
   const workArea = useRef<HTMLDivElement>(null);
   const terminalLayout = useRef<HTMLDivElement>(null);
   const selected = session ? active(session) : undefined;
+  const agentProfileId =
+    info?.platform !== "windows" && selected?.tab.type === "terminal"
+      ? selected.tab.profileId
+      : defaultProfileId;
+  const agentProfile = info?.profiles.find(
+    (profile) => profile.id === agentProfileId,
+  );
+  const agentCwd = selected?.project.path;
+  useEffect(() => {
+    if (agentProfile && agentCwd) {
+      void loadInstalledAgentClis(agentProfile, agentCwd).catch(
+        () => undefined,
+      );
+    }
+  }, [agentProfile, agentCwd]);
   const renderPaneLayout = usePaneMotion(workArea);
   const setSession = useCallback(
     (
@@ -2837,6 +2853,7 @@ export default function Workbench() {
           )}
           {agentsTarget && (
             <AgentsDialog
+              key={JSON.stringify([agentsTarget.profile, agentsTarget.cwd])}
               profile={agentsTarget.profile}
               cwd={agentsTarget.cwd}
               onClose={() => setAgentsTarget(null)}

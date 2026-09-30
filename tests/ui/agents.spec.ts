@@ -12,25 +12,33 @@ async function openAgents(page: import("@playwright/test").Page) {
   return page.getByRole("dialog", { name: "Agents" });
 }
 
-async function setInstalledAgents(
+async function setupAgents(
   page: import("@playwright/test").Page,
   agents = installedAgents,
+  blocked = false,
 ) {
-  await page.evaluate((value) => {
-    (window as any).__nativeTest.installedAgentClis = value;
-  }, agents);
+  await mockDesktop(page, false, undefined, undefined, undefined, undefined, {
+    installed: agents,
+    blocked,
+  });
+  await page.goto("/");
+}
+
+async function releaseScans(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.installedAgentCliBlocked = false;
+    mock.installedAgentCliReleases
+      .splice(0)
+      .forEach((release: () => void) => release());
+  });
 }
 
 test("Agents starts four terminals in a two-by-two grid within one new tab", async ({
   page,
 }, testInfo) => {
   await page.emulateMedia({ colorScheme: "light" });
-  await mockDesktop(page, false);
-  await page.goto("/");
-  await setInstalledAgents(page);
-  await page.evaluate(() => {
-    (window as any).__nativeTest.installedAgentCliDelay = 120;
-  });
+  await setupAgents(page, installedAgents, true);
   const dialog = await openAgents(page);
 
   await expect(dialog.getByRole("status")).toHaveText(
@@ -39,6 +47,7 @@ test("Agents starts four terminals in a two-by-two grid within one new tab", asy
   await expect(
     dialog.getByRole("button", { name: "Refresh installed CLI" }),
   ).toBeDisabled();
+  await releaseScans(page);
   await expect(dialog.getByRole("radio")).toHaveCount(2);
   await expect(dialog).toContainText("Cursor CLI");
   await expect(dialog).toContainText("cursor-agent");
@@ -211,9 +220,7 @@ test("Agents handles empty and failed discovery and can retry", async ({
 test("Agents cancel and Escape restore focus to the New tab button", async ({
   page,
 }) => {
-  await mockDesktop(page, false);
-  await page.goto("/");
-  await setInstalledAgents(page);
+  await setupAgents(page);
   const trigger = page.getByRole("button", { name: /^New tab/ });
 
   let dialog = await openAgents(page);
@@ -232,9 +239,7 @@ test("Agents validates the terminal count and supports another installed CLI", a
   page,
 }, testInfo) => {
   await page.emulateMedia({ colorScheme: "dark" });
-  await mockDesktop(page, false);
-  await page.goto("/");
-  await setInstalledAgents(page);
+  await setupAgents(page);
   const dialog = await openAgents(page);
   await expect(dialog.getByRole("radio")).toHaveCount(2);
   await dialog.getByRole("radio", { name: /Claude Code/ }).check();
@@ -293,9 +298,7 @@ test("Agents validates the terminal count and supports another installed CLI", a
 test("a native agent startup error is visible and does not trigger a duplicate start", async ({
   page,
 }) => {
-  await mockDesktop(page, false);
-  await page.goto("/");
-  await setInstalledAgents(page, [installedAgents[0]]);
+  await setupAgents(page, [installedAgents[0]]);
   const dialog = await openAgents(page);
   await expect(dialog.getByRole("radio")).toHaveCount(1);
   await page.evaluate(() => {
@@ -330,9 +333,7 @@ for (const count of [1, 3, 5]) {
   test(`Agents starts exactly ${count} CLI panels in one new tab`, async ({
     page,
   }) => {
-    await mockDesktop(page, false);
-    await page.goto("/");
-    await setInstalledAgents(page, [installedAgents[0]]);
+    await setupAgents(page, [installedAgents[0]]);
     const dialog = await openAgents(page);
     await expect(dialog.getByRole("radio")).toHaveCount(1);
     await dialog.getByLabel("Number of terminals").fill(String(count));
@@ -356,3 +357,216 @@ for (const count of [1, 3, 5]) {
       await expect(panel).toBeVisible();
   });
 }
+
+test("startup prewarms discovery and reopening uses the completed scan immediately", async ({
+  page,
+}) => {
+  await setupAgents(page, installedAgents, true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).__nativeTest.installedAgentCliCalls.length,
+      ),
+    )
+    .toBe(1);
+  await expect(page.getByRole("dialog", { name: "Agents" })).toHaveCount(0);
+  await releaseScans(page);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { cachedInstalledAgentClis } = await import(
+          performance
+            .getEntriesByType("resource")
+            .map((entry) => entry.name)
+            .filter(
+              (url) => new URL(url).pathname === "/src/installed-agent-clis.ts",
+            )
+            .at(-1)!
+        );
+        const info = await (window as any).__TAURI_INTERNALS__.invoke(
+          "app_info",
+        );
+        return cachedInstalledAgentClis(info.profiles[0], "/project")?.length;
+      }),
+    )
+    .toBe(2);
+  for (let index = 0; index < 2; index++) {
+    const dialog = await openAgents(page);
+    // Inspect the first rendered dialog without waiting for discovery to finish.
+    expect(await dialog.getByRole("radio").count()).toBe(2);
+    await expect(
+      dialog.getByRole("button", { name: "Launch agents" }),
+    ).toBeEnabled();
+    await expect(
+      dialog.getByRole("radio", { name: /Cursor CLI/ }),
+    ).toBeChecked();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+  }
+  expect(
+    await page.evaluate(
+      () => (window as any).__nativeTest.installedAgentCliCalls.length,
+    ),
+  ).toBe(1);
+});
+
+test("refresh retains usable choices and selection through pending discovery and errors", async ({
+  page,
+}) => {
+  await setupAgents(page);
+  const dialog = await openAgents(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  await dialog.getByRole("radio", { name: /Claude Code/ }).check();
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.installedAgentCliBlocked = true;
+    mock.installedAgentCliError = "Refresh failed";
+  });
+  await dialog.getByRole("button", { name: "Refresh installed CLI" }).click();
+  await expect(dialog.getByRole("status")).toHaveText(
+    "Refreshing installed agents…",
+  );
+  expect(await dialog.getByRole("radio").count()).toBe(2);
+  await expect(
+    dialog.getByRole("radio", { name: /Claude Code/ }),
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole("button", { name: "Launch agents" }),
+  ).toBeEnabled();
+  await expect(
+    dialog.getByRole("button", { name: "Refresh installed CLI" }),
+  ).toBeDisabled();
+  await releaseScans(page);
+  await expect(dialog.getByRole("alert")).toHaveText("Refresh failed");
+  await expect(
+    dialog.getByRole("radio", { name: /Claude Code/ }),
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole("button", { name: "Launch agents" }),
+  ).toBeEnabled();
+  await dialog.getByLabel("Number of terminals").fill("1");
+  await dialog.getByRole("button", { name: "Launch agents" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "Claude Code", exact: true }),
+  ).toBeVisible();
+});
+
+test("cache isolates directories and complete shell profiles and refresh waits for pending scans", async ({
+  page,
+}) => {
+  await setupAgents(page, [], true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).__nativeTest.installedAgentCliCalls.length,
+      ),
+    )
+    .toBe(1);
+  const observed = await page.evaluate(async () => {
+    const service = await import(
+      performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .filter(
+          (url) => new URL(url).pathname === "/src/installed-agent-clis.ts",
+        )
+        .at(-1)!
+    );
+    const mock = (window as any).__nativeTest;
+    const info = await (window as any).__TAURI_INTERNALS__.invoke("app_info");
+    const profile = info.profiles[0];
+    const first = service.loadInstalledAgentClis(profile, "/project");
+    const second = service.loadInstalledAgentClis(profile, "/project");
+    const refreshed = service.loadInstalledAgentClis(profile, "/project", true);
+    const forcedAgain = service.loadInstalledAgentClis(
+      profile,
+      "/project",
+      true,
+    );
+    const before = mock.installedAgentCliCalls.length;
+    mock.installedAgentCliBlocked = false;
+    mock.installedAgentCliReleases
+      .splice(0)
+      .forEach((release: () => void) => release());
+    await refreshed;
+    const after = mock.installedAgentCliCalls.length;
+    const emptyCached = service.cachedInstalledAgentClis(profile, "/project");
+    await service.loadInstalledAgentClis(profile, "/project");
+    const emptyReused = mock.installedAgentCliCalls.length === after;
+    const otherDirectory = service.cachedInstalledAgentClis(profile, "/other");
+    const modifiedProfile = service.cachedInstalledAgentClis(
+      { ...profile, program: "/other/bash" },
+      "/project",
+    );
+    await service.loadInstalledAgentClis(profile, "/other");
+    await service.loadInstalledAgentClis(
+      { ...profile, program: "/other/bash" },
+      "/project",
+    );
+    return {
+      deduplicated: first === second,
+      coalesced: refreshed === forcedAgain,
+      before,
+      after,
+      emptyCached,
+      emptyReused,
+      otherDirectory,
+      modifiedProfile,
+      calls: mock.installedAgentCliCalls,
+    };
+  });
+  expect(observed).toMatchObject({
+    deduplicated: true,
+    coalesced: true,
+    before: 1,
+    after: 2,
+    emptyCached: [],
+    emptyReused: true,
+    otherDirectory: undefined,
+    modifiedProfile: undefined,
+  });
+  expect(observed.calls).toEqual([
+    { profileId: "local:bash", cwd: "/project" },
+    { profileId: "local:bash", cwd: "/project" },
+    { profileId: "local:bash", cwd: "/other" },
+    { profileId: "local:bash", cwd: "/project" },
+  ]);
+});
+
+test("stale cached choices remain launchable during background revalidation", async ({
+  page,
+}) => {
+  await setupAgents(page);
+  let dialog = await openAgents(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.installedAgentCliBlocked = true;
+    const now = Date.now;
+    mock.restoreClock = () => {
+      Date.now = now;
+    };
+    Date.now = () => now() + 5 * 60 * 1000 + 1;
+  });
+  dialog = await openAgents(page);
+  expect(await dialog.getByRole("radio").count()).toBe(2);
+  await expect(dialog.getByRole("status")).toHaveText(
+    "Refreshing installed agents…",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).__nativeTest.installedAgentCliCalls.length,
+      ),
+    )
+    .toBe(2);
+  await page.evaluate(() => (window as any).__nativeTest.restoreClock());
+  await dialog.getByLabel("Number of terminals").fill("1");
+  await dialog.getByRole("button", { name: "Launch agents" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("tab", { name: "Cursor CLI", exact: true }),
+  ).toBeVisible();
+  await releaseScans(page);
+});
