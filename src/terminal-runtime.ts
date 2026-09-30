@@ -984,6 +984,25 @@ export class TerminalRuntime {
 }
 
 const runtimes = new Map<string, TerminalRuntime>();
+let terminalAgents: Readonly<Record<string, CliAgent>> = Object.freeze({});
+const terminalAgentListeners = new Set<() => void>();
+export const getTerminalAgents = () => terminalAgents;
+export function subscribeTerminalAgents(listener: () => void) {
+  terminalAgentListeners.add(listener);
+  return () => {
+    terminalAgentListeners.delete(listener);
+  };
+}
+function updateTerminalAgents(next: Record<string, CliAgent>) {
+  const ids = Object.keys(next);
+  if (
+    ids.length === Object.keys(terminalAgents).length &&
+    ids.every((id) => next[id] === terminalAgents[id])
+  )
+    return;
+  terminalAgents = Object.freeze(next);
+  for (const listener of terminalAgentListeners) listener();
+}
 export function terminalFor(
   pane: Pane,
   profile: ShellProfile,
@@ -1041,17 +1060,23 @@ export function closeTerminals(ids: string[]) {
     runtimes.get(id)?.dispose();
     runtimes.delete(id);
   }
+  const next = { ...terminalAgents };
+  for (const id of ids) delete next[id];
+  updateTerminalAgents(next);
 }
 export function observeTerminalContexts(
   contexts: Record<string, TerminalContext>,
 ) {
   const result: Record<string, string> = {};
+  const agents: Record<string, CliAgent> = {};
   for (const [id, runtime] of runtimes) {
     const context = contexts[runtime.sessionId];
+    if (context?.titleCli?.cli) agents[id] = context.titleCli.cli;
     runtime.observeForegroundProgram(context?.foregroundProgram ?? null);
     runtime.observeControl(context?.agentControlled ?? false);
     if (context?.cwd) result[id] = context.cwd;
   }
+  updateTerminalAgents(agents);
   return result;
 }
 if (import.meta.hot)

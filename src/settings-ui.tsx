@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Notice, type NoticeProps } from "./Notice";
 
 export function SettingsPage({
   title,
@@ -122,27 +123,11 @@ export function SettingRow({
   );
 }
 
-export function SettingsNotice({
-  tone = "info",
-  role = tone === "error" ? "alert" : undefined,
-  action,
-  className = "",
-  children,
-}: {
-  tone?: "info" | "warning" | "error";
-  role?: "alert" | "status" | "note";
-  action?: ReactNode;
-  className?: string;
-  children: ReactNode;
-}) {
+export function SettingsNotice({ className = "", ...props }: NoticeProps) {
   return (
-    <div
+    <Notice
+      {...props}
       className={`settings-notice${className ? ` ${className}` : ""}`}
-      data-tone={tone}
-      role={role}
-    >
-      <div className="settings-notice-body">{children}</div>
-      {action}
-    </div>
+    />
   );
 }

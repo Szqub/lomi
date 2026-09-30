@@ -2,6 +2,9 @@ import type { PanelDescriptor } from "@lomi-dev/plugin-sdk";
 import { jsonState, pluginId } from "./plugins/manifest.ts";
 export type PluginPanel = PanelDescriptor;
 import { restoreBrowserUrl } from "./browser-url.ts";
+import { sanitizeWorkspaceAppearance } from "./workspace-appearance.ts";
+import type { WorkspaceAppearance } from "./workspace-appearance.ts";
+export type { WorkspaceAppearance } from "./workspace-appearance.ts";
 
 export interface ShellProfile {
   id: string;
@@ -243,6 +246,7 @@ export type TabCloseAction =
 export interface Workspace {
   id: string;
   name: string;
+  appearance?: WorkspaceAppearance;
   activeTabId: string;
   tabs: Tab[];
   pluginSidebars?: PluginPanel[];
@@ -279,14 +283,48 @@ export const newPane = (cwd: string): Pane => ({
   id: newId(),
   cwd,
 });
+export function maximumAgentCount(size: LayoutSize): number {
+  if (
+    !Number.isFinite(size?.width) ||
+    !Number.isFinite(size?.height) ||
+    size.width < MIN_PANE_WIDTH ||
+    size.height < MIN_PANE_HEIGHT
+  )
+    return 0;
+  const columns = Math.floor(
+    (size.width + SPLIT_DIVIDER_SIZE) / (MIN_PANE_WIDTH + SPLIT_DIVIDER_SIZE),
+  );
+  const rows = Math.floor(
+    (size.height + SPLIT_DIVIDER_SIZE) / (MIN_PANE_HEIGHT + SPLIT_DIVIDER_SIZE),
+  );
+  return columns * rows;
+}
 export function newTab(
   cwd: string,
   profileId: string,
   title = "Terminal",
   paneCount = 1,
+  availableSize?: LayoutSize,
 ): TerminalTab {
   if (!Number.isSafeInteger(paneCount) || paneCount < 1)
     throw new Error("Enter a whole number of terminals, at least 1.");
+  let rowCount = Math.ceil(paneCount / Math.ceil(Math.sqrt(paneCount)));
+  if (availableSize !== undefined) {
+    if (paneCount > maximumAgentCount(availableSize))
+      throw new Error("The terminals do not fit in the available space.");
+    const columns = Math.floor(
+      (availableSize.width + SPLIT_DIVIDER_SIZE) /
+        (MIN_PANE_WIDTH + SPLIT_DIVIDER_SIZE),
+    );
+    const rows = Math.floor(
+      (availableSize.height + SPLIT_DIVIDER_SIZE) /
+        (MIN_PANE_HEIGHT + SPLIT_DIVIDER_SIZE),
+    );
+    rowCount = Math.max(
+      Math.ceil(paneCount / columns),
+      Math.min(rowCount, rows),
+    );
+  }
   const terminals = Array.from({ length: paneCount }, () => newPane(cwd));
   const join = (layouts: Layout[], axis: Split["axis"]): Layout => {
     if (layouts.length === 1) return layouts[0];
@@ -303,7 +341,6 @@ export function newTab(
       second,
     };
   };
-  const rowCount = Math.ceil(paneCount / Math.ceil(Math.sqrt(paneCount)));
   const rows: Layout[] = [];
   let offset = 0;
   for (let row = 0; row < rowCount; row++) {
@@ -1396,9 +1433,11 @@ export function restoreSession(value: unknown, info: AppInfo): Session {
           },
         );
         if (!tabs.length) tabs.push(newTab(path, info.profiles[0]?.id ?? ""));
+        const appearance = sanitizeWorkspaceAppearance(workspace.appearance);
         return {
           id: id(workspace.id),
           name: string(workspace.name, "Default"),
+          ...(appearance ? { appearance } : {}),
           tabs,
           ...(Array.isArray(workspace.pluginSidebars)
             ? {

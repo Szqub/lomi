@@ -80,6 +80,7 @@ import {
   newPane,
   newProject,
   newTab,
+  maximumAgentCount,
   newFileTab,
   openCommitTab,
   openDiffTab,
@@ -119,6 +120,7 @@ import {
 import type { TerminalContext } from "./terminal-runtime";
 import { dropPaths, terminalAtNativePosition } from "./file-drag";
 import { IconButton, Modal, WindowControls } from "./ui";
+import { Notice } from "./Notice";
 import { useAgentUsage } from "./AgentUsage";
 import Explorer from "./Explorer";
 import ProjectSwitcher from "./ProjectSwitcher";
@@ -168,6 +170,7 @@ import {
 import { useCliIntegrations } from "./CliIntegrations";
 import { useAgentNotifications } from "./AgentNotifications";
 import AgentsDialog from "./AgentsDialog";
+import { measureAgentLayoutSize } from "./useAgentLayoutSize";
 import { loadInstalledAgentClis } from "./installed-agent-clis";
 import { cliNames } from "./cli-agents";
 import type { CliAgent } from "./cli-agents";
@@ -254,6 +257,7 @@ export default function Workbench() {
   const currentSession = useRef<Session>(undefined);
   const workArea = useRef<HTMLDivElement>(null);
   const terminalLayout = useRef<HTMLDivElement>(null);
+  const terminalStage = useRef<HTMLElement>(null);
   const selected = session ? active(session) : undefined;
   const agentProfileId =
     info?.platform !== "windows" && selected?.tab.type === "terminal"
@@ -1072,7 +1076,13 @@ export default function Workbench() {
       .flatMap((project) => project.workspaces)
       .find((workspace) => workspace.id === workspaceId);
     if (!target) throw new Error("The selected workspace was closed.");
-    const added = newTab(cwd, profile.id, cliNames[cli], count);
+    const size = measureAgentLayoutSize(terminalStage.current);
+    const maximum = maximumAgentCount(size);
+    if (count > maximum)
+      throw new Error(
+        `Only ${maximum} ${maximum === 1 ? "agent fits" : "agents fit"} in the current window.`,
+      );
+    const added = newTab(cwd, profile.id, cliNames[cli], count, size);
     const runtimes = panes(added.layout).map((pane) =>
       terminalFor(pane, profile, cli),
     );
@@ -1632,26 +1642,33 @@ export default function Workbench() {
     />
   );
   const notice = (error || restoreError) && (
-    <div className="notice" role="alert">
-      <span>{error || restoreError}</span>
-      {restoreError && (
-        <button
-          className="text-button"
-          onClick={() => {
-            savingEnabled.current = true;
-            setRestoreError("");
-            void saveSession(session, true).catch((error) =>
-              setError(errorMessage(error)),
-            );
-          }}
-        >
-          Save current layout instead
-        </button>
-      )}
-      <IconButton title="Dismiss message" onClick={() => setError("")}>
-        <X size={14} />
-      </IconButton>
-    </div>
+    <Notice
+      className="notice"
+      tone="error"
+      action={
+        <>
+          {restoreError && (
+            <button
+              className="text-button"
+              onClick={() => {
+                savingEnabled.current = true;
+                setRestoreError("");
+                void saveSession(session, true).catch((error) =>
+                  setError(errorMessage(error)),
+                );
+              }}
+            >
+              Save current layout instead
+            </button>
+          )}
+          <IconButton title="Dismiss message" onClick={() => setError("")}>
+            <X size={14} />
+          </IconButton>
+        </>
+      }
+    >
+      {error || restoreError}
+    </Notice>
   );
   const sidebarOpen = (panel: SidebarPanel) =>
     session.sidebarSides[panel] === "left"
@@ -1724,6 +1741,16 @@ export default function Workbench() {
       <Workspaces
         projects={session.projects}
         activeWorkspaceId={selected?.workspace.id}
+        activeRoot={selected?.project.path ?? ""}
+        git={git}
+        onAppearanceChange={(workspace, appearance) =>
+          change((state) =>
+            updateWorkspace(state, workspace.id, (current) => ({
+              ...current,
+              appearance,
+            })),
+          )
+        }
         onSelect={(path, id, tabId) =>
           void selectProject(path, { workspaceId: id, tabId })
         }
@@ -2437,6 +2464,7 @@ export default function Workbench() {
             })}
             <main
               className="terminal-stage"
+              ref={terminalStage}
               id={`panel-${tab.id}`}
               role="tabpanel"
               aria-labelledby={`tab-${tab.id}`}
@@ -2856,6 +2884,7 @@ export default function Workbench() {
               key={JSON.stringify([agentsTarget.profile, agentsTarget.cwd])}
               profile={agentsTarget.profile}
               cwd={agentsTarget.cwd}
+              stage={terminalStage}
               onClose={() => setAgentsTarget(null)}
               onLaunch={launchAgents}
             />

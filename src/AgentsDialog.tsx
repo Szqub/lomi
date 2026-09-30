@@ -2,8 +2,10 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { errorMessage } from "./api";
 import { CliAgentIcon } from "./CliAgentIcon";
 import type { CliAgent } from "./cli-agents";
-import type { ShellProfile } from "./model";
-import { RefreshCw } from "./icons";
+import { maximumAgentCount, type ShellProfile } from "./model";
+import type { RefObject } from "react";
+import useAgentLayoutSize from "./useAgentLayoutSize";
+import { Folder, Minus, Plus, RefreshCw } from "./icons";
 import { Modal } from "./ui";
 
 import {
@@ -19,11 +21,13 @@ function defaultCli(clients: InstalledCli[]) {
 export default function AgentsDialog({
   profile,
   cwd,
+  stage,
   onClose,
   onLaunch,
 }: {
   profile: ShellProfile;
   cwd: string;
+  stage: RefObject<HTMLElement | null>;
   onClose: () => void;
   onLaunch: (cli: CliAgent, count: number) => Promise<void>;
 }) {
@@ -37,12 +41,38 @@ export default function AgentsDialog({
   const [selected, setSelected] = useState<CliAgent | undefined>(() =>
     defaultCli(cachedInstalledAgentClis(profile, cwd) ?? []),
   );
-  const [count, setCount] = useState("4");
+  const size = useAgentLayoutSize(stage);
+  const maximum = maximumAgentCount(size);
+  const [count, setCount] = useState(() =>
+    String(Math.max(1, Math.min(4, maximum))),
+  );
   const [loading, setLoading] = useState(
     () => cachedInstalledAgentClis(profile, cwd) === undefined,
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const amount = Number(count);
+  const validCount =
+    Number.isSafeInteger(amount) && amount >= 1 && amount <= maximum;
+  useEffect(() => {
+    if (maximum < 1) return;
+    setCount((previous) => {
+      const value = Number(previous);
+      return Number.isSafeInteger(value) && value > maximum
+        ? String(maximum)
+        : previous;
+    });
+  }, [maximum]);
+
+  function adjustCount(change: -1 | 1) {
+    setCount((previous) => {
+      if (maximum < 1) return previous;
+      const current = Number(previous);
+      if (!Number.isSafeInteger(current) || current < 1) return "1";
+      return String(Math.max(1, Math.min(maximum, current + change)));
+    });
+  }
 
   const refresh = useCallback(
     async (force = false) => {
@@ -81,6 +111,7 @@ export default function AgentsDialog({
     <Modal
       title="Agents"
       className="agents-dialog"
+      wide
       descriptionId={`${id}-description`}
       initialFocus={refreshButton}
       closeDisabled={busy}
@@ -88,12 +119,19 @@ export default function AgentsDialog({
     >
       <form
         className="dialog-form"
+        noValidate
         onSubmit={async (event) => {
           event.preventDefault();
           if (launching.current || !clients.length) return;
           const amount = Number(count);
           if (!Number.isSafeInteger(amount) || amount < 1) {
             setError("Enter a whole number of terminals, at least 1.");
+            return;
+          }
+          if (amount > maximum) {
+            setError(
+              `Only ${maximum} ${maximum === 1 ? "agent fits" : "agents fit"} in the current window.`,
+            );
             return;
           }
           if (!selected || !clients.some((client) => client.cli === selected))
@@ -112,77 +150,144 @@ export default function AgentsDialog({
           }
         }}
       >
-        <p id={`${id}-description`}>
-          Run installed CLI agents in separate terminal panels within one tab.
-        </p>
-        <div className="agents-chooser-heading">
-          <span id={`${id}-cli-label`}>Installed CLI</span>
-          <button
-            ref={refreshButton}
-            type="button"
-            className="icon-button"
-            aria-label="Refresh installed CLI"
-            disabled={loading || busy}
-            onClick={() => void refresh(true)}
-          >
-            <RefreshCw size={15} aria-hidden="true" />
-          </button>
-        </div>
-        <div className="agents-scan-status" role="status">
-          {loading
-            ? clients.length
-              ? "Refreshing installed agents…"
-              : "Looking for installed agents…"
-            : !error && !clients.length
-              ? "No supported agent CLI found. Install a CLI, then refresh."
-              : ""}
-        </div>
-        {!!clients.length && (
-          <fieldset
-            className="agents-cli-list"
-            aria-labelledby={`${id}-cli-label`}
-            disabled={busy}
-          >
-            {clients.map((client) => (
-              <label className="agents-cli-option" key={client.cli}>
-                <input
-                  type="radio"
-                  name={`${id}-cli`}
-                  value={client.cli}
-                  checked={selected === client.cli}
-                  onChange={() => setSelected(client.cli)}
-                />
-                <CliAgentIcon cli={client.cli} />
-                <span className="agents-cli-identity">
-                  <span>{client.name}</span>
-                  <code>{client.command}</code>
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        )}
-        <label className="agents-count" htmlFor={`${id}-count`}>
-          Number of terminals
-          <input
-            id={`${id}-count`}
-            type="number"
-            min="1"
-            step="1"
-            required
-            value={count}
-            disabled={busy}
-            onChange={(event) => setCount(event.target.value)}
-          />
-        </label>
-        <div className="agents-directory" title={cwd}>
-          <span>Project</span>
-          <code>{cwd}</code>
-        </div>
-        {error && (
-          <p className="text-error" role="alert">
-            {error}
+        <div className="agents-dialog-body">
+          <p id={`${id}-description`} className="agents-description">
+            Choose an agent and how many terminals to open.
           </p>
-        )}
+          <section className="agents-chooser">
+            <div className="agents-chooser-heading">
+              <span id={`${id}-cli-label`}>Installed CLI</span>
+              <button
+                ref={refreshButton}
+                type="button"
+                className="icon-button"
+                aria-label="Refresh installed CLI"
+                title="Refresh installed CLI"
+                disabled={loading || busy}
+                onClick={() => void refresh(true)}
+              >
+                <RefreshCw size={15} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="agents-scan-status" role="status">
+              {loading
+                ? clients.length
+                  ? ""
+                  : "Looking for installed agents…"
+                : !error && !clients.length
+                  ? "No supported agent CLI found. Install a CLI, then refresh."
+                  : ""}
+            </div>
+            {!!clients.length && (
+              <fieldset
+                className="agents-cli-list"
+                aria-labelledby={`${id}-cli-label`}
+                disabled={busy}
+              >
+                {clients.map((client) => (
+                  <label
+                    className="agents-cli-option"
+                    key={client.cli}
+                    title={client.name}
+                  >
+                    <input
+                      type="radio"
+                      name={`${id}-cli`}
+                      value={client.cli}
+                      aria-label={client.name}
+                      checked={selected === client.cli}
+                      onChange={() => setSelected(client.cli)}
+                    />
+                    <CliAgentIcon cli={client.cli} />
+                  </label>
+                ))}
+              </fieldset>
+            )}
+          </section>
+          <section className="agents-count">
+            <div className="agents-count-heading">
+              <label id={`${id}-count-label`} htmlFor={`${id}-count`}>
+                Number of terminals
+              </label>
+              <div className="agents-count-controls">
+                <button
+                  type="button"
+                  className="agents-count-step"
+                  aria-label="Decrease terminal count"
+                  disabled={
+                    busy || maximum === 0 || (validCount && amount === 1)
+                  }
+                  onClick={() => adjustCount(-1)}
+                >
+                  <Minus size={16} aria-hidden="true" />
+                </button>
+                <input
+                  id={`${id}-count`}
+                  type="number"
+                  min="1"
+                  max={maximum}
+                  aria-invalid={count !== "" && !validCount}
+                  step="1"
+                  required
+                  value={count}
+                  disabled={busy || maximum === 0}
+                  onChange={(event) => setCount(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="agents-count-step"
+                  aria-label="Increase terminal count"
+                  disabled={busy || maximum === 0 || amount >= maximum}
+                  onClick={() => adjustCount(1)}
+                >
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            <div
+              className="agents-count-presets"
+              aria-label="Terminal count presets"
+            >
+              {[1, 2, 4, 6, 8].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  aria-label={`Use ${preset} ${preset === 1 ? "terminal" : "terminals"}`}
+                  aria-pressed={validCount && amount === preset}
+                  disabled={busy || preset > maximum}
+                  title={
+                    preset > maximum
+                      ? `Only ${maximum} ${maximum === 1 ? "agent fits" : "agents fit"} in the current window.`
+                      : undefined
+                  }
+                  onClick={() => setCount(String(preset))}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+          </section>
+          <div className="agents-launch-context">
+            <div className="agents-layout-summary" aria-live="polite">
+              {maximum === 0
+                ? "Not enough space for a terminal."
+                : validCount
+                  ? `One tab · ${amount} ${amount === 1 ? "panel" : "panels"} · Up to ${maximum} fit`
+                  : amount > maximum
+                    ? `Only ${maximum} ${maximum === 1 ? "agent fits" : "agents fit"} in the current window.`
+                    : "Choose a whole number, at least 1"}
+            </div>
+            <div className="agents-directory" title={cwd}>
+              <Folder size={14} aria-hidden="true" />
+              <code>{cwd}</code>
+            </div>
+          </div>
+          {error && (
+            <p className="text-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
         <div className="dialog-actions">
           <button
             type="button"
@@ -195,7 +300,9 @@ export default function AgentsDialog({
           <button
             type="submit"
             className="button button-primary"
-            disabled={busy || !clients.length}
+            disabled={
+              busy || !clients.length || maximum === 0 || amount > maximum
+            }
           >
             {busy ? "Launching…" : "Launch agents"}
           </button>

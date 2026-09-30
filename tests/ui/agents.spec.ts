@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { mockDesktop } from "./desktop";
+import { active, addWorkspace, newSession, openFileTab } from "../../src/model";
 
 const installedAgents = [
   { cli: "cursor", name: "Cursor CLI", command: "cursor-agent" },
@@ -49,11 +50,14 @@ test("Agents starts four terminals in a two-by-two grid within one new tab", asy
   ).toBeDisabled();
   await releaseScans(page);
   await expect(dialog.getByRole("radio")).toHaveCount(2);
-  await expect(dialog).toContainText("Cursor CLI");
-  await expect(dialog).toContainText("cursor-agent");
-  await expect(dialog).toContainText("Claude Code");
-  await expect(dialog).toContainText("claude");
-  await expect(dialog).not.toContainText("Aider");
+  await expect(
+    dialog.getByRole("radio", { name: "Cursor CLI", exact: true }),
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole("radio", { name: "Claude Code", exact: true }),
+  ).toBeVisible();
+  await expect(dialog.locator(".agents-cli-option")).toHaveText(["", ""]);
+  await expect(dialog).not.toContainText("cursor-agent");
   await expect(dialog.getByLabel("Number of terminals")).toHaveValue("4");
   await expect(dialog.locator(".agents-directory code")).toHaveText("/project");
   await expect
@@ -422,9 +426,7 @@ test("refresh retains usable choices and selection through pending discovery and
     mock.installedAgentCliError = "Refresh failed";
   });
   await dialog.getByRole("button", { name: "Refresh installed CLI" }).click();
-  await expect(dialog.getByRole("status")).toHaveText(
-    "Refreshing installed agents…",
-  );
+  await expect(dialog.getByRole("status")).toBeEmpty();
   expect(await dialog.getByRole("radio").count()).toBe(2);
   await expect(
     dialog.getByRole("radio", { name: /Claude Code/ }),
@@ -551,9 +553,7 @@ test("stale cached choices remain launchable during background revalidation", as
   });
   dialog = await openAgents(page);
   expect(await dialog.getByRole("radio").count()).toBe(2);
-  await expect(dialog.getByRole("status")).toHaveText(
-    "Refreshing installed agents…",
-  );
+  await expect(dialog.getByRole("status")).toBeEmpty();
   await expect
     .poll(() =>
       page.evaluate(
@@ -569,4 +569,284 @@ test("stale cached choices remain launchable during background revalidation", as
     page.getByRole("tab", { name: "Cursor CLI", exact: true }),
   ).toBeVisible();
   await releaseScans(page);
+});
+
+test("CLI icons and terminal quantity can be configured and launched entirely by mouse", async ({
+  page,
+}, testInfo) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 800, height: 420 });
+  await setupAgents(page, [
+    { cli: "codex", name: "Codex", command: "codex" },
+    ...installedAgents,
+    { cli: "gemini", name: "Gemini CLI", command: "gemini" },
+    { cli: "copilot", name: "GitHub Copilot CLI", command: "copilot" },
+    { cli: "opencode", name: "OpenCode", command: "opencode" },
+    { cli: "grok", name: "Grok Build", command: "grok" },
+    { cli: "hermes", name: "Hermes Agent", command: "hermes" },
+  ]);
+  const dialog = await openAgents(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(8);
+  await expect(
+    dialog.getByRole("radio", { name: "Codex", exact: true }),
+  ).toBeInViewport();
+  await expect(
+    dialog.getByRole("radio", { name: "Hermes Agent", exact: true }),
+  ).toBeInViewport();
+  const count = dialog.getByLabel("Number of terminals");
+  const decrease = dialog.getByRole("button", {
+    name: "Decrease terminal count",
+    exact: true,
+  });
+  const increase = dialog.getByRole("button", {
+    name: "Increase terminal count",
+    exact: true,
+  });
+  await dialog.getByRole("radio", { name: "Claude Code", exact: true }).click();
+  await expect(
+    dialog.getByRole("radio", { name: "Claude Code", exact: true }),
+  ).toBeChecked();
+  await dialog
+    .getByRole("button", { name: "Use 1 terminal", exact: true })
+    .click();
+  await expect(count).toHaveValue("1");
+  await expect(decrease).toBeDisabled();
+  await increase.click();
+  await expect(count).toHaveValue("2");
+  await expect(
+    dialog.getByRole("button", { name: "Use 2 terminals", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await dialog
+    .getByRole("button", { name: "Use 4 terminals", exact: true })
+    .click();
+  await decrease.click();
+  await expect(count).toHaveValue("3");
+  await increase.click();
+  await expect(count).toHaveValue("4");
+  await dialog
+    .getByRole("button", { name: "Use 2 terminals", exact: true })
+    .click();
+  const launch = dialog.getByRole("button", {
+    name: "Launch agents",
+    exact: true,
+  });
+  await expect(launch).toBeInViewport();
+  expect(
+    await dialog.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("agents-mouse-dark-minimum.png"),
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.screenshot({
+    path: testInfo.outputPath("agents-mouse-expanded.png"),
+  });
+  await launch.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".terminal-pane")).toHaveCount(2);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__nativeTest.calls.filter(
+            (call: any) =>
+              call.command === "start_terminal" &&
+              call.args.request.cliLaunch === "claude",
+          ).length,
+      ),
+    )
+    .toBe(2);
+});
+
+test("Agents limits quantity to the available stage and recalculates on resize", async ({
+  page,
+}, testInfo) => {
+  await setupAgents(page);
+  const dialog = await openAgents(page);
+  const count = dialog.getByLabel("Number of terminals");
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  const initialMaximum = Number(await count.getAttribute("max"));
+  expect(initialMaximum).toBeGreaterThan(8);
+  await count.fill("999999999");
+  await expect(
+    dialog.getByRole("button", { name: "Launch agents" }),
+  ).toBeDisabled();
+  await expect(dialog.locator(".agents-layout-summary")).toHaveText(
+    `Only ${initialMaximum} agents fit in the current window.`,
+  );
+  // Bypassing the disabled submit button must not bypass count validation.
+  await dialog
+    .locator("form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await expect(dialog.getByRole("alert")).toHaveText(
+    `Only ${initialMaximum} agents fit in the current window.`,
+  );
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await count.fill(String(initialMaximum));
+  await page.setViewportSize({ width: 800, height: 420 });
+  await expect
+    .poll(async () => Number(await count.getAttribute("max")))
+    .toBeLessThan(initialMaximum);
+  const maximum = Number(await count.getAttribute("max"));
+  expect(maximum).toBeGreaterThan(1);
+  expect(maximum).toBeLessThan(8);
+  await expect(count).toHaveValue(String(maximum));
+  await expect(
+    dialog.getByRole("button", { name: "Increase terminal count" }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "Use 8 terminals", exact: true }),
+  ).toBeDisabled();
+  await dialog.screenshot({
+    path: testInfo.outputPath("agents-capacity-small.png"),
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(count).toHaveAttribute("max", String(initialMaximum));
+  await expect(count).toHaveValue(String(maximum));
+  await expect(
+    dialog.getByRole("button", { name: "Increase terminal count" }),
+  ).toBeEnabled();
+  await expect(
+    dialog.getByRole("button", { name: "Use 8 terminals", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__nativeTest.calls.filter(
+        (call: any) =>
+          call.command === "start_terminal" && call.args.request.cliLaunch,
+      ),
+    ),
+  ).toEqual([]);
+});
+
+test("Agents launches the maximum count in a wide short window with every pane fitting", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1300, height: 420 });
+  await setupAgents(page);
+  const dialog = await openAgents(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  const count = dialog.getByLabel("Number of terminals");
+  const maximum = Number(await count.getAttribute("max"));
+  expect(maximum).toBeGreaterThan(4);
+  await count.fill(String(maximum));
+  await dialog.getByRole("button", { name: "Launch agents" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".terminal-pane")).toHaveCount(maximum);
+  await expect(page.locator(".layout-recovery")).toHaveCount(0);
+  for (const panel of await page.locator(".terminal-pane").all()) {
+    const bounds = await panel.boundingBox();
+    expect(bounds!.width).toBeGreaterThanOrEqual(240);
+    expect(bounds!.height).toBeGreaterThanOrEqual(120);
+  }
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as any).__nativeTest.calls.filter(
+            (call: any) =>
+              call.command === "start_terminal" && call.args.request.cliLaunch,
+          ).length,
+      ),
+    )
+    .toBe(maximum);
+});
+
+test("Agents rechecks stage space synchronously before starting terminals", async ({
+  page,
+}) => {
+  await setupAgents(page);
+  const dialog = await openAgents(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  await expect(dialog.getByLabel("Number of terminals")).toHaveValue("4");
+  // Change geometry and submit in one task, before ResizeObserver updates the UI.
+  await dialog.locator("form").evaluate((form: HTMLFormElement) => {
+    const stage = document.querySelector<HTMLElement>(".terminal-stage")!;
+    stage.style.flex = "0 0 300px";
+    stage.style.height = "130px";
+    stage.style.padding = "0";
+    form.requestSubmit();
+  });
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "Only 1 agent fits in the current window.",
+  );
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__nativeTest.calls.filter(
+        (call: any) =>
+          call.command === "start_terminal" && call.args.request.cliLaunch,
+      ),
+    ),
+  ).toEqual([]);
+});
+
+test("Agents measures content space from a file tab with both sidebars and padding", async ({
+  page,
+}) => {
+  let session = addWorkspace(newSession(), "/project", "local:bash");
+  session = openFileTab(
+    session,
+    active(session)!.workspace.id,
+    "/project",
+    "README.md",
+  );
+  session.sidebar = "files";
+  session.rightSidebar = "workspaces";
+  session.sidebarSides.workspaces = "right";
+  await mockDesktop(page, false, session, undefined, undefined, undefined, {
+    installed: installedAgents,
+  });
+  await page.goto("/");
+  await expect(page.locator(".cm-content")).toBeVisible();
+  await expect(page.locator(".terminal-layout")).toHaveCount(0);
+  await expect(
+    page.getByRole("complementary", { name: "Explorer", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("complementary", { name: "Workspaces", exact: true }),
+  ).toBeVisible();
+  await page.locator(".terminal-stage").evaluate((stage: HTMLElement) => {
+    stage.style.padding = "40px";
+    stage.style.border = "2px solid transparent";
+  });
+  const dialog = await openAgents(page);
+  const maximum = Number(
+    await dialog.getByLabel("Number of terminals").getAttribute("max"),
+  );
+  expect(maximum).toBeGreaterThan(0);
+  const stage = await page.locator(".terminal-stage").boundingBox();
+  expect(stage!.width).toBeLessThan(1000);
+  // Content space excludes the 40px padding and 2px border on all sides.
+  const expected =
+    Math.floor((stage!.width - 84 + 3) / 243) *
+    Math.floor((stage!.height - 84 + 3) / 123);
+  expect(maximum).toBe(expected);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.locator(".terminal-stage").evaluate((stage: HTMLElement) => {
+    stage.style.height = "100px";
+  });
+  const smallDialog = await openAgents(page);
+  await expect(smallDialog.getByLabel("Number of terminals")).toHaveAttribute(
+    "max",
+    "0",
+  );
+  await expect(
+    smallDialog.getByRole("button", { name: "Launch agents" }),
+  ).toBeDisabled();
+  await expect(smallDialog.locator(".agents-layout-summary")).toHaveText(
+    "Not enough space for a terminal.",
+  );
+  await page.locator(".terminal-stage").evaluate((stage: HTMLElement) => {
+    stage.style.height = "";
+  });
+  await expect(smallDialog.getByLabel("Number of terminals")).toHaveAttribute(
+    "max",
+    String(expected),
+  );
+  await expect(
+    smallDialog.getByRole("button", { name: "Launch agents" }),
+  ).toBeEnabled();
 });

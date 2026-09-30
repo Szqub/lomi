@@ -20,6 +20,7 @@ interface AboutInfo {
 const repositoryUrl = "https://github.com/lomi-dev/lomi";
 const issueUrl = "https://github.com/lomi-dev/lomi/issues";
 const websiteUrl = "https://lomi.dev";
+const documentationUrl = "https://docs.lomi.dev";
 
 function platformName(platform: string) {
   switch (platform) {
@@ -131,6 +132,15 @@ export default function AboutSettingsPage({
           <button className="button" onClick={() => openExternal(websiteUrl)}>
             <Globe size={14} aria-hidden="true" />
             Open website
+          </button>
+        </SettingRow>
+        <SettingRow label="Documentation" description="docs.lomi.dev">
+          <button
+            className="button"
+            onClick={() => openExternal(documentationUrl)}
+          >
+            <ExternalLink size={14} aria-hidden="true" />
+            Open documentation
           </button>
         </SettingRow>
         <SettingRow

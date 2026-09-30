@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "./api";
 import type { ControlStartupState } from "./agent-control-startup";
 import { Modal } from "./ui";
+import { Notice } from "./Notice";
 
 export default function AgentControlStartup() {
   const [state, setState] = useState<ControlStartupState>();
@@ -126,25 +127,26 @@ export default function AgentControlStartup() {
   return (
     <>
       {loadError && (
-        <div className="notice" role="alert">
-          <span>
-            Could not load automatic MCP startup settings: {loadError}
-          </span>
-          <button className="text-button" onClick={() => void refresh()}>
-            Retry
-          </button>
-        </div>
+        <Notice
+          className="notice"
+          tone="error"
+          action={
+            <button className="text-button" onClick={() => void refresh()}>
+              Retry
+            </button>
+          }
+        >
+          Could not load automatic MCP startup settings: {loadError}
+        </Notice>
       )}
       {startupError && state && (
-        <div className="notice" role="alert">
-          <span>
-            {state.autoStart
-              ? `Automatic MCP startup is enabled, but the server could not start: ${startupError} The saved choice is still enabled. Open Settings → Agent control to change it or enable control for this session.`
-              : state.autoStart === false
-                ? `Automatic MCP startup is disabled. ${startupError}`
-                : `Could not load the saved automatic MCP startup choice: ${startupError}`}
-          </span>
-        </div>
+        <Notice className="notice" tone="error">
+          {state.autoStart
+            ? `Automatic MCP startup is enabled, but the server could not start: ${startupError} The saved choice is still enabled. Open Settings → Agent control to change it or enable control for this session.`
+            : state.autoStart === false
+              ? `Automatic MCP startup is disabled. ${startupError}`
+              : `Could not load the saved automatic MCP startup choice: ${startupError}`}
+        </Notice>
       )}
       {eligible && readyToPrompt && (
         <Modal

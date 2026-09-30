@@ -128,6 +128,7 @@ export const SquarePlus = product("SquarePlus", Lucide.SquarePlus);
 export const Sun = product("Sun", Lucide.Sun);
 export const Terminal = product("Terminal", Lucide.Terminal);
 export const Trash2 = product("Trash2", Lucide.Trash2);
+export const TriangleAlert = product("TriangleAlert", Lucide.TriangleAlert);
 export const Undo2 = product("Undo2", Lucide.Undo2);
 export const WholeWord = product("WholeWord", Lucide.WholeWord);
 export const WrapText = product("WrapText", Lucide.WrapText);
