@@ -1,3 +1,4 @@
+import { useRemoteWorkspaces } from "./remote-workspaces";
 import { useAgentControlBridge } from "./agent-control";
 import AgentControlStartup from "./AgentControlStartup";
 import { useAgentChatApproval } from "./AgentChatApproval";
@@ -252,6 +253,11 @@ export default function Workbench() {
     : "";
   const [session, renderSession] = useState<Session>();
   const currentSession = useRef<Session>(undefined);
+  const remoteWorkspaces = useRemoteWorkspaces(
+    session,
+    currentSession,
+    info?.profiles,
+  );
   const workArea = useRef<HTMLDivElement>(null);
   const terminalLayout = useRef<HTMLDivElement>(null);
   const selected = session ? active(session) : undefined;
@@ -952,8 +958,13 @@ export default function Workbench() {
   useEffect(() => {
     if (!info) return;
     let current = true;
-    const unlisten = getCurrentWindow().onCloseRequested(async (event) => {
+    const closed = getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault();
+      await api("hide_main_window").catch((error) =>
+        setError(errorMessage(error)),
+      );
+    });
+    const unlisten = listen("lomi-quit-requested", async () => {
       if (closing.current || updater.busy.current) return;
       closing.current = true;
       let release: ReleaseClosePreparation | null = null;
@@ -980,6 +991,7 @@ export default function Workbench() {
     return () => {
       current = false;
       void unlisten.then((stop) => stop()).catch(() => {});
+      void closed.then((stop) => stop()).catch(() => {});
     };
   }, [info]);
   useEffect(() => {
@@ -1723,6 +1735,7 @@ export default function Workbench() {
     >
       <Workspaces
         projects={session.projects}
+        remote={remoteWorkspaces}
         activeWorkspaceId={selected?.workspace.id}
         onSelect={(path, id, tabId) =>
           void selectProject(path, { workspaceId: id, tabId })

@@ -365,6 +365,45 @@ export async function mockDesktop(
           }
           if (command.startsWith("chat_") && desktop.__chatInvoke)
             return desktop.__chatInvoke(command, args);
+          if (command.startsWith("remote_") && desktop.__remoteInvoke)
+            return desktop.__remoteInvoke(command, args);
+          if (command.startsWith("remote_")) {
+            const remote = (desktop.__nativeTest.remoteState ??= {
+              qualified: true,
+              enabled: false,
+              online: false,
+              message: null,
+              domainEpoch: null,
+              workspaces: [],
+              grants: [],
+            });
+            if (command === "remote_begin_workspace_sync") {
+              remote.domainEpoch = "10000000-0000-4000-8000-000000000001";
+              return { epoch: remote.domainEpoch };
+            }
+            if (command === "remote_sync_workspaces") {
+              remote.workspaces = args.workspaces.map((w: any) => ({
+                id: w.id,
+                shared: remote.workspaces.some(
+                  (old: any) => old.id === w.id && old.shared,
+                ),
+                online: true,
+                message: null,
+              }));
+            }
+            if (command === "remote_share_workspace") {
+              remote.enabled = true;
+              remote.online = true;
+              remote.workspaces = remote.workspaces.map((w: any) =>
+                w.id === args.workspaceId ? { ...w, shared: args.shared } : w,
+              );
+            }
+            return JSON.parse(JSON.stringify(remote));
+          }
+          if (command === "request_quit") {
+            void emitEvent("lomi-quit-requested");
+            return;
+          }
           if (command.startsWith("auth_") && desktop.__authInvoke)
             return desktop.__authInvoke(command, args);
           if (
@@ -1340,6 +1379,9 @@ export async function mockDesktop(
               "chat_close",
               "chat_retain",
               "write_terminal",
+              "write_terminal_response",
+              "hide_main_window",
+              "reopen_main_window",
               "resize_terminal",
               "acknowledge_terminal",
               "close_terminal",

@@ -638,3 +638,68 @@ test("a configured workspace shortcut works before folder selection and is captu
     ),
   ).toBe(0);
 });
+
+test("right-click sharing starts all inactive terminals and stop sharing retains local sessions", async ({
+  page,
+}, testInfo) => {
+  let session = addWorkspace(newSession(), "/hidden", "local:bash", "Hidden");
+  const hidden = active(session)!.workspace;
+  const { newTab, newBrowserTab } = await import("../../src/model");
+  hidden.tabs.push(
+    newTab("/hidden", "local:bash", "Inactive", 2),
+    newBrowserTab(),
+  );
+  session = addWorkspace(session, "/other", "local:bash", "Unshared");
+  session.sidebar = "workspaces";
+  await mockDesktop(page, false, session);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toBeVisible();
+  const starts = () =>
+    page.evaluate(
+      () =>
+        (window as any).__nativeTest.calls.filter(
+          (c: any) => c.command === "start_terminal",
+        ).length,
+    );
+  expect(await starts()).toBe(1);
+  const row = page.locator(
+    `[data-workspace-id="${hidden.id}"] .workspace-list-item`,
+  );
+  await row.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: "Share remotely", exact: true })
+    .click();
+  await expect.poll(starts).toBe(4);
+  await expect(row).toContainText("Shared remotely");
+  const projection = await page.evaluate(
+    () =>
+      (window as any).__nativeTest.calls
+        .filter((c: any) => c.command === "remote_sync_workspaces")
+        .at(-1).args.workspaces,
+  );
+  expect(
+    projection.find((w: any) => w.id === hidden.id).terminals,
+  ).toHaveLength(3);
+  expect(
+    projection
+      .find((w: any) => w.id === hidden.id)
+      .terminals.every((t: any) => t.sessionId),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("shared-inactive-workspace.png"),
+  });
+  await row.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: "Stop sharing remotely", exact: true })
+    .click();
+  await expect(row).not.toContainText("Shared remotely");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).__nativeTest.calls.filter(
+          (c: any) => c.command === "close_terminal",
+        ).length,
+    ),
+  ).toBe(0);
+  await expect(page.locator(".project-switcher")).toHaveText("other");
+});

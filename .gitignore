@@ -1,6 +1,7 @@
 node_modules/
 .pnpm-store/
 dist/
+src-tauri/resources/remote-terminal/
 *.tsbuildinfo
 *.log
 *.local

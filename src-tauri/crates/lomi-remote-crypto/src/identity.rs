@@ -10,7 +10,7 @@ use hpke::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PublicBundle {
@@ -70,6 +70,8 @@ pub(crate) fn verify_signature(key: &[u8; 32], message: &[u8], signature: &[u8])
 }
 pub struct Identity {
     pub(crate) signing: SigningKey,
+    seeds: Zeroizing<[u8; 96]>,
+    pub(crate) disposed: bool,
     pub(crate) channel_secret: Zeroizing<[u8; 32]>,
     pub(crate) mailbox_secret: Zeroizing<Vec<u8>>,
     pub(crate) signed: SignedBundle,
@@ -97,6 +99,10 @@ impl Identity {
         channel_seed: Zeroizing<[u8; 32]>,
         mailbox_seed: Zeroizing<[u8; 32]>,
     ) -> Result<Self> {
+        let mut seeds = Zeroizing::new([0u8; 96]);
+        seeds[..32].copy_from_slice(&*identity_seed);
+        seeds[32..64].copy_from_slice(&*channel_seed);
+        seeds[64..].copy_from_slice(&*mailbox_seed);
         use snow::resolvers::{CryptoResolver, DefaultResolver};
         let mut dh = DefaultResolver
             .resolve_dh(&snow::params::DHChoice::Curve25519)
@@ -123,6 +129,8 @@ impl Identity {
         let signature = signing.sign(&bundle.canonical()?).to_bytes().to_vec();
         Ok(Self {
             signing,
+            seeds,
+            disposed: false,
             channel_secret: channel_seed,
             mailbox_secret: Zeroizing::new(mailbox_private.to_bytes().to_vec()),
             signed: SignedBundle { bundle, signature },
@@ -147,5 +155,52 @@ impl Identity {
             Zeroizing::new([seed.wrapping_add(1); 32]),
             Zeroizing::new([seed.wrapping_add(2); 32]),
         )
+    }
+}
+
+impl Identity {
+    pub fn dispose(&mut self) {
+        self.disposed = true;
+        self.channel_secret.zeroize();
+        self.mailbox_secret.zeroize();
+        self.seeds.zeroize();
+        // Replacing drops Dalek's old expanded secret with its zeroize feature.
+        self.signing = SigningKey::from_bytes(&[0; 32]);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_secret_seed_blob(&self) -> Result<Zeroizing<Vec<u8>>> {
+        if self.disposed {
+            return Err("identity disposed".into());
+        }
+        let mut blob = Zeroizing::new(Vec::with_capacity(97));
+        blob.push(1);
+        blob.extend_from_slice(&*self.seeds);
+        Ok(blob)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_secret_seed_blob(blob: &[u8], expected: &SignedBundle) -> Result<Self> {
+        if blob.len() != 97 || blob[0] != 1 {
+            return Err("invalid identity seed blob".into());
+        }
+        expected.verify(&expected.bundle.fingerprint()?)?;
+        let b = &expected.bundle;
+        let identity = Self::from_seeds(
+            b.account_id,
+            b.subject_id,
+            b.role,
+            b.key_version,
+            Zeroizing::new(blob[1..33].try_into().map_err(|_| "seed length")?),
+            Zeroizing::new(blob[33..65].try_into().map_err(|_| "seed length")?),
+            Zeroizing::new(blob[65..97].try_into().map_err(|_| "seed length")?),
+        )?;
+        if identity.signed != *expected {
+            return Err("persisted identity bundle mismatch".into());
+        }
+        Ok(identity)
+    }
+}
+impl Drop for Identity {
+    fn drop(&mut self) {
+        self.dispose();
     }
 }

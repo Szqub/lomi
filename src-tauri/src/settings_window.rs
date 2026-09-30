@@ -120,6 +120,7 @@ pub async fn open_settings(
                 | "android"
                 | "account"
                 | "agent-control"
+                | "remote"
         )
     }) {
         return Err("Unknown settings page.".into());

@@ -9,6 +9,7 @@ const RESPONSE_LIMIT: usize = 64 * 1024;
 pub(super) struct ApiClient {
     client: Client,
     config: AuthConfig,
+    remote_origin: Option<String>,
 }
 
 pub(super) struct DesktopStart {
@@ -41,7 +42,55 @@ impl ApiClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| "Cannot initialize the secure account connection.".to_string())?;
-        Ok(Self { client, config })
+        let remote_origin = config.remote_origin().ok();
+        Ok(Self {
+            client,
+            config,
+            remote_origin,
+        })
+    }
+
+    pub async fn remote_request(
+        &self,
+        token: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, HttpProblem> {
+        // Native callers provide a route, never an origin or arbitrary headers.
+        if !path.starts_with("/v1/remote/native/")
+            || path.contains("..")
+            || !path
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/-".contains(&b))
+            || !matches!(method, reqwest::Method::GET | reqwest::Method::POST)
+        {
+            return Err(HttpProblem::Rejected);
+        }
+        let origin = self.remote_origin.as_ref().ok_or(HttpProblem::Rejected)?;
+        let url = reqwest::Url::parse(&format!("{origin}{path}"))
+            .map_err(|_| HttpProblem::InvalidResponse)?;
+        let request = self
+            .client
+            .request(method, url)
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(5));
+        let request = if let Some(body) = body {
+            request
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(serde_json::to_vec(body).map_err(|_| HttpProblem::InvalidResponse)?)
+        } else {
+            request
+        };
+        let (response, bytes, retry_after) = read_response_limit(
+            request.send().await.map_err(|_| HttpProblem::Transport)?,
+            2 * 1024 * 1024,
+        )
+        .await?;
+        if !response.status().is_success() {
+            return Err(classify_status(response, &bytes, retry_after));
+        }
+        serde_json::from_slice(&bytes).map_err(|_| HttpProblem::InvalidResponse)
     }
 
     pub async fn start_desktop(
@@ -215,9 +264,16 @@ impl ApiClient {
 async fn read_response(
     response: Response,
 ) -> Result<(Response, Vec<u8>, Option<u64>), HttpProblem> {
+    read_response_limit(response, RESPONSE_LIMIT).await
+}
+
+async fn read_response_limit(
+    response: Response,
+    limit: usize,
+) -> Result<(Response, Vec<u8>, Option<u64>), HttpProblem> {
     if response
         .content_length()
-        .is_some_and(|length| length > RESPONSE_LIMIT as u64)
+        .is_some_and(|length| length > limit as u64)
     {
         return Err(HttpProblem::InvalidResponse);
     }
@@ -231,7 +287,7 @@ async fn read_response(
     let mut response = response;
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| HttpProblem::Transport)? {
-        if body.len().saturating_add(chunk.len()) > RESPONSE_LIMIT {
+        if body.len().saturating_add(chunk.len()) > limit {
             return Err(HttpProblem::InvalidResponse);
         }
         body.extend_from_slice(&chunk);
@@ -345,8 +401,7 @@ mod tests {
                         reply.body.len()
                     );
                     stream.write_all(response.as_bytes()).unwrap();
-                    stream.write_all(&reply.body).unwrap();
-                    stream.flush().unwrap();
+                    if stream.write_all(&reply.body).is_ok() { let _=stream.flush(); }
                     request
                 })
                 .collect()
@@ -480,6 +535,110 @@ mod tests {
             .to_ascii_lowercase()
             .contains("content-type: application/json"));
         assert!(requests[3].ends_with("{}"));
+    }
+
+    #[tokio::test]
+    async fn native_remote_uses_fixed_bearer_origin_without_browser_headers() {
+        let (origin, server) = loopback_server(vec![reply(
+            "200 OK",
+            "",
+            r#"{"authorizationExpiresAt":"2026-10-01T00:00:00Z","pairings":[],"grants":[],"channels":[]}"#,
+        )]);
+        let mut api = test_api("https://auth.lomi.dev".into());
+        api.remote_origin = Some(origin);
+        let state = api
+            .remote_request(
+                "test-native-token",
+                reqwest::Method::GET,
+                "/v1/remote/native/session",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(state["authorizationExpiresAt"].is_string());
+        let request = server.join().unwrap().pop().unwrap();
+        let headers = request
+            .split("\r\n\r\n")
+            .next()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(headers.contains("authorization: bearer test-native-token"));
+        for forbidden in ["cookie:", "origin:", "sec-fetch-site:"] {
+            assert!(!headers.contains(forbidden));
+        }
+        for path in [
+            "/v1/me",
+            "/v1/remote/native/../me",
+            "/v1/remote/native/session?secret=x",
+            "https://evil.test",
+        ] {
+            assert!(api
+                .remote_request("token", reqwest::Method::GET, path, None)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_remote_state_capacity_has_a_separate_streaming_limit() {
+        use lomi_remote_crypto::{Identity, PeerApproval, Permissions, Role};
+        let host = Identity::generate([1; 16], [2; 16], Role::Host, 1).unwrap();
+        let device = Identity::generate([1; 16], [3; 16], Role::Device, 1).unwrap();
+        let host_bundle = host.public_bundle();
+        let device_bundle = device.public_bundle();
+        let approval = host
+            .sign_peer_approval(PeerApproval {
+                version: 1,
+                account_id: ([1; 16]),
+                host_id: ([2; 16]),
+                device_id: ([3; 16]),
+                host_fingerprint: host_bundle.bundle.fingerprint().unwrap(),
+                device_fingerprint: device_bundle.bundle.fingerprint().unwrap(),
+                pairing_nonce: [5; 32],
+                grant_id: ([4; 16]),
+                session_ids: (0..32).map(|n| [n; 16]).collect(),
+                workspace_id: None,
+                workspace_epoch: None,
+                session_epochs: vec![],
+                permissions: Permissions::Observe,
+                access_epoch: 1,
+                revision: 1,
+                expires_at: 1_800_000_000,
+            })
+            .unwrap();
+        let channels:Vec<_>=(0..64).map(|n| serde_json::json!({"id":format!("channel-{n}"),"sessionId":"session","hostId":"host","deviceId":"device","grantId":"grant","context":{"version":1,"account_id":([1;16]),"host_id":([2;16]),"device_id":([3;16]),"initiator_role":"device","responder_role":"host","channel_id":([n;16]),"grant_id":([4;16]),"session_id":([0;16]),"access_epoch":1,"revision":1},"hostBundle":host_bundle,"deviceBundle":device_bundle,"signedApproval":approval,"expiresAt":"2026-10-01T00:00:00Z"})).collect();
+        let body=serde_json::json!({"pairings":[],"grants":[],"channels":channels,"serverTime":"2026-09-30T12:00:00Z","authorizationExpiresAt":"2026-09-30T12:00:10Z"}).to_string();
+        assert!(body.len() > RESPONSE_LIMIT);
+        let (origin, server) = loopback_server(vec![
+            reply("200 OK", "", &body),
+            reply("200 OK", "", &"x".repeat(2 * 1024 * 1024 + 1)),
+        ]);
+        let mut api = test_api("https://auth.lomi.dev".into());
+        api.remote_origin = Some(origin);
+        let state = api
+            .remote_request(
+                "native-test",
+                reqwest::Method::GET,
+                "/v1/remote/native/hosts/host/state",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["channels"].as_array().unwrap().len(), 64);
+        assert!(matches!(
+            api.remote_request(
+                "native-test",
+                reqwest::Method::GET,
+                "/v1/remote/native/hosts/host/state",
+                None
+            )
+            .await,
+            Err(HttpProblem::InvalidResponse)
+        ));
+        tokio::task::spawn_blocking(move || server.join())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

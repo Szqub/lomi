@@ -1,6 +1,6 @@
 mod callback;
 mod config;
-mod controller;
+pub(crate) mod controller;
 mod http;
 mod storage;
 

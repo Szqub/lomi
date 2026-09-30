@@ -1,6 +1,6 @@
 {
   "name": "lomi",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -15,6 +15,9 @@
     "test:ui": "pnpm --filter lomi-plugin-fixture build && playwright test",
     "test:ui:webkit": "pnpm test:ui --config=playwright.webkit.config.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked",
+    "remote:demo": "pnpm icon:macos && node --experimental-strip-types tests/native/run-remote-live.mjs --manual",
+    "remote:browser:demo": "node tests/native/run-remote-browser-demo.mjs",
+    "test:remote:native": "pnpm icon:macos && node --experimental-strip-types tests/native/run-remote-live.mjs",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked",
     "test:mcp": "cargo build --manifest-path src-tauri/Cargo.toml --locked -p lomi-mcp --bin lomi-mcp --example protocol-probe && node --test tests/mcp/*.test.mjs",
     "test:mcp:codex": "node tests/mcp/codex-probe.mjs",

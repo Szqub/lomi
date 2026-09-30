@@ -26,6 +26,16 @@ fn main() {
         "AI runtime preparation failed"
     );
 
+    println!("cargo:rerun-if-changed=../packages/remote-terminal-runtime");
+    assert!(
+        std::process::Command::new("node")
+            .arg("../packages/remote-terminal-runtime/build.mjs")
+            .status()
+            .expect("Remote runtime build requires Node and pnpm install")
+            .success(),
+        "Remote terminal runtime preparation failed"
+    );
+
     {
         println!("cargo:rerun-if-changed=android-proto/emulator_controller.proto");
         let mut config = tonic_prost_build::Config::new();

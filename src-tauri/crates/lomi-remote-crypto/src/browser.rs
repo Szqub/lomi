@@ -53,6 +53,9 @@ impl BrowserIdentity {
         .map(Self)
         .map_err(error)
     }
+    pub fn dispose(&mut self) {
+        self.0.dispose();
+    }
     pub fn public_bundle(&self) -> Result<String, JsValue> {
         encode(&self.0.public_bundle())
     }
@@ -134,6 +137,9 @@ impl BrowserHandshake {
         .map(Self)
         .map_err(error)
     }
+    pub fn dispose(&mut self) {
+        self.0.dispose();
+    }
     pub fn write(&mut self) -> Result<Vec<u8>, JsValue> {
         self.0.write().map_err(error)
     }
@@ -148,6 +154,20 @@ impl BrowserHandshake {
 pub struct BrowserChannel(Channel);
 #[wasm_bindgen]
 impl BrowserChannel {
+    pub fn dispose(&mut self) {
+        self.0.dispose();
+    }
+    pub fn seal_binary(&mut self, routing: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, JsValue> {
+        self.0
+            .seal_binary(fixed(routing)?, plaintext)
+            .map_err(error)
+    }
+    pub fn open_binary(&mut self, routing: &[u8], frame: &[u8]) -> Result<Vec<u8>, JsValue> {
+        self.0
+            .open_binary(fixed(routing)?, frame)
+            .map(|p| p.to_vec())
+            .map_err(error)
+    }
     pub fn seal(&mut self, routing: &[u8], plaintext: &[u8]) -> Result<String, JsValue> {
         encode(&self.0.seal(fixed(routing)?, plaintext).map_err(error)?)
     }
@@ -171,4 +191,53 @@ pub fn verify_public_bundle(bundle_json: &str, pin: &[u8]) -> Result<(), JsValue
 #[wasm_bindgen]
 pub fn production_qualified() -> bool {
     crate::PRODUCTION_QUALIFIED
+}
+
+#[wasm_bindgen]
+pub fn verify_peer_approval(
+    approval_json: &str,
+    host_json: &str,
+    pin: &[u8],
+    expected_json: &str,
+    now: u64,
+    current_epoch: u64,
+) -> Result<(), JsValue> {
+    let approval: crate::SignedPeerApproval = decode(approval_json)?;
+    let host: SignedBundle = decode(host_json)?;
+    let expected: crate::PeerApproval = decode(expected_json)?;
+    approval
+        .verify(&host, &fixed(pin)?, &expected, now, current_epoch)
+        .map_err(error)
+}
+#[wasm_bindgen]
+pub fn live_production_qualified() -> bool {
+    crate::LIVE_PRODUCTION_QUALIFIED
+}
+
+#[wasm_bindgen]
+pub fn pairing_fingerprint(
+    account_id: &[u8],
+    host_id: &[u8],
+    device_id: &[u8],
+    host_fingerprint: &[u8],
+    device_fingerprint: &[u8],
+    pairing_nonce: &[u8],
+) -> Result<String, JsValue> {
+    let digest = crate::pairing_fingerprint(
+        &fixed(account_id)?,
+        &fixed(host_id)?,
+        &fixed(device_id)?,
+        &fixed(host_fingerprint)?,
+        &fixed(device_fingerprint)?,
+        &fixed(pairing_nonce)?,
+    );
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The approval must first be verified against trusted host and grant state.
+#[wasm_bindgen]
+pub fn validate_channel_approval(context_json: &str, approval_json: &str) -> Result<(), JsValue> {
+    let context: ChannelContext = decode(context_json)?;
+    let approval: crate::PeerApproval = decode(approval_json)?;
+    context.validate_approval(&approval).map_err(error)
 }

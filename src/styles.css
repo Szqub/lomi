@@ -6305,3 +6305,25 @@ html[data-hide-explorer-arrows="true"] .tree-toggle > svg {
     padding-left: 0;
   }
 }
+
+.remote-fingerprint {
+  max-width: 24rem;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+.remote-pairing {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: var(--border-width) solid var(--color-outline);
+  border-radius: 0.5rem;
+}
+.remote-pairing fieldset {
+  display: grid;
+  gap: 0.5rem;
+}
+.remote-session-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

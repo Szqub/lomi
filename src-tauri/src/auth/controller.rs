@@ -79,7 +79,7 @@ impl Clone for Secret {
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        self.0.fill(0);
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 
@@ -130,6 +130,36 @@ impl Core {
         self.state.attempt = None;
         true
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteBinding {
+    pub user_id: String,
+    pub session_id: String,
+    pub expires_at: u64,
+}
+
+fn remote_binding(core: &Core) -> Result<RemoteBinding, String> {
+    if core.state.status != AuthStatus::SignedIn {
+        return Err("An online account session is required.".into());
+    }
+    let user = core.state.user.as_ref().ok_or("Sign in first.")?;
+    let session = core.state.session.as_ref().ok_or("Sign in first.")?;
+    let expires = chrono::DateTime::parse_from_rfc3339(&session.expires_at)
+        .map_err(|_| "Invalid account expiry.")?
+        .timestamp();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Clock unavailable.")?
+        .as_secs();
+    if user.status != "active" || expires <= now as i64 || core.token.is_none() {
+        return Err("Account authorization expired.".into());
+    }
+    Ok(RemoteBinding {
+        user_id: user.id.clone(),
+        session_id: session.id.clone(),
+        expires_at: expires as u64,
+    })
 }
 
 impl Default for AuthController {
@@ -227,6 +257,89 @@ impl AuthController {
                     Some("Account state is unavailable.".into()),
                 )
             })
+    }
+
+    /// Session-bound native HTTP access. Tokens never leave this controller.
+    pub(crate) async fn remote_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(RemoteBinding, serde_json::Value), String> {
+        let (generation, token, binding) = {
+            let core = self.inner.core.lock().map_err(|_| "Account unavailable.")?;
+            let binding = remote_binding(&core)?;
+            (
+                core.generation,
+                core.token.clone().ok_or("Sign in first.")?,
+                binding,
+            )
+        };
+        let result = self
+            .inner
+            .api
+            .as_ref()
+            .ok_or("Account unavailable.")?
+            .remote_request(token.exposed(), method, path, body)
+            .await;
+        let core = self.inner.core.lock().map_err(|_| "Account unavailable.")?;
+        if generation != core.generation || remote_binding(&core)? != binding {
+            return Err("Account session changed.".into());
+        }
+        let value = result.map_err(|_| "Remote authorization could not be confirmed.")?;
+        Ok((binding, value))
+    }
+
+    #[cfg(feature = "remote-probe")]
+    pub(crate) fn probe_session(
+        &self,
+        token: String,
+        user_id: String,
+        session_id: String,
+        expires_at: String,
+    ) -> Result<(), String> {
+        if self.inner.config.as_ref().is_none_or(|c| {
+            !matches!(
+                c.origin.as_str(),
+                "http://127.0.0.1:4321" | "http://127.0.0.1:4324"
+            )
+        }) || token.is_empty()
+            || token.len() > 4096
+            || token.bytes().any(|b| b.is_ascii_control())
+        {
+            return Err("Probe account must use the isolated local identity fixture.".into());
+        }
+        let mut core = self.inner.core.lock().map_err(|_| "Account unavailable.")?;
+        core.next_generation();
+        core.store = None;
+        core.token = Some(Secret::new(token));
+        core.token_storage = Some(AuthStorage::Session);
+        core.state.status = AuthStatus::SignedIn;
+        core.state.user = Some(super::AuthUser {
+            id: user_id,
+            display_name: "Remote fixture".into(),
+            email: "".into(),
+            github_login: "".into(),
+            status: "active".into(),
+        });
+        core.state.session = Some(super::AuthSession {
+            id: session_id,
+            expires_at,
+        });
+        remote_binding(&core)?;
+        Ok(())
+    }
+
+    pub(crate) fn remote_environment(&self) -> Result<String, String> {
+        self.inner
+            .config
+            .as_ref()
+            .map(|c| c.environment.clone())
+            .ok_or_else(|| "Account environment unavailable.".into())
+    }
+
+    pub(crate) fn remote_binding(&self) -> Result<RemoteBinding, String> {
+        remote_binding(&*self.inner.core.lock().map_err(|_| "Account unavailable.")?)
     }
 
     pub async fn begin_login(&self, storage: AuthStorage) -> AuthState {
