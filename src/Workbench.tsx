@@ -120,6 +120,7 @@ import {
 import type { TerminalContext } from "./terminal-runtime";
 import { dropPaths, terminalAtNativePosition } from "./file-drag";
 import { IconButton, Modal, WindowControls } from "./ui";
+import { Notice } from "./Notice";
 import { useAgentUsage } from "./AgentUsage";
 import Explorer from "./Explorer";
 import ProjectSwitcher from "./ProjectSwitcher";
@@ -1641,26 +1642,33 @@ export default function Workbench() {
     />
   );
   const notice = (error || restoreError) && (
-    <div className="notice" role="alert">
-      <span>{error || restoreError}</span>
-      {restoreError && (
-        <button
-          className="text-button"
-          onClick={() => {
-            savingEnabled.current = true;
-            setRestoreError("");
-            void saveSession(session, true).catch((error) =>
-              setError(errorMessage(error)),
-            );
-          }}
-        >
-          Save current layout instead
-        </button>
-      )}
-      <IconButton title="Dismiss message" onClick={() => setError("")}>
-        <X size={14} />
-      </IconButton>
-    </div>
+    <Notice
+      className="notice"
+      tone="error"
+      action={
+        <>
+          {restoreError && (
+            <button
+              className="text-button"
+              onClick={() => {
+                savingEnabled.current = true;
+                setRestoreError("");
+                void saveSession(session, true).catch((error) =>
+                  setError(errorMessage(error)),
+                );
+              }}
+            >
+              Save current layout instead
+            </button>
+          )}
+          <IconButton title="Dismiss message" onClick={() => setError("")}>
+            <X size={14} />
+          </IconButton>
+        </>
+      }
+    >
+      {error || restoreError}
+    </Notice>
   );
   const sidebarOpen = (panel: SidebarPanel) =>
     session.sidebarSides[panel] === "left"

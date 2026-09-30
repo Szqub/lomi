@@ -76,6 +76,7 @@ export const productIcons = {
   Sun: ["lightbulb"],
   Terminal: ["terminal"],
   Trash2: ["trash"],
+  TriangleAlert: ["warning"],
   Undo2: ["undo"],
   WholeWord: ["search-whole-word", "whole-word"],
   WrapText: ["word-wrap"],

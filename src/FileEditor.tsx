@@ -22,6 +22,7 @@ import { useKeybindings } from "./KeybindingsProvider";
 import { useEditorPreferences } from "./EditorPreferencesProvider";
 import { shortcutTitle } from "./keybindings";
 import { IconButton, Modal } from "./ui";
+import { Notice } from "./Notice";
 import { isMarkdownFile } from "./markdown";
 import FilePreviewToggle from "./FilePreviewToggle";
 import ImagePreview from "./ImagePreview";
@@ -235,27 +236,35 @@ function DocumentEditor({
         </div>
       </header>
       {status.conflict && (
-        <div className="editor-notice" role="alert">
-          <span>This file changed on disk. Your edits are preserved.</span>
-          <button
-            className="text-button"
-            onClick={() => setConfirmation("reload")}
-          >
-            Reload from disk…
-          </button>
-          <button
-            className="text-button"
-            disabled={status.saving || status.readOnly}
-            onClick={() => setConfirmation("overwrite")}
-          >
-            Overwrite disk version…
-          </button>
-        </div>
+        <Notice
+          className="editor-notice"
+          tone="warning"
+          role="alert"
+          action={
+            <>
+              <button
+                className="text-button"
+                onClick={() => setConfirmation("reload")}
+              >
+                Reload from disk…
+              </button>
+              <button
+                className="text-button"
+                disabled={status.saving || status.readOnly}
+                onClick={() => setConfirmation("overwrite")}
+              >
+                Overwrite disk version…
+              </button>
+            </>
+          }
+        >
+          This file changed on disk. Your edits are preserved.
+        </Notice>
       )}
       {status.error && (
-        <div className="editor-notice text-error" role="alert">
+        <Notice className="editor-notice" tone="error">
           {status.error}
-        </div>
+        </Notice>
       )}
       <div
         className={`editor-content${view === "split" ? " is-split" : ""}${markdown || svg ? " has-preview" : ""}`}
