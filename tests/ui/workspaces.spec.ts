@@ -426,7 +426,10 @@ test("sidebar actions manage inactive workspaces and can remove the last workspa
   await expect(
     page.getByRole("main", { name: "No project open" }),
   ).toBeVisible();
-  await expect(list.getByRole("button")).toHaveCount(0);
+  await expect(list.locator(".workspace-list-item")).toHaveCount(0);
+  await expect(
+    list.getByRole("button", { name: "Add workspace", exact: true }),
+  ).toBeVisible();
   expect(
     await page.evaluate(() =>
       (window as any).__nativeTest.calls.some(

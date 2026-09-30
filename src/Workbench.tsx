@@ -80,6 +80,7 @@ import {
   newPane,
   newProject,
   newTab,
+  maximumAgentCount,
   newFileTab,
   openCommitTab,
   openDiffTab,
@@ -168,6 +169,7 @@ import {
 import { useCliIntegrations } from "./CliIntegrations";
 import { useAgentNotifications } from "./AgentNotifications";
 import AgentsDialog from "./AgentsDialog";
+import { measureAgentLayoutSize } from "./useAgentLayoutSize";
 import { loadInstalledAgentClis } from "./installed-agent-clis";
 import { cliNames } from "./cli-agents";
 import type { CliAgent } from "./cli-agents";
@@ -254,6 +256,7 @@ export default function Workbench() {
   const currentSession = useRef<Session>(undefined);
   const workArea = useRef<HTMLDivElement>(null);
   const terminalLayout = useRef<HTMLDivElement>(null);
+  const terminalStage = useRef<HTMLElement>(null);
   const selected = session ? active(session) : undefined;
   const agentProfileId =
     info?.platform !== "windows" && selected?.tab.type === "terminal"
@@ -1072,7 +1075,13 @@ export default function Workbench() {
       .flatMap((project) => project.workspaces)
       .find((workspace) => workspace.id === workspaceId);
     if (!target) throw new Error("The selected workspace was closed.");
-    const added = newTab(cwd, profile.id, cliNames[cli], count);
+    const size = measureAgentLayoutSize(terminalStage.current);
+    const maximum = maximumAgentCount(size);
+    if (count > maximum)
+      throw new Error(
+        `Only ${maximum} ${maximum === 1 ? "agent fits" : "agents fit"} in the current window.`,
+      );
+    const added = newTab(cwd, profile.id, cliNames[cli], count, size);
     const runtimes = panes(added.layout).map((pane) =>
       terminalFor(pane, profile, cli),
     );
@@ -1724,6 +1733,16 @@ export default function Workbench() {
       <Workspaces
         projects={session.projects}
         activeWorkspaceId={selected?.workspace.id}
+        activeRoot={selected?.project.path ?? ""}
+        git={git}
+        onAppearanceChange={(workspace, appearance) =>
+          change((state) =>
+            updateWorkspace(state, workspace.id, (current) => ({
+              ...current,
+              appearance,
+            })),
+          )
+        }
         onSelect={(path, id, tabId) =>
           void selectProject(path, { workspaceId: id, tabId })
         }
@@ -2437,6 +2456,7 @@ export default function Workbench() {
             })}
             <main
               className="terminal-stage"
+              ref={terminalStage}
               id={`panel-${tab.id}`}
               role="tabpanel"
               aria-labelledby={`tab-${tab.id}`}
@@ -2856,6 +2876,7 @@ export default function Workbench() {
               key={JSON.stringify([agentsTarget.profile, agentsTarget.cwd])}
               profile={agentsTarget.profile}
               cwd={agentsTarget.cwd}
+              stage={terminalStage}
               onClose={() => setAgentsTarget(null)}
               onLaunch={launchAgents}
             />
