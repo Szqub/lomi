@@ -8,6 +8,7 @@
   min-width: 0;
   height: 22px;
   padding: 0 3px;
+  margin-inline-end: 9px;
   border: var(--control-border-width) solid var(--color-outline);
   border-radius: var(--radius-xs);
   background: var(--color-surface-container);
