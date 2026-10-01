@@ -5,10 +5,12 @@ The profile is `lomi-remote-live-v1`. `LIVE_PRODUCTION_QUALIFIED` is true;
 live hosting is enabled only on macOS ARM64. The mailbox HPKE path remains
 experimental and is not qualified.
 
-Desktop release 0.5.2 is prepared for publication. The local native/browser integration run
-passed 15 checks. Full testing against the public staging services is ongoing;
-the production server has not yet been deployed. These are separate validation
-and deployment states.
+Desktop release 0.5.3 is published. The local 0.5.2 native/browser run passed
+15 checks; release 0.5.3 passed 12 checks each against the public staging and
+production services. Its signed ARM64 artifact was verified for code signing,
+notarization, updater signature and bundled terminal helper operation.
+Production live services are deployed; general crypto and mailbox qualification
+remain disabled.
 
 The live suite remains `Noise_XX_25519_ChaChaPoly_SHA256`, Device initiator and
 Host responder. Vendored Snow 0.10.0 provenance and archive checksum are in
@@ -103,8 +105,8 @@ seeds require the explicit test-fixtures feature; release compilation rejects
 that feature. Default release builds contain no fixture constructor. Other
 browser engines, external security review, fuzzing and broader product
 qualification remain outstanding. General crypto and mailbox qualification
-remain disabled; the published desktop release does not establish production
-server deployment or successful public staging testing.
+remain disabled. Production deployment and normal-auth native/browser live
+qualification are recorded separately from these cryptographic protocol tests.
 
 ## Workspace approval and channel context v2
 

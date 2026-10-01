@@ -5,12 +5,20 @@ native terminals, PostgreSQL, the account API and the browser's release WASM
 crypto. It supplies test login sessions; interactive GitHub OAuth is a separate
 check.
 
-Desktop release 0.5.2 is prepared for publication, with native live hosting enabled only on
+Desktop release 0.5.3 is published, with native live hosting enabled only on
 macOS ARM64. `LIVE_PRODUCTION_QUALIFIED` is true; the general
 `PRODUCTION_QUALIFIED` and mailbox `MAILBOX_PRODUCTION_QUALIFIED` flags remain
-false. The local native/browser integration run passed 15 checks. Full testing
-against the public staging services is ongoing, and the production server has
-not yet been deployed. No successful production integration test is claimed.
+false. The local 0.5.2 native/browser integration run passed 15 checks. Release
+0.5.3 passed its 36 focused native authentication tests and 12 checks each
+against the public staging and production services, including normal desktop
+PKCE and browser RemoteLogin approval, encrypted terminal input, observation
+after local takeover, unsharing, revocation, background operation and Quit.
+The identity provider's interactive GitHub OAuth flow is a separate check.
+
+Production is available at https://remote.lomi.dev. Use desktop 0.5.3 or a later
+compatible release; native Remote requests declare support for safe atomic
+control renewal. A compatibility declaration supplements session authentication
+and the host's signed grant scope.
 
 ```sh
 cd /Users/woro/Documents/Lomi/lomi-remote-live
@@ -95,6 +103,7 @@ pnpm test:remote:native
 ```
 
 The automated native/browser check uses desktop port `1449`. Its receipt records
-only checks actually completed. The completed local run passed 15 checks;
-public staging testing remains ongoing. Local integration evidence alone does
-not establish production server deployment or successful production testing.
+only checks actually completed. The completed local 0.5.2 run passed 15 checks. Release 0.5.3 also passed the
+public staging and production runs, with 12 checks each. Signed release artifact
+verification and production backup restoration are recorded separately in the
+workspace rollout evidence.
