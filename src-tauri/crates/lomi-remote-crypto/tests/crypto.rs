@@ -2,9 +2,11 @@ use lomi_remote_crypto::*;
 
 #[test]
 fn qualification_is_limited_to_live_channels() {
-    assert!(LIVE_PRODUCTION_QUALIFIED);
-    assert!(!PRODUCTION_QUALIFIED);
-    assert!(!MAILBOX_PRODUCTION_QUALIFIED);
+    const {
+        assert!(LIVE_PRODUCTION_QUALIFIED);
+        assert!(!PRODUCTION_QUALIFIED);
+        assert!(!MAILBOX_PRODUCTION_QUALIFIED);
+    }
 }
 
 fn identities() -> (Identity, Identity, ChannelContext) {

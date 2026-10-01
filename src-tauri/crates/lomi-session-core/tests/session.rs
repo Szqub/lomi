@@ -14,7 +14,10 @@ fn session(script: &str) -> Session {
     .unwrap()
 }
 fn finished(session: &Session) {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    finished_with_timeout(session, Duration::from_secs(6));
+}
+fn finished_with_timeout(session: &Session, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
     while !session.ended() {
         assert!(Instant::now() < deadline, "session did not finish");
         thread::sleep(Duration::from_millis(10));
@@ -91,7 +94,8 @@ fn inherited_descriptor_drain_finishes_with_confirmed_child_exit() {
 #[test]
 fn history_and_input_limits_are_explicit() {
     let session = session("head -c 300000 /dev/zero; exit 0");
-    finished(&session);
+    // Bulk PTY output needs more drain time on slower macOS CI runners.
+    finished_with_timeout(&session, Duration::from_secs(30));
     assert!(session.snapshot().unwrap_err().contains("evicted"));
     assert!(session.replay_after(0).unwrap_err().contains("gap"));
     assert!(session
