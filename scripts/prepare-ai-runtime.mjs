@@ -6,6 +6,7 @@ import {
   copyFile,
   chmod,
   mkdtemp,
+  rename,
   rm,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -58,8 +59,16 @@ try {
     binaries,
     `lomi-node-${target}${windows ? ".exe" : ""}`,
   );
-  await copyFile(source, destination);
-  if (!windows) await chmod(destination, 0o755);
+  const staging = await mkdtemp(path.join(binaries, ".node-staging-"));
+  try {
+    const staged = path.join(staging, path.basename(destination));
+    // macOS caches code signatures by inode; replace rather than overwrite it.
+    await copyFile(source, staged);
+    if (!windows) await chmod(staged, 0o755);
+    await rename(staged, destination);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
   await copyFile(
     path.join(scratch, name, "LICENSE"),
     path.join(resources, "NODE-LICENSE"),
