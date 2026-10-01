@@ -98,8 +98,16 @@ export function useRemoteWorkspaces(
       void publisher.current?.notify().catch((e) => setError(errorMessage(e)));
   }, [session, profiles]);
   const share = async (workspaceId: string, shared: boolean) => {
+    if (acting.current) return;
     const engine = publisher.current;
-    if (!engine || acting.current) return;
+    if (!engine) {
+      setError(
+        native
+          ? "Remote sharing is not ready. Try again, or restart Lomi if this continues."
+          : "Remote sharing requires the Lomi desktop app.",
+      );
+      return;
+    }
     acting.current = true;
     setBusy(workspaceId);
     setError("");
@@ -120,7 +128,10 @@ export function useRemoteWorkspaces(
         preparing.current.add(workspaceId);
         engine.desired.add(workspaceId);
         await engine.notify();
-        if (publisher.current !== engine) return;
+        if (publisher.current !== engine)
+          throw new Error(
+            "Remote sharing was interrupted. Try sharing the workspace again.",
+          );
         if (
           !workspaceTerminals(current.current).some((w) => w.id === workspaceId)
         )
@@ -129,12 +140,20 @@ export function useRemoteWorkspaces(
         blocked.current.add(workspaceId);
         engine.desired.delete(workspaceId);
       }
-      accept.current(
-        await api<RemoteState>("remote_share_workspace", {
-          workspaceId,
-          shared,
-        }),
-      );
+      const next = await api<RemoteState>("remote_share_workspace", {
+        workspaceId,
+        shared,
+      });
+      if (
+        shared &&
+        !next?.workspaces?.some(
+          (w) => w.id === workspaceId && w.shared === true,
+        )
+      )
+        throw new Error(
+          "Remote sharing was not confirmed. Try sharing the workspace again.",
+        );
+      accept.current(next);
       void engine.notify().catch((e) => setError(errorMessage(e)));
     } catch (e) {
       setError(errorMessage(e));

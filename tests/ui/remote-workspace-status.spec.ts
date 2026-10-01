@@ -167,3 +167,72 @@ test("pending confirmation blocks dismissal and failures stay in the dialog for 
     ),
   ).toBe(true);
 });
+
+for (const failure of ["rejected", "unconfirmed"] as const) {
+  test(`starting sharing keeps ${failure} requests visible and allows retry`, async ({
+    page,
+  }) => {
+    const { otherId } = await setup(page, true);
+    await page.evaluate((failure) => {
+      const desktop = window as any;
+      desktop.__remoteInvoke = async (command: string, args: any) => {
+        if (command === "remote_share_workspace") {
+          await new Promise<void>((resolve) => {
+            desktop.__finishRemoteStart = resolve;
+          });
+          if (!desktop.__retryRemoteStart) {
+            if (failure === "rejected")
+              throw new Error("Could not start remote access");
+          } else {
+            desktop.__nativeTest.remoteState.workspaces.find(
+              (w: any) => w.id === args.workspaceId,
+            ).shared = true;
+          }
+        }
+        return JSON.parse(JSON.stringify(desktop.__nativeTest.remoteState));
+      };
+    }, failure);
+    await page.getByRole("button", { name: /^Other \/project/ }).click({
+      button: "right",
+    });
+    await page.getByRole("menuitem", { name: "Share remotely" }).click();
+    const dialog = page.getByRole("alertdialog", {
+      name: "Share workspace remotely?",
+    });
+    const confirm = dialog.getByRole("button", {
+      name: /^(Share remotely|Sharing…)$/,
+    });
+    await confirm.click();
+    await expect(confirm).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+    await expect.poll(() => unshareCalls(page)).toHaveLength(1);
+    await page.evaluate(() => (window as any).__finishRemoteStart());
+    await expect(dialog.getByRole("alert")).toHaveText(
+      failure === "rejected"
+        ? "Could not start remote access"
+        : "Remote sharing was not confirmed. Try sharing the workspace again.",
+    );
+    await expect(confirm).toBeEnabled();
+    await page.evaluate(() => {
+      (window as any).__retryRemoteStart = true;
+    });
+    await confirm.click();
+    await expect(confirm).toBeDisabled();
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
+    await expect.poll(() => unshareCalls(page)).toHaveLength(2);
+    await page.evaluate(() => (window as any).__finishRemoteStart());
+    await expect(dialog).toHaveCount(0);
+    expect(await unshareCalls(page)).toEqual([
+      {
+        command: "remote_share_workspace",
+        args: { workspaceId: otherId, shared: true },
+      },
+      {
+        command: "remote_share_workspace",
+        args: { workspaceId: otherId, shared: true },
+      },
+    ]);
+  });
+}
