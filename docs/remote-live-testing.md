@@ -3,7 +3,14 @@
 The local demo runs on macOS ARM64 with a genuine isolated test account, retained
 native terminals, PostgreSQL, the account API and the browser's release WASM
 crypto. It supplies test login sessions; interactive GitHub OAuth is a separate
-check. Production live access remains gated until production qualification.
+check.
+
+Desktop release 0.5.2 is prepared for publication, with native live hosting enabled only on
+macOS ARM64. `LIVE_PRODUCTION_QUALIFIED` is true; the general
+`PRODUCTION_QUALIFIED` and mailbox `MAILBOX_PRODUCTION_QUALIFIED` flags remain
+false. The local native/browser integration run passed 15 checks. Full testing
+against the public staging services is ongoing, and the production server has
+not yet been deployed. No successful production integration test is claimed.
 
 ```sh
 cd /Users/woro/Documents/Lomi/lomi-remote-live
@@ -40,7 +47,9 @@ Local terminals continue working. The shared workspace and terminal limits are
 also 32. Increasing the observer budget or introducing on-demand state bootstrap
 requires separate terminal-state qualification.
 
-Disconnected channels reconnect with fresh keys and snapshots. Unconfirmed input
+Established channels reconnect in observing mode with fresh keys and snapshots.
+Request control explicitly after a connection or workspace scope change; automatic
+renewal never restores a lease preempted by local typing. Unconfirmed input
 is never replayed. An explicitly revoked browser enrollment does not silently
 regain access during the same page lifetime.
 
@@ -86,5 +95,6 @@ pnpm test:remote:native
 ```
 
 The automated native/browser check uses desktop port `1449`. Its receipt records
-only checks actually completed. Local integration evidence does not enable
-production feature gates.
+only checks actually completed. The completed local run passed 15 checks;
+public staging testing remains ongoing. Local integration evidence alone does
+not establish production server deployment or successful production testing.

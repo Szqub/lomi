@@ -168,11 +168,33 @@ async fn run(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), Strin
  match command.get("op").and_then(Value::as_str){
  Some("ui-terminal-action")=>{
  let action=text("action")?;
- let script=match action.as_str(){
- "new-tab"=>"document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'T',code:'KeyT',ctrlKey:!navigator.platform.includes('Mac'),metaKey:navigator.platform.includes('Mac'),shiftKey:true,bubbles:true,cancelable:true}))",
- "split"=>"document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'d',code:'KeyD',ctrlKey:!navigator.platform.includes('Mac'),metaKey:navigator.platform.includes('Mac'),bubbles:true,cancelable:true}))",
- _=>return Err("Invalid UI terminal action.".into())};
- app.get_webview_window("main").ok_or("Main missing.")?.eval(script).map_err(|_|"UI action failed.")?;Ok(json!({"requested":true}))
+ if !matches!(action.as_str(), "new-tab" | "split") { return Err("Invalid UI terminal action.".into()); }
+ let (key,code,shift)=if action=="new-tab" {("T","KeyT",true)} else {("d","KeyD",false)};
+ let script=format!(r#"(() => {{
+ const deadline = performance.now() + 5000;
+ let startupChoiceRequested = false;
+ const tick = () => {{
+  const startup = document.querySelector('dialog.agent-control-startup-dialog[open]');
+  if (startup) {{
+   if (startup.querySelector('h2')?.textContent !== 'Start the MCP server automatically?') throw new Error('Unexpected MCP startup dialog');
+   const keepDisabled = Array.from(startup.querySelectorAll('button')).find(button => button.textContent.trim() === 'Keep disabled');
+   if (!startupChoiceRequested && keepDisabled && !keepDisabled.disabled) {{
+    startupChoiceRequested = true;
+    keepDisabled.click();
+   }}
+   if (performance.now() >= deadline) throw new Error('MCP startup choice did not finish');
+   setTimeout(tick, 50);
+   return;
+  }}
+  if (document.querySelector('dialog[open]')) throw new Error('Unexpected open dialog blocks terminal action');
+  const event = new KeyboardEvent('keydown', {{key:'{}',code:'{}',ctrlKey:!navigator.platform.includes('Mac'),metaKey:navigator.platform.includes('Mac'),shiftKey:{},bubbles:true,cancelable:true}});
+  document.body.dispatchEvent(event);
+  console.warn('LOMI_REMOTE_UI_ACTION ' + JSON.stringify({{action:'{}',startupChoiceRequested,handled:event.defaultPrevented}}));
+  if (!event.defaultPrevented) throw new Error('Terminal action shortcut was not handled');
+ }};
+ tick();
+ }})()"#,key,code,shift,action);
+ app.get_webview_window("main").ok_or("Main missing.")?.eval(&script).map_err(|_|"UI action failed.")?;Ok(json!({"requested":true}))
  },
  Some("ui-workspace-action")=>{
  let workspace_id=text("workspaceId")?;remote::uuid_bytes(&workspace_id)?;

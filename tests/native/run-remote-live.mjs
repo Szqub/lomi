@@ -343,6 +343,13 @@ try {
       30000,
     );
     await page
+      .locator(".terminal-status")
+      .filter({ hasText: "Observing. Input is disabled." })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Take control", exact: true })
+      .click();
+    await page
       .getByRole("button", { name: "Renew control", exact: true })
       .waitFor();
     await command("ui-terminal-action", { action: "split" });
@@ -351,10 +358,17 @@ try {
       30000,
     );
     await page
+      .locator(".terminal-status")
+      .filter({ hasText: "Observing. Input is disabled." })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Take control", exact: true })
+      .click();
+    await page
       .getByRole("button", { name: "Renew control", exact: true })
       .waitFor();
     checks.push(
-      "new terminal tab and split update signed workspace scope and reconnect automatically",
+      "new terminal tab and split update signed scope, reconnect observing, and accept explicit control",
     );
     const selectedUrl = page.url();
     await page.reload();

@@ -405,6 +405,43 @@ impl Terminals {
         }
     }
 
+    pub(crate) fn remote_renew(&self, id: &str, owner: &str, lease_id: &str) -> Result<(), String> {
+        let session = self.get(id)?;
+        let writer = session.writer.lock().map_err(|_| "Terminal unavailable.")?;
+        if writer.is_none() {
+            return Err("The terminal has been closed.".into());
+        }
+        #[cfg(not(unix))]
+        return Err("Remote control is not qualified on this platform.".into());
+        #[cfg(unix)]
+        {
+            let control = session.control();
+            let control = control
+                .as_ref()
+                .map(|c| c.lock())
+                .transpose()
+                .map_err(|_| "Terminal unavailable.")?;
+            let mut lease = session
+                .remote_lease
+                .lock()
+                .map_err(|_| "Terminal unavailable.")?;
+            let now = std::time::Instant::now();
+            let lease = lease.as_mut().ok_or("Remote lease expired.")?;
+            if session.human_waiters.load(Ordering::SeqCst) > 0
+                || control.as_ref().is_some_and(|c| c.lease().is_some())
+                || lease.id != lease_id
+                || lease.owner != owner
+                || lease.deadline <= now
+                || lease.generation != session.human_generation.load(Ordering::SeqCst)
+            {
+                return Err("Remote lease expired or preempted.".into());
+            }
+            // Renewal never creates a lease or adopts a newer human generation.
+            lease.deadline = now + Duration::from_secs(5);
+            Ok(())
+        }
+    }
+
     pub(crate) fn remote_lease_live(&self, id: &str, owner: &str, lease_id: &str) -> bool {
         self.get(id).ok().is_some_and(|session| {
             session
@@ -1735,6 +1772,54 @@ mod tests {
         manager
             .remote_claim("remote-test", "browser", "lease")
             .unwrap();
+        let session = manager.get("remote-test").unwrap();
+        let before = {
+            let mut slot = session.remote_lease.lock().unwrap();
+            let lease = slot.as_mut().unwrap();
+            lease.deadline = std::time::Instant::now() + Duration::from_secs(2);
+            (
+                lease.id.clone(),
+                lease.owner.clone(),
+                lease.generation,
+                lease.deadline,
+            )
+        };
+        manager
+            .remote_renew("remote-test", "browser", "lease")
+            .unwrap();
+        let renewed_deadline = {
+            let slot = session.remote_lease.lock().unwrap();
+            let lease = slot.as_ref().unwrap();
+            assert_eq!(
+                (&lease.id, &lease.owner, lease.generation),
+                (&before.0, &before.1, before.2)
+            );
+            assert!(lease.deadline > before.3);
+            lease.deadline
+        };
+        assert!(manager
+            .remote_renew("remote-test", "other-browser", "lease")
+            .is_err());
+        assert!(manager
+            .remote_renew("remote-test", "browser", "wrong-lease")
+            .is_err());
+        assert_eq!(
+            session
+                .remote_lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .deadline,
+            renewed_deadline
+        );
+        session.flow.lock().unwrap().control = Some(Arc::new(Mutex::new(
+            TerminalControl::new("agent".into(), "remote-test".into()).unwrap(),
+        )));
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease")
+            .is_err());
+        session.flow.lock().unwrap().control = None;
         let denied = manager.remote_input(
             "remote-test",
             "browser",
@@ -1781,6 +1866,10 @@ mod tests {
             .write("remote-test", "printf '__LOCAL_NATIVE_OK__\n'\r")
             .unwrap();
         assert!(!manager.remote_lease_live("remote-test", "browser", "lease"));
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease")
+            .is_err());
+        assert!(session.remote_lease.lock().unwrap().is_none());
         let stale = manager.remote_input(
             "remote-test",
             "browser",
@@ -1790,14 +1879,81 @@ mod tests {
         );
         assert_eq!((stale.written, stale.status), (0, "rejected"));
         // A queued human writer must also prevent a competing Remote claim.
-        let session = manager.get("remote-test").unwrap();
+        manager
+            .remote_claim("remote-test", "browser", "queued-lease")
+            .unwrap();
         session.human_waiters.fetch_add(1, Ordering::SeqCst);
         let human = HumanInputGuard(session.clone());
+        assert!(manager
+            .remote_renew("remote-test", "browser", "queued-lease")
+            .is_err());
         assert!(manager
             .remote_claim("remote-test", "browser", "queued-human")
             .is_err());
         drop(human);
         assert_eq!(session.human_waiters.load(Ordering::SeqCst), 0);
+        manager
+            .remote_claim("remote-test", "browser", "lease-new")
+            .unwrap();
+        // Hold the writer until local input has invalidated the lease and queued.
+        // Renewal then races for the writer, but neither ordering may restore control.
+        let writer = session.writer.lock().unwrap();
+        let human_barrier = Arc::new(std::sync::Barrier::new(2));
+        let local_manager = manager.clone();
+        let local_barrier = human_barrier.clone();
+        let local = thread::spawn(move || {
+            local_barrier.wait();
+            local_manager.write("remote-test", "\u{3}")
+        });
+        human_barrier.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.human_waiters.load(Ordering::SeqCst) == 0
+            || session.remote_lease.lock().unwrap().is_some()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Local input did not queue"
+            );
+            thread::yield_now();
+        }
+        let renew_barrier = Arc::new(std::sync::Barrier::new(2));
+        let renew_manager = manager.clone();
+        let start_renew = renew_barrier.clone();
+        let renew = thread::spawn(move || {
+            start_renew.wait();
+            renew_manager.remote_renew("remote-test", "browser", "lease-new")
+        });
+        renew_barrier.wait();
+        drop(writer);
+        assert!(renew.join().unwrap().is_err());
+        local.join().unwrap().unwrap();
+        assert!(!manager.remote_lease_live("remote-test", "browser", "lease-new"));
+        assert!(session.remote_lease.lock().unwrap().is_none());
+
+        manager
+            .remote_claim("remote-test", "browser", "lease-new")
+            .unwrap();
+        let generation = session
+            .remote_lease
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .generation;
+        session.human_generation.fetch_add(1, Ordering::SeqCst);
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease-new")
+            .is_err());
+        assert_eq!(
+            session
+                .remote_lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .generation,
+            generation
+        );
         manager
             .remote_claim("remote-test", "browser", "lease-new")
             .unwrap();
@@ -1810,6 +1966,9 @@ mod tests {
             .as_mut()
             .unwrap()
             .deadline = std::time::Instant::now() - Duration::from_millis(1);
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease-new")
+            .is_err());
         assert_eq!(
             manager
                 .remote_input("remote-test", "browser", "lease-new", b"expired", || true)

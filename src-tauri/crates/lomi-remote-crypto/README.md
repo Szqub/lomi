@@ -1,9 +1,14 @@
 # Shared native/WASM live protocol
 
-The profile is `lomi-remote-live-v1`. `PRODUCTION_QUALIFIED`,
-`LIVE_PRODUCTION_QUALIFIED`, and `MAILBOX_PRODUCTION_QUALIFIED` remain false.
-Integration review and product qualification are separate gates. The mailbox
-HPKE path remains experimental; this change does not qualify it.
+The profile is `lomi-remote-live-v1`. `LIVE_PRODUCTION_QUALIFIED` is true;
+`PRODUCTION_QUALIFIED` and `MAILBOX_PRODUCTION_QUALIFIED` remain false. Native
+live hosting is enabled only on macOS ARM64. The mailbox HPKE path remains
+experimental and is not qualified.
+
+Desktop release 0.5.2 is prepared for publication. The local native/browser integration run
+passed 15 checks. Full testing against the public staging services is ongoing;
+the production server has not yet been deployed. These are separate validation
+and deployment states.
 
 The live suite remains `Noise_XX_25519_ChaChaPoly_SHA256`, Device initiator and
 Host responder. Vendored Snow 0.10.0 provenance and archive checksum are in
@@ -97,8 +102,9 @@ installed Chromium. Generated pkg/ and target/ files are ignored. Test fixture
 seeds require the explicit test-fixtures feature; release compilation rejects
 that feature. Default release builds contain no fixture constructor. Other
 browser engines, external security review, fuzzing and broader product
-qualification remain outstanding. No deployment or general crypto qualification
-is asserted here.
+qualification remain outstanding. General crypto and mailbox qualification
+remain disabled; the published desktop release does not establish production
+server deployment or successful public staging testing.
 
 ## Workspace approval and channel context v2
 
@@ -130,4 +136,5 @@ metadata fixtures with canonical hex. `tests/fixtures/legacy-v1.json` fixes the
 old wire output; `tests/fixtures/workspace-v2.json` fixes the new wire output.
 Workspace tests cover signed-field tampering, downgrade, omitted fields,
 duplicates and bounds, stale PTY/workspace epochs, revision, purpose and Noise
-prologue mismatches. All qualification flags remain false.
+prologue mismatches. Live crypto is qualified; general crypto and mailbox
+qualification remain disabled. Native hosting is limited to macOS ARM64.

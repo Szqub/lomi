@@ -443,12 +443,19 @@ async fn run(
                         seq=snapshot.get("seq").and_then(Value::as_u64).ok_or("Invalid snapshot.")?;
                         send(&permit, &mut ws,&mut crypto,route,snapshot).await?;
                     },
-                    Some("claim")|Some("renew") if permissions==Permissions::Control=> {
-                        let renewing=input.get("type").and_then(Value::as_str)==Some("renew");
-                        if renewing && (input.get("leaseId").and_then(Value::as_str)!=lease.as_deref() || lease.as_ref().is_none_or(|id| !app.state::<Terminals>().remote_lease_live(&wire.session_id,&wire.id,id))) { return Err("Remote lease expired.".into()); }
-                        let id=if renewing { lease.clone().ok_or("Remote lease expired.")? } else { uuid()? };
+                    Some("claim") if permissions==Permissions::Control=> {
+                        let id=uuid()?;
                         if app.state::<Terminals>().remote_claim(&wire.session_id,&wire.id,&id).is_ok() { lease=Some(id.clone()); send(&permit, &mut ws,&mut crypto,route,json!({"v":1,"type":"lease","leaseId":id,"expiresAt":now()+5})).await?; }
                         else { send(&permit, &mut ws,&mut crypto,route,json!({"v":1,"type":"lease","leaseId":null})).await?; }
+                    },
+                    Some("renew") if permissions==Permissions::Control=> {
+                        let renewed=lease.as_ref().filter(|id| input.get("leaseId").and_then(Value::as_str)==Some(id.as_str()))
+                            .filter(|id| app.state::<Terminals>().remote_renew(&wire.session_id,&wire.id,id).is_ok()).cloned();
+                        if let Some(id)=renewed { send(&permit, &mut ws,&mut crypto,route,json!({"v":1,"type":"lease","leaseId":id,"expiresAt":now()+5})).await?; }
+                        else {
+                            lease=None; app.state::<Terminals>().remote_revoke_owner(&wire.session_id,&wire.id);
+                            send(&permit, &mut ws,&mut crypto,route,json!({"v":1,"type":"lease","leaseId":null})).await?;
+                        }
                     },
                     Some("input")=> {
                         let id=input.get("id").and_then(Value::as_str).ok_or("Input id missing.")?; uuid_bytes(id)?;
