@@ -46,7 +46,7 @@ test("a pending autosave cannot run after the final close save and resumes after
   await page.evaluate(() => {
     const mock = (window as any).__nativeTest;
     mock.calls.length = 0;
-    void mock.emitEvent("tauri://close-requested");
+    void mock.emitEvent("lomi-quit-requested");
   });
   const progress = page.getByRole("dialog", { name: "Preparing to close" });
   await expect(progress).toBeVisible();
@@ -75,7 +75,7 @@ test("a pending autosave cannot run after the final close save and resumes after
   expect(await actions(page)).not.toContain("plugin:window|destroy");
 });
 
-for (const event of ["tauri://close-requested", "plugin-restart-request"]) {
+for (const event of ["lomi-quit-requested", "plugin-restart-request"]) {
   test(`${event} can cancel after saving and waits for native stop before releasing its gate`, async ({
     page,
   }) => {
@@ -134,7 +134,7 @@ test("a failed Android stop keeps the current workspace and allows another close
   await page.evaluate(() => {
     (window as any).__nativeTest.androidExitError =
       "Phone is still stopping. Retry Stop.";
-    void (window as any).__nativeTest.emitEvent("tauri://close-requested");
+    void (window as any).__nativeTest.emitEvent("lomi-quit-requested");
   });
   await expect(
     page.getByText(
@@ -154,12 +154,12 @@ test("a failed Android stop keeps the current workspace and allows another close
     .toBeNull();
   await page.evaluate(() => {
     (window as any).__nativeTest.androidExitError = "";
-    void (window as any).__nativeTest.emitEvent("tauri://close-requested");
+    void (window as any).__nativeTest.emitEvent("lomi-quit-requested");
   });
   await expect.poll(() => actions(page)).toContain("plugin:window|destroy");
 });
 
-for (const trigger of ["close button", "native close request"]) {
+for (const trigger of ["Quit command", "native Quit request"]) {
   test(`${trigger} asks before interrupting a hidden AI response`, async ({
     page,
   }, testInfo) => {
@@ -179,13 +179,13 @@ for (const trigger of ["close button", "native close request"]) {
     );
     await page.getByRole("tab", { name: "Terminal", exact: true }).click();
     const close = async () => {
-      if (trigger === "close button")
-        await page.getByRole("button", { name: "Close window" }).click();
+      if (trigger === "Quit command")
+        await page.evaluate(() =>
+          (window as any).__TAURI_INTERNALS__.invoke("request_quit"),
+        );
       else
         await page.evaluate(() => {
-          void (window as any).__nativeTest.emitEvent(
-            "tauri://close-requested",
-          );
+          void (window as any).__nativeTest.emitEvent("lomi-quit-requested");
         });
     };
     const dialog = page.getByRole("dialog", { name: "Quit Lomi?" });
@@ -209,10 +209,10 @@ for (const trigger of ["close button", "native close request"]) {
     await close();
     await expect(dialog).toBeVisible();
     await page.evaluate(() => {
-      void (window as any).__nativeTest.emitEvent("tauri://close-requested");
+      void (window as any).__nativeTest.emitEvent("lomi-quit-requested");
     });
     await expect(page.getByRole("dialog")).toHaveCount(1);
-    if (trigger === "close button") {
+    if (trigger === "Quit command") {
       await page.setViewportSize({ width: 800, height: 420 });
       await page.screenshot({
         path: testInfo.outputPath("quit-confirmation.png"),
@@ -246,8 +246,32 @@ test("a finished AI response does not ask for quit confirmation", async ({
   await expect(
     page.getByRole("button", { name: "Stop", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Close window" }).click();
+  await page.evaluate(() =>
+    (window as any).__TAURI_INTERNALS__.invoke("request_quit"),
+  );
   await expect.poll(() => actions(page)).toContain("plugin:window|destroy");
   await expect(page.getByRole("dialog", { name: "Quit Lomi?" })).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).__chatTest.stops)).toBe(0);
+});
+
+test("closing the workspace hides its window and retains terminal runtimes", async ({
+  page,
+}) => {
+  await prepare(page);
+  await page.getByRole("button", { name: "Close window" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).__nativeTest.calls.some(
+          (c: any) => c.command === "hide_main_window",
+        ),
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".xterm-screen")).toBeVisible();
+  const calls = await actions(page);
+  expect(calls).not.toContain("plugin:window|destroy");
+  expect(calls).not.toContain("agent-control:freeze");
+  expect(calls).not.toContain("finish");
 });

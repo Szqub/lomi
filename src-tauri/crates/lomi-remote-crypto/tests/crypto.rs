@@ -1,4 +1,12 @@
 use lomi_remote_crypto::*;
+
+#[test]
+fn qualification_is_limited_to_live_channels() {
+    assert!(LIVE_PRODUCTION_QUALIFIED);
+    assert!(!PRODUCTION_QUALIFIED);
+    assert!(!MAILBOX_PRODUCTION_QUALIFIED);
+}
+
 fn identities() -> (Identity, Identity, ChannelContext) {
     let account = [1; 16];
     (
@@ -11,6 +19,15 @@ fn identities() -> (Identity, Identity, ChannelContext) {
             device_id: [3; 16],
             initiator_role: Role::Device,
             responder_role: Role::Host,
+            channel_id: [5; 16],
+            grant_id: [4; 16],
+            session_id: [6; 16],
+            workspace_id: None,
+            workspace_epoch: None,
+            session_epoch: None,
+            purpose: None,
+            access_epoch: 1,
+            revision: 1,
         },
     )
 }
@@ -248,8 +265,8 @@ fn canonical_arrays_are_versioned_and_have_exact_arity() {
     assert_eq!(d.position(), public.len());
     let canonical = context.canonical().unwrap();
     let mut d = minicbor::Decoder::new(&canonical);
-    assert_eq!(d.array().unwrap(), Some(8));
-    for _ in 0..8 {
+    assert_eq!(d.array().unwrap(), Some(13));
+    for _ in 0..13 {
         d.skip().unwrap();
     }
     assert_eq!(d.position(), canonical.len());
@@ -270,7 +287,7 @@ fn fixed_bundle_fingerprints_are_stable_native_wasm_fixtures() {
             .bundle
             .fingerprint()
             .unwrap()),
-        "ee8d7bc0a65545476f3f6c7689f42f35ee91825bdb9b9e06bc83b0b878cfea52"
+        "c0938f7c2154d1441b0a0fb39724048849cb798c550258e2fc9e4b95892184ee"
     );
     assert_eq!(
         hex(Identity::fixture(Role::Device, 21)
@@ -279,6 +296,165 @@ fn fixed_bundle_fingerprints_are_stable_native_wasm_fixtures() {
             .bundle
             .fingerprint()
             .unwrap()),
-        "31e5e3ba75d4f5368a980ccc8b553615ebe75ecabdf155df7c44b43541858ce8"
+        "1387040ad3d2295f2ef61bfa54c14c4673bfa32836b0b6a4073b2b4090192821"
     );
+}
+
+#[test]
+fn durable_identity_binary_frames_disposal_and_low_order_rejection() {
+    let (mut host, device, context) = identities();
+    let bundle = host.public_bundle();
+    let blob = host.export_secret_seed_blob().unwrap();
+    let restored = Identity::import_secret_seed_blob(&blob, &bundle).unwrap();
+    assert_eq!(restored.public_bundle(), bundle);
+    let mut bad = blob.to_vec();
+    bad[1] ^= 1;
+    assert!(Identity::import_secret_seed_blob(&bad, &bundle).is_err());
+    let (mut s, mut c) = handshake(&restored, &device, &context);
+    let frame = c.seal_binary([9; 16], b"one").unwrap();
+    assert_eq!(frame.len(), 67);
+    assert_eq!(&*s.open_binary([9; 16], &frame).unwrap(), b"one");
+    let reply = s.seal_binary([9; 16], b"two").unwrap();
+    assert_eq!(&*c.open_binary([9; 16], &reply).unwrap(), b"two");
+    c.dispose();
+    assert!(c.seal_binary([9; 16], b"closed").is_err());
+    assert!(s.open_binary([9; 16], &[0; 63]).is_err());
+    assert!(s.seal_binary([9; 16], b"closed").is_err());
+    host.dispose();
+    assert!(host.export_secret_seed_blob().is_err());
+    use snow::resolvers::{CryptoResolver, DefaultResolver};
+    let mut dh = DefaultResolver
+        .resolve_dh(&snow::params::DHChoice::Curve25519)
+        .unwrap();
+    dh.set(&[42; 32]);
+    for key in [[0; 32], {
+        let mut k = [0; 32];
+        k[0] = 1;
+        k
+    }] {
+        assert!(dh.dh(&key, &mut [0; 32]).is_err());
+    }
+}
+
+#[test]
+fn approval_binds_every_field_trusted_deadline_and_epoch() {
+    let (host, device, _) = identities();
+    let hb = host.public_bundle();
+    let pin = hb.bundle.fingerprint().unwrap();
+    let expected = PeerApproval {
+        version: 1,
+        account_id: [1; 16],
+        host_id: [2; 16],
+        device_id: [3; 16],
+        host_fingerprint: pin,
+        device_fingerprint: device.public_bundle().bundle.fingerprint().unwrap(),
+        pairing_nonce: [8; 32],
+        grant_id: [4; 16],
+        session_ids: vec![[6; 16]],
+        workspace_id: None,
+        workspace_epoch: None,
+        session_epochs: vec![],
+        permissions: Permissions::Control,
+        access_epoch: 1,
+        revision: 1,
+        expires_at: 2000,
+    };
+    let signed = host.sign_peer_approval(expected.clone()).unwrap();
+    signed.verify(&hb, &pin, &expected, 1000, 1).unwrap();
+    assert!(device.sign_peer_approval(expected.clone()).is_err());
+    assert!(signed.verify(&hb, &pin, &expected, 2000, 1).is_err());
+    assert!(signed.verify(&hb, &pin, &expected, 1000, 2).is_err());
+    let value = serde_json::to_value(&expected).unwrap();
+    for field in value.as_object().unwrap().keys() {
+        let mut changed = value.clone();
+        let v = &mut changed[field];
+        if let Some(a) = v.as_array_mut() {
+            if a[0].is_array() {
+                a[0][0] = serde_json::json!(7);
+            } else {
+                a[0] = serde_json::json!(a[0].as_u64().unwrap() ^ 1);
+            }
+        } else if let Some(n) = v.as_u64() {
+            *v = serde_json::json!(n + 1);
+        } else {
+            *v = serde_json::json!("observe");
+        }
+        let changed: PeerApproval = serde_json::from_value(changed).unwrap();
+        assert!(
+            signed.verify(&hb, &pin, &changed, 1000, 1).is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn upstream_cacophony_xx_sha256_reference_vector() {
+    fn hex(s: &str) -> Vec<u8> {
+        s.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+            .collect()
+    }
+    let all: serde_json::Value =
+        serde_json::from_str(include_str!("../vendor/snow/tests/vectors/cacophony.txt")).unwrap();
+    let v = all["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["protocol_name"] == "Noise_XX_25519_ChaChaPoly_SHA256")
+        .unwrap();
+    let build = |prefix: &str, initiator: bool| {
+        let secret = hex(v[format!("{prefix}_static")].as_str().unwrap());
+        let ephemeral = hex(v[format!("{prefix}_ephemeral")].as_str().unwrap());
+        let prologue = hex(v[format!("{prefix}_prologue")].as_str().unwrap());
+        let b = snow::Builder::new("Noise_XX_25519_ChaChaPoly_SHA256".parse().unwrap())
+            .local_private_key(&secret)
+            .unwrap()
+            .fixed_ephemeral_key_for_testing_only(&ephemeral)
+            .prologue(&prologue)
+            .unwrap();
+        if initiator {
+            b.build_initiator().unwrap()
+        } else {
+            b.build_responder().unwrap()
+        }
+    };
+    let mut i = build("init", true);
+    let mut r = build("resp", false);
+    for (n, m) in v["messages"].as_array().unwrap()[..3].iter().enumerate() {
+        let (w, rd) = if n % 2 == 0 {
+            (&mut i, &mut r)
+        } else {
+            (&mut r, &mut i)
+        };
+        let payload = hex(m["payload"].as_str().unwrap());
+        let ciphertext = hex(m["ciphertext"].as_str().unwrap());
+        let mut out = [0; 1024];
+        let size = w.write_message(&payload, &mut out).unwrap();
+        assert_eq!(&out[..size], ciphertext);
+        let size = rd.read_message(&ciphertext, &mut out).unwrap();
+        assert_eq!(&out[..size], payload);
+    }
+    assert_eq!(
+        i.get_handshake_hash(),
+        hex(v["handshake_hash"].as_str().unwrap())
+    );
+    let mut i = i.into_transport_mode().unwrap();
+    let mut r = r.into_transport_mode().unwrap();
+    for (n, m) in v["messages"].as_array().unwrap()[3..].iter().enumerate() {
+        let (w, rd) = if n % 2 == 1 {
+            (&mut i, &mut r)
+        } else {
+            (&mut r, &mut i)
+        };
+        let payload = hex(m["payload"].as_str().unwrap());
+        let ciphertext = hex(m["ciphertext"].as_str().unwrap());
+        let mut out = [0; 1024];
+        let size = w.write_message(&payload, &mut out).unwrap();
+        assert_eq!(&out[..size], ciphertext);
+        let size = rd.read_message(&ciphertext, &mut out).unwrap();
+        assert_eq!(&out[..size], payload);
+    }
 }

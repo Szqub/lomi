@@ -69,6 +69,30 @@ impl AuthConfig {
             .map_err(|_| "The account service address is invalid.".to_string())
     }
 
+    pub fn remote_origin(&self) -> Result<String, String> {
+        let auth = Url::parse(&self.origin).map_err(|_| "Invalid account origin.")?;
+        let expected = match auth.host_str() {
+            Some("auth.lomi.dev") => "https://remote.lomi.dev",
+            Some("auth-staging.lomi.dev") => "https://remote-staging.lomi.dev",
+            Some(host) if cfg!(debug_assertions) && is_loopback(host) => "http://127.0.0.1:3002",
+            _ => return Err("Remote is not configured for this account environment.".into()),
+        };
+        let configured = if cfg!(debug_assertions) {
+            option_env!("LOMI_REMOTE_ORIGIN").unwrap_or(expected)
+        } else {
+            expected
+        };
+        let parsed = Url::parse(configured).map_err(|_| "Invalid Remote origin.")?;
+        if parsed.as_str().trim_end_matches('/') != expected
+            && !(cfg!(debug_assertions)
+                && expected == "http://127.0.0.1:3002"
+                && parsed.as_str().trim_end_matches('/') == "http://127.0.0.1:4322")
+        {
+            return Err("Remote origin does not match the account environment.".into());
+        }
+        Ok(parsed.as_str().trim_end_matches('/').into())
+    }
+
     pub fn desktop_authorization_url(&self, raw: &str) -> Result<String, String> {
         let parsed = Url::parse(raw)
             .map_err(|_| "The account service returned an invalid sign-in address.".to_string())?;
@@ -121,7 +145,8 @@ fn parse_origin(origin: &str, allow_local_http: bool) -> Result<Url, String> {
         allow_local_http
             && parsed.scheme() == "http"
             && local
-            && parsed.port_or_known_default() == Some(4321)
+            && (parsed.port_or_known_default() == Some(4321)
+                || cfg!(feature = "remote-probe") && parsed.port_or_known_default() == Some(4324))
     };
     if !valid_scheme
         || parsed.path() != "/"

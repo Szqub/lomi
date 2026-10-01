@@ -2,7 +2,7 @@ name: "remote prototypes (unqualified)"
 
 on:
   push:
-    branches: ["remote-foundation"]
+    branches: ["main", "remote-foundation"]
     paths:
       - ".github/workflows/remote-prototypes.yml"
       - "src-tauri/crates/lomi-session-core/**"

@@ -1,3 +1,5 @@
+#[cfg(all(feature = "remote-probe", not(debug_assertions)))]
+compile_error!("Remote qualification probes must not enter release builds");
 mod agent_control;
 mod agent_notifications;
 mod android;
@@ -28,6 +30,10 @@ mod mcp_browser_probe;
 #[cfg(all(feature = "mcp-probe", target_os = "macos"))]
 #[path = "../../tests/native/mcp-control-support.rs"]
 mod mcp_control_probe;
+mod remote;
+#[cfg(feature = "remote-probe")]
+#[path = "../../tests/native/remote-support.rs"]
+mod remote_probe;
 pub use cli_titles::print_agy_title;
 mod editor_preferences;
 mod files;
@@ -153,6 +159,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(chat::commands::Chats::default())
         .manage(auth::AuthController::default())
+        .manage(remote::Remote::default())
         .manage(agent_control::Control::default())
         .manage(android::manager::Android::default())
         .manage(android::open::Requests::default())
@@ -171,6 +178,12 @@ pub fn run() {
         .manage(plugins::Plugins::default())
         .manage(settings_window::SettingsWindow::default())
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
             settings_window::on_window_event(window, event);
             android::commands::window_event(window, event);
         })
@@ -186,6 +199,8 @@ pub fn run() {
         .setup(|app| {
             let integration = app.path().app_data_dir()?.join("shell-integration");
             shell::prepare(&integration).map_err(std::io::Error::other)?;
+            app.state::<remote::Remote>()
+                .initialize(app.handle().clone());
             let account_auth = app.path().app_data_dir()?.join("account-auth");
             app.state::<auth::AuthController>()
                 .initialize(&account_auth, app.handle().clone());
@@ -213,6 +228,10 @@ pub fn run() {
                     eprintln!("Cannot prepare settings window: {error}");
                 }
             });
+            #[cfg(feature = "remote-probe")]
+            remote_probe::start(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
+            remote::install_tray(app)?;
             agent_control::initialize_startup(app.handle().clone());
             Ok(())
         })
@@ -362,6 +381,18 @@ pub fn run() {
                 chat::commands::chat_export,
                 chat::commands::chat_discard,
                 chat::commands::chat_recover,
+                remote::remote_get_state,
+                remote::remote_set_enabled,
+                remote::remote_share_session,
+                remote::workspace::remote_begin_workspace_sync,
+                remote::workspace::remote_sync_workspaces,
+                remote::workspace::remote_share_workspace,
+                remote::remote_approve_pairing,
+                remote::remote_deny_pairing,
+                remote::remote_revoke_grant,
+                remote::hide_main_window,
+                remote::request_quit,
+                remote::reopen_main_window,
                 auth::auth_get_state,
                 auth::auth_begin_login,
                 auth::auth_open_verification,
@@ -446,6 +477,7 @@ pub fn run() {
                 git::history::git_commit_diff,
                 terminal::start_terminal,
                 terminal::write_terminal,
+                terminal::write_terminal_response,
                 terminal::take_terminal_control,
                 terminal::resize_terminal,
                 terminal::acknowledge_terminal,
@@ -470,7 +502,19 @@ pub fn run() {
     app.run(|app, event| {
         #[cfg(target_os = "macos")]
         macos::handle_run_event(app, &event);
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+            if *code != Some(tauri::RESTART_EXIT_CODE) {
+                if let Some(window) = app.get_window("main") {
+                    api.prevent_exit();
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = tauri::Emitter::emit(&window, "lomi-quit-requested", ());
+                }
+            }
+        }
         if matches!(event, tauri::RunEvent::Exit) {
+            app.state::<remote::Remote>().shutdown();
             tauri::async_runtime::block_on(agent_control::shutdown(app));
             app.state::<auth::AuthController>().shutdown();
             if let Err(error) = tauri::async_runtime::block_on(

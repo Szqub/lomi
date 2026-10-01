@@ -12,6 +12,7 @@ import { api, errorMessage, macOS, windows } from "./api";
 import { newId } from "./model";
 import type { Pane, ShellProfile } from "./model";
 import { inputChunks } from "./terminal-utils";
+import { classifyTerminalInput } from "./terminal-input-source";
 import {
   createAgentNotificationGate,
   emitAgentNotification,
@@ -201,7 +202,9 @@ export class TerminalRuntime {
           void openUrl(uri).catch((error) => reportError(errorMessage(error)));
       }),
     );
-    this.terminal.onData((data) => this.send(data));
+    classifyTerminalInput(this.terminal, (data, human) =>
+      this.send(data, human),
+    );
     this.terminal.attachCustomKeyEventHandler((event) => {
       if (
         event.type !== "keydown" ||
@@ -760,12 +763,12 @@ export class TerminalRuntime {
       );
   }
 
-  send(data: string) {
-    if (this.pasteOutput) {
+  send(data: string, human = true) {
+    if (human && this.pasteOutput) {
       this.pasteOutput.push(data);
       return;
     }
-    void this.queueInput(() => this.writeInput(data));
+    void this.queueInput(() => this.writeInput(data, human));
   }
 
   private queueInput(write: () => Promise<void>) {
@@ -787,18 +790,22 @@ export class TerminalRuntime {
     return this.input;
   }
 
-  private async writeInput(data: string) {
-    this.observeControl(false);
+  private async writeInput(data: string, human = true) {
+    if (human) this.observeControl(false);
     // Accept titles after submission even when a shell has no pre-execution hook.
-    if (data === "\r" || data === "\n") this.atPrompt = false;
+    if (human && (data === "\r" || data === "\n")) this.atPrompt = false;
     if (
+      human &&
       data === "\r" &&
       ["cmd", "pwsh", "powershell"].includes(this.profile.kind)
     )
       this.startBlock();
     for (const chunk of inputChunks(data)) {
       if (this.disposed) return;
-      await api("write_terminal", { id: this.sessionId, data: chunk });
+      await api(human ? "write_terminal" : "write_terminal_response", {
+        id: this.sessionId,
+        data: chunk,
+      });
     }
   }
 
@@ -983,6 +990,16 @@ export class TerminalRuntime {
   }
 }
 
+const lifecycleListeners = new Set<() => void>();
+export function subscribeTerminalLifecycle(listener: () => void) {
+  lifecycleListeners.add(listener);
+  return () => {
+    lifecycleListeners.delete(listener);
+  };
+}
+const terminalLifecycleChanged = () => {
+  for (const listener of lifecycleListeners) listener();
+};
 const runtimes = new Map<string, TerminalRuntime>();
 let terminalAgents: Readonly<Record<string, CliAgent>> = Object.freeze({});
 const terminalAgentListeners = new Set<() => void>();
@@ -1012,6 +1029,7 @@ export function terminalFor(
   if (!runtime) {
     runtime = new TerminalRuntime(pane.id, profile, pane.cwd, cliLaunch);
     runtimes.set(pane.id, runtime);
+    terminalLifecycleChanged();
   }
   return runtime;
 }
@@ -1059,6 +1077,7 @@ export function closeTerminals(ids: string[]) {
   for (const id of ids) {
     runtimes.get(id)?.dispose();
     runtimes.delete(id);
+    terminalLifecycleChanged();
   }
   const next = { ...terminalAgents };
   for (const id of ids) delete next[id];

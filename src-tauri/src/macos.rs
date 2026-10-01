@@ -139,16 +139,6 @@ pub fn handle_run_event(app: &AppHandle, event: &RunEvent) {
         RunEvent::MainEventsCleared => traffic_lights::refresh(app),
         #[cfg(dev)]
         RunEvent::Ready => use_development_bundle_icon(),
-        RunEvent::ExitRequested { api, code, .. } if *code != Some(tauri::RESTART_EXIT_CODE) => {
-            if let Some(window) = app.get_window("main") {
-                // Explicit exits, including the Quit menu, use the shared close guard.
-                api.prevent_exit();
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.close();
-            }
-        }
         RunEvent::Reopen { .. } => {
             if let Some(window) = app.get_window("main") {
                 let _ = window.unminimize();

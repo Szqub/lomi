@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Lomi",
-  "version": "0.5.0",
+  "version": "0.5.3",
   "identifier": "dev.lomi.desktop",
   "build": {
-    "beforeDevCommand": "pnpm ai:prepare && pnpm dev",
+    "beforeDevCommand": "pnpm ai:prepare && pnpm --filter @lomi-dev/remote-terminal-runtime build && pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm ai:prepare && pnpm build",
+    "beforeBuildCommand": "pnpm ai:prepare && pnpm --filter @lomi-dev/remote-terminal-runtime build && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -22,7 +22,8 @@
         "visible": false,
         "decorations": false,
         "transparent": true,
-        "backgroundColor": "#00000000"
+        "backgroundColor": "#00000000",
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {
@@ -53,7 +54,10 @@
       "resources/ai-runtime/NODE-LICENSE": "ai-runtime/NODE-LICENSE",
       "resources/ai-runtime/node.json": "ai-runtime/node.json",
       "resources/ai-runtime/THIRD-PARTY-NOTICES": "ai-runtime/THIRD-PARTY-NOTICES",
-      "resources/ai-runtime/index.cjs.sha256": "ai-runtime/index.cjs.sha256"
+      "resources/ai-runtime/index.cjs.sha256": "ai-runtime/index.cjs.sha256",
+      "resources/remote-terminal/index.cjs": "remote-terminal/index.cjs",
+      "resources/remote-terminal/index.cjs.sha256": "remote-terminal/index.cjs.sha256",
+      "resources/remote-terminal/THIRD-PARTY-NOTICES": "remote-terminal/THIRD-PARTY-NOTICES"
     }
   },
   "plugins": {

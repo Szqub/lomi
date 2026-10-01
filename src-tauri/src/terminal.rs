@@ -8,7 +8,11 @@ use std::{
     collections::{HashMap, HashSet},
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+        Arc, Condvar, Mutex,
+    },
     thread,
 };
 use tauri::{
@@ -45,6 +49,16 @@ struct Session {
     ready: Condvar,
     pid: Option<u32>,
     profile: Profile,
+    human_generation: AtomicU64,
+    human_waiters: AtomicUsize,
+    remote_lease: Mutex<Option<RemoteLease>>,
+}
+
+struct HumanInputGuard(Arc<Session>);
+impl Drop for HumanInputGuard {
+    fn drop(&mut self) {
+        self.0.human_waiters.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Session {
@@ -216,9 +230,46 @@ impl Session {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum RemoteTerminalEvent {
+    Start { id: String, cols: u16, rows: u16 },
+    Output { id: String, data: Vec<u8> },
+    Resize { id: String, cols: u16, rows: u16 },
+    Exit { id: String, code: Option<u32> },
+}
+
+#[derive(Clone)]
+struct RemoteSink {
+    sender: SyncSender<RemoteTerminalEvent>,
+    healthy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RemoteSink {
+    fn send(&self, event: RemoteTerminalEvent) {
+        if self.sender.try_send(event).is_err() {
+            // Losing any byte invalidates the independent terminal model.
+            self.healthy.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+struct RemoteLease {
+    id: String,
+    owner: String,
+    generation: u64,
+    deadline: std::time::Instant,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct RemoteReceipt {
+    pub written: usize,
+    pub status: &'static str,
+}
+
 #[derive(Default, Clone)]
 pub struct Terminals {
     sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    remote_sink: Arc<Mutex<Option<RemoteSink>>>,
 }
 
 #[derive(Clone)]
@@ -280,6 +331,231 @@ fn size(cols: u16, rows: u16) -> Result<PtySize, String> {
 }
 
 impl Terminals {
+    pub(crate) fn observe_remote(
+        &self,
+    ) -> Result<
+        (
+            Receiver<RemoteTerminalEvent>,
+            Arc<std::sync::atomic::AtomicBool>,
+        ),
+        String,
+    > {
+        let mut slot = self
+            .remote_sink
+            .lock()
+            .map_err(|_| "Terminal observer unavailable.")?;
+        if slot.is_some()
+            || !self
+                .sessions
+                .lock()
+                .map_err(|_| "Terminal unavailable.")?
+                .is_empty()
+        {
+            return Err("Remote observer must attach before terminal startup.".into());
+        }
+        let (sender, receiver) = mpsc::sync_channel(256);
+        let healthy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        *slot = Some(RemoteSink {
+            sender,
+            healthy: healthy.clone(),
+        });
+        Ok((receiver, healthy))
+    }
+
+    pub(crate) fn remote_claim(&self, id: &str, owner: &str, lease_id: &str) -> Result<(), String> {
+        let session = self.get(id)?;
+        let _writer = session.writer.lock().map_err(|_| "Terminal unavailable.")?;
+        if session.human_waiters.load(Ordering::SeqCst) > 0 {
+            return Err("Local input has terminal priority.".into());
+        }
+        #[cfg(unix)]
+        {
+            if session
+                .control()
+                .is_some_and(|c| c.lock().map(|c| c.lease().is_some()).unwrap_or(true))
+            {
+                return Err("An agent currently owns terminal control.".into());
+            }
+            let mut flow = session.flow.lock().map_err(|_| "Terminal unavailable.")?;
+            terminal_io::make_nonblocking(session.control_fd()?)
+                .map_err(|_| "Terminal control unavailable.")?;
+            flow.nonblocking = true;
+        }
+        #[cfg(not(unix))]
+        return Err("Remote control is not qualified on this platform.".into());
+        #[cfg(unix)]
+        {
+            let mut lease = session
+                .remote_lease
+                .lock()
+                .map_err(|_| "Terminal unavailable.")?;
+            if lease
+                .as_ref()
+                .is_some_and(|l| l.deadline > std::time::Instant::now() && l.owner != owner)
+            {
+                return Err("Another remote peer owns terminal control.".into());
+            }
+            *lease = Some(RemoteLease {
+                id: lease_id.into(),
+                owner: owner.into(),
+                generation: session.human_generation.load(Ordering::SeqCst),
+                deadline: std::time::Instant::now() + Duration::from_secs(5),
+            });
+            Ok(())
+        }
+    }
+
+    pub(crate) fn remote_renew(&self, id: &str, owner: &str, lease_id: &str) -> Result<(), String> {
+        let session = self.get(id)?;
+        let writer = session.writer.lock().map_err(|_| "Terminal unavailable.")?;
+        if writer.is_none() {
+            return Err("The terminal has been closed.".into());
+        }
+        #[cfg(not(unix))]
+        return Err("Remote control is not qualified on this platform.".into());
+        #[cfg(unix)]
+        {
+            let control = session.control();
+            let control = control
+                .as_ref()
+                .map(|c| c.lock())
+                .transpose()
+                .map_err(|_| "Terminal unavailable.")?;
+            let mut lease = session
+                .remote_lease
+                .lock()
+                .map_err(|_| "Terminal unavailable.")?;
+            let now = std::time::Instant::now();
+            let lease = lease.as_mut().ok_or("Remote lease expired.")?;
+            if session.human_waiters.load(Ordering::SeqCst) > 0
+                || control.as_ref().is_some_and(|c| c.lease().is_some())
+                || lease.id != lease_id
+                || lease.owner != owner
+                || lease.deadline <= now
+                || lease.generation != session.human_generation.load(Ordering::SeqCst)
+            {
+                return Err("Remote lease expired or preempted.".into());
+            }
+            // Renewal never creates a lease or adopts a newer human generation.
+            lease.deadline = now + Duration::from_secs(5);
+            Ok(())
+        }
+    }
+
+    pub(crate) fn remote_lease_live(&self, id: &str, owner: &str, lease_id: &str) -> bool {
+        self.get(id).ok().is_some_and(|session| {
+            session
+                .remote_lease
+                .lock()
+                .map(|lease| {
+                    lease.as_ref().is_some_and(|l| {
+                        l.id == lease_id
+                            && l.owner == owner
+                            && l.deadline > std::time::Instant::now()
+                            && l.generation == session.human_generation.load(Ordering::SeqCst)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    pub(crate) fn remote_revoke_owner(&self, id: &str, owner: &str) {
+        if let Ok(session) = self.get(id) {
+            if let Ok(mut lease) = session.remote_lease.lock() {
+                if lease.as_ref().is_some_and(|l| l.owner == owner) {
+                    session.human_generation.fetch_add(1, Ordering::SeqCst);
+                    lease.take();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn remote_revoke(&self, id: &str) {
+        if let Ok(session) = self.get(id) {
+            session.human_generation.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut lease) = session.remote_lease.lock() {
+                lease.take();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remote_input(
+        &self,
+        id: &str,
+        owner: &str,
+        lease_id: &str,
+        data: &[u8],
+        permit: impl Fn() -> bool,
+    ) -> RemoteReceipt {
+        let rejected = || RemoteReceipt {
+            written: 0,
+            status: "rejected",
+        };
+        if data.is_empty() || data.len() > 16 * 1024 {
+            return rejected();
+        }
+        let Ok(session) = self.get(id) else {
+            return rejected();
+        };
+        let Ok(writer) = session.writer.lock() else {
+            return rejected();
+        };
+        if writer.is_none() {
+            return rejected();
+        }
+        let allowed = || {
+            permit()
+                && session
+                    .remote_lease
+                    .lock()
+                    .map(|lease| {
+                        lease.as_ref().is_some_and(|l| {
+                            l.id == lease_id
+                                && l.owner == owner
+                                && l.deadline > std::time::Instant::now()
+                                && l.generation == session.human_generation.load(Ordering::SeqCst)
+                        })
+                    })
+                    .unwrap_or(false)
+        };
+        if !allowed() {
+            return rejected();
+        }
+        let Ok(fd) = session.control_fd() else {
+            return rejected();
+        };
+        match terminal_io::write(fd, data, Duration::from_secs(2), allowed) {
+            Ok(written) => RemoteReceipt {
+                written,
+                status: "accepted",
+            },
+            Err(failure) => RemoteReceipt {
+                written: failure.written,
+                status: if failure.written == 0 {
+                    "rejected"
+                } else {
+                    "partial"
+                },
+            },
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn remote_input(
+        &self,
+        _id: &str,
+        _owner: &str,
+        _lease_id: &str,
+        _data: &[u8],
+        _permit: impl Fn() -> bool,
+    ) -> RemoteReceipt {
+        RemoteReceipt {
+            written: 0,
+            status: "rejected",
+        }
+    }
+
     fn busy(&self, ids: &[String]) -> Result<Vec<String>, String> {
         let sessions: Vec<_> = self
             .sessions
@@ -472,6 +748,9 @@ impl Terminals {
                 ..Flow::default()
             }),
             ready: Condvar::new(),
+            human_generation: AtomicU64::new(0),
+            human_waiters: AtomicUsize::new(0),
+            remote_lease: Mutex::new(None),
         });
         {
             let mut sessions = self.sessions.lock().map_err(|error| error.to_string())?;
@@ -482,6 +761,14 @@ impl Terminals {
                 return Err("A terminal with this identifier already exists.".into());
             }
             sessions.insert(request.id.clone(), session.clone());
+        }
+        let remote_sink = self.remote_sink.lock().ok().and_then(|s| s.clone());
+        if let Some(sink) = &remote_sink {
+            sink.send(RemoteTerminalEvent::Start {
+                id: request.id.clone(),
+                cols: request.cols,
+                rows: request.rows,
+            });
         }
         let sessions = Arc::downgrade(&self.sessions);
         thread::spawn(move || {
@@ -534,6 +821,12 @@ impl Terminals {
                         }
                     }
                     // This lock binds observer attachment to the same producer boundary.
+                    if let Some(sink) = &remote_sink {
+                        sink.send(RemoteTerminalEvent::Output {
+                            id: request.id.clone(),
+                            data: buffer[..length].to_vec(),
+                        });
+                    }
                     flow.pending += length;
                 }
                 if output
@@ -546,6 +839,12 @@ impl Terminals {
             }
             drop(reader);
             let code = child.wait().ok().map(|status| status.exit_code());
+            if let Some(sink) = &remote_sink {
+                sink.send(RemoteTerminalEvent::Exit {
+                    id: request.id.clone(),
+                    code,
+                });
+            }
             #[cfg(unix)]
             if let Some(control) = session.control() {
                 if let Ok(mut control) = control.lock() {
@@ -736,6 +1035,17 @@ impl Terminals {
         if writer.is_none() {
             return Err(failure(ErrorCode::StaleGeneration));
         }
+        if session
+            .remote_lease
+            .lock()
+            .map(|l| {
+                l.as_ref()
+                    .is_some_and(|l| l.deadline > std::time::Instant::now())
+            })
+            .unwrap_or(true)
+        {
+            return Err(failure(ErrorCode::ControlRevoked));
+        }
         let permitted = || {
             let peers = (request.permit)().ok_or(ErrorCode::ControlRevoked)?;
             if session.protected_origin(&peers) {
@@ -790,6 +1100,17 @@ impl Terminals {
         if writer.is_none() {
             return Err(ErrorCode::StaleGeneration);
         }
+        if session
+            .remote_lease
+            .lock()
+            .map(|l| {
+                l.as_ref()
+                    .is_some_and(|l| l.deadline > std::time::Instant::now())
+            })
+            .unwrap_or(true)
+        {
+            return Err(ErrorCode::ControlRevoked);
+        }
         let permitted = || {
             let peers = (request.permit)().ok_or(ErrorCode::ControlRevoked)?;
             if session.protected_origin(&peers) {
@@ -827,18 +1148,47 @@ impl Terminals {
     }
 
     fn write(&self, id: &str, data: &str) -> Result<(), String> {
+        self.write_internal(id, data, true)
+    }
+    fn write_response(&self, id: &str, data: &str) -> Result<(), String> {
+        self.write_internal(id, data, false)
+    }
+    fn write_internal(&self, id: &str, data: &str, human: bool) -> Result<(), String> {
         if data.len() > 256 * 1024 {
             return Err("A terminal input chunk exceeds 256 KiB.".into());
         }
         let session = self.get(id)?;
+        let _human_guard = if human {
+            session.human_waiters.fetch_add(1, Ordering::SeqCst);
+            Some(HumanInputGuard(session.clone()))
+        } else {
+            None
+        };
+        if human {
+            session.human_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        if human {
+            if let Ok(mut lease) = session.remote_lease.lock() {
+                lease.take();
+            }
+        }
         #[cfg(unix)]
-        if let Some(control) = session.control() {
+        if let Some(control) = session.control().filter(|_| human) {
             control.lock().map_err(|e| e.to_string())?.manual_input();
         }
         let mut writer = session.writer.lock().map_err(|error| error.to_string())?;
         let writer = writer.as_mut().ok_or("The terminal has been closed.")?;
+        // A competing claim may have acquired the writer after the early invalidation.
+        if human {
+            session.human_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        if human {
+            if let Ok(mut lease) = session.remote_lease.lock() {
+                lease.take();
+            }
+        }
         #[cfg(unix)]
-        if let Some(control) = session.control() {
+        if let Some(control) = session.control().filter(|_| human) {
             control.lock().map_err(|e| e.to_string())?.manual_input();
         }
         #[cfg(unix)]
@@ -1024,6 +1374,20 @@ pub fn acknowledge_terminal(
 }
 
 #[tauri::command]
+pub async fn write_terminal_response(
+    window: Window,
+    state: State<'_, Terminals>,
+    id: String,
+    data: String,
+) -> Result<(), String> {
+    main_window(&window)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.write_response(&id, &data))
+        .await
+        .map_err(|_| "Terminal response unavailable.")?
+}
+
+#[tauri::command]
 pub async fn resize_terminal(
     window: Window,
     state: State<'_, Terminals>,
@@ -1034,14 +1398,20 @@ pub async fn resize_terminal(
     main_window(&window)?;
     let session = state.get(&id)?;
     let size = size(cols, rows)?;
+    let sink = state.remote_sink.lock().ok().and_then(|s| s.clone());
     // ConPTY resize is synchronous and must not block the native event loop.
     tauri::async_runtime::spawn_blocking(move || {
+        let _flow = session.flow.lock().map_err(|error| error.to_string())?;
         session
             .master
             .lock()
             .map_err(|error| error.to_string())?
             .resize(size)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if let Some(sink) = sink {
+            sink.send(RemoteTerminalEvent::Resize { id, cols, rows });
+        }
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1117,6 +1487,7 @@ pub async fn take_terminal_control(
     id: String,
 ) -> Result<(), String> {
     main_window(&window)?;
+    state.remote_revoke(&id);
     let session = state.get(&id)?;
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(unix)]
@@ -1339,6 +1710,274 @@ mod tests {
         child.wait().unwrap();
         assert!(parents.unwrap().contains(&std::process::id()));
     }
+    #[test]
+    fn remote_observer_overflow_is_bounded_and_marks_state_unusable() {
+        let manager = Terminals::default();
+        let (_receive, healthy) = manager.observe_remote().unwrap();
+        let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
+        for _ in 0..256 {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "test".into(),
+                data: vec![42; 16 * 1024],
+            });
+        }
+        assert!(healthy.load(Ordering::SeqCst));
+        sink.send(RemoteTerminalEvent::Output {
+            id: "test".into(),
+            data: vec![42],
+        });
+        assert!(!healthy.load(Ordering::SeqCst));
+        assert!(manager.observe_remote().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_native_pty_writer_checks_grant_and_local_priority() {
+        let directory = tempfile::tempdir().unwrap();
+        shell::prepare(directory.path()).unwrap();
+        let profile = shell::discover()
+            .into_iter()
+            .find(|p| p.kind == "bash")
+            .unwrap();
+        let shells = Shells {
+            profiles: vec![profile.clone()],
+            integration: directory.path().to_owned(),
+        };
+        let manager = Terminals::default();
+        let (send, receive) = mpsc::channel();
+        let ack = manager.clone();
+        let output = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                ack.acknowledge("remote-test", bytes.len());
+                let _ = send.send(bytes);
+            }
+            Ok(())
+        });
+        manager
+            .start(
+                &shells,
+                StartRequest {
+                    id: "remote-test".into(),
+                    profile_id: profile.id,
+                    cwd: directory.path().to_string_lossy().into_owned(),
+                    cols: 80,
+                    rows: 24,
+                    agent_ticket: None,
+                    cli_launch: None,
+                },
+                output,
+                Channel::new(|_| Ok(())),
+            )
+            .unwrap();
+        manager
+            .remote_claim("remote-test", "browser", "lease")
+            .unwrap();
+        let session = manager.get("remote-test").unwrap();
+        let before = {
+            let mut slot = session.remote_lease.lock().unwrap();
+            let lease = slot.as_mut().unwrap();
+            lease.deadline = std::time::Instant::now() + Duration::from_secs(2);
+            (
+                lease.id.clone(),
+                lease.owner.clone(),
+                lease.generation,
+                lease.deadline,
+            )
+        };
+        manager
+            .remote_renew("remote-test", "browser", "lease")
+            .unwrap();
+        let renewed_deadline = {
+            let slot = session.remote_lease.lock().unwrap();
+            let lease = slot.as_ref().unwrap();
+            assert_eq!(
+                (&lease.id, &lease.owner, lease.generation),
+                (&before.0, &before.1, before.2)
+            );
+            assert!(lease.deadline > before.3);
+            lease.deadline
+        };
+        assert!(manager
+            .remote_renew("remote-test", "other-browser", "lease")
+            .is_err());
+        assert!(manager
+            .remote_renew("remote-test", "browser", "wrong-lease")
+            .is_err());
+        assert_eq!(
+            session
+                .remote_lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .deadline,
+            renewed_deadline
+        );
+        session.flow.lock().unwrap().control = Some(Arc::new(Mutex::new(
+            TerminalControl::new("agent".into(), "remote-test".into()).unwrap(),
+        )));
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease")
+            .is_err());
+        session.flow.lock().unwrap().control = None;
+        let denied = manager.remote_input(
+            "remote-test",
+            "browser",
+            "lease",
+            b"printf 'UNAUTHORIZED'\r",
+            || false,
+        );
+        assert_eq!((denied.written, denied.status), (0, "rejected"));
+        let accepted = manager.remote_input(
+            "remote-test",
+            "browser",
+            "lease",
+            b"printf '__REMOTE_NATIVE_OK__\n'\r",
+            || true,
+        );
+        assert_eq!(accepted.status, "accepted");
+        assert!(accepted.written > 0);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut text = Vec::new();
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&text).contains("__REMOTE_NATIVE_OK__")
+        {
+            if let Ok(data) = receive.recv_timeout(Duration::from_millis(100)) {
+                text.extend(data);
+            }
+        }
+        assert!(String::from_utf8_lossy(&text).contains("__REMOTE_NATIVE_OK__"));
+        manager.write_response("remote-test", "\x1b[1;1R").unwrap();
+        assert!(manager.remote_lease_live("remote-test", "browser", "lease"));
+        manager.remote_revoke_owner("remote-test", "unrelated-observer");
+        assert!(manager.remote_lease_live("remote-test", "browser", "lease"));
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let partial = manager.remote_input(
+            "remote-test",
+            "browser",
+            "lease",
+            &vec![b'x'; 16384],
+            || checks.fetch_add(1, Ordering::SeqCst) < 2,
+        );
+        assert_eq!(partial.status, "partial");
+        assert!(partial.written > 0 && partial.written < 16384);
+        manager.write("remote-test", "\u{3}").unwrap();
+        manager
+            .write("remote-test", "printf '__LOCAL_NATIVE_OK__\n'\r")
+            .unwrap();
+        assert!(!manager.remote_lease_live("remote-test", "browser", "lease"));
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease")
+            .is_err());
+        assert!(session.remote_lease.lock().unwrap().is_none());
+        let stale = manager.remote_input(
+            "remote-test",
+            "browser",
+            "lease",
+            b"printf 'STALE'\r",
+            || true,
+        );
+        assert_eq!((stale.written, stale.status), (0, "rejected"));
+        // A queued human writer must also prevent a competing Remote claim.
+        manager
+            .remote_claim("remote-test", "browser", "queued-lease")
+            .unwrap();
+        session.human_waiters.fetch_add(1, Ordering::SeqCst);
+        let human = HumanInputGuard(session.clone());
+        assert!(manager
+            .remote_renew("remote-test", "browser", "queued-lease")
+            .is_err());
+        assert!(manager
+            .remote_claim("remote-test", "browser", "queued-human")
+            .is_err());
+        drop(human);
+        assert_eq!(session.human_waiters.load(Ordering::SeqCst), 0);
+        manager
+            .remote_claim("remote-test", "browser", "lease-new")
+            .unwrap();
+        // Hold the writer until local input has invalidated the lease and queued.
+        // Renewal then races for the writer, but neither ordering may restore control.
+        let writer = session.writer.lock().unwrap();
+        let human_barrier = Arc::new(std::sync::Barrier::new(2));
+        let local_manager = manager.clone();
+        let local_barrier = human_barrier.clone();
+        let local = thread::spawn(move || {
+            local_barrier.wait();
+            local_manager.write("remote-test", "\u{3}")
+        });
+        human_barrier.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.human_waiters.load(Ordering::SeqCst) == 0
+            || session.remote_lease.lock().unwrap().is_some()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Local input did not queue"
+            );
+            thread::yield_now();
+        }
+        let renew_barrier = Arc::new(std::sync::Barrier::new(2));
+        let renew_manager = manager.clone();
+        let start_renew = renew_barrier.clone();
+        let renew = thread::spawn(move || {
+            start_renew.wait();
+            renew_manager.remote_renew("remote-test", "browser", "lease-new")
+        });
+        renew_barrier.wait();
+        drop(writer);
+        assert!(renew.join().unwrap().is_err());
+        local.join().unwrap().unwrap();
+        assert!(!manager.remote_lease_live("remote-test", "browser", "lease-new"));
+        assert!(session.remote_lease.lock().unwrap().is_none());
+
+        manager
+            .remote_claim("remote-test", "browser", "lease-new")
+            .unwrap();
+        let generation = session
+            .remote_lease
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .generation;
+        session.human_generation.fetch_add(1, Ordering::SeqCst);
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease-new")
+            .is_err());
+        assert_eq!(
+            session
+                .remote_lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .generation,
+            generation
+        );
+        manager
+            .remote_claim("remote-test", "browser", "lease-new")
+            .unwrap();
+        manager
+            .get("remote-test")
+            .unwrap()
+            .remote_lease
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .deadline = std::time::Instant::now() - Duration::from_millis(1);
+        assert!(manager
+            .remote_renew("remote-test", "browser", "lease-new")
+            .is_err());
+        assert_eq!(
+            manager
+                .remote_input("remote-test", "browser", "lease-new", b"expired", || true)
+                .status,
+            "rejected"
+        );
+        manager.stop_all();
+    }
+
     #[cfg(unix)]
     #[test]
     fn pty_streams_utf8_resizes_and_exits() {

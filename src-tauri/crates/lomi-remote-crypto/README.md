@@ -1,138 +1,142 @@
-# S01 native/WASM crypto prototype — unqualified
+# Shared native/WASM live protocol
 
-`PRODUCTION_QUALIFIED` and the browser `production_qualified()` are always false.
-This independent crate is not wired into any application, host, or network path.
-Passing its tests does not accept S01 or authorize production remote access.
+The profile is `lomi-remote-live-v1`. `LIVE_PRODUCTION_QUALIFIED` is true;
+`PRODUCTION_QUALIFIED` and `MAILBOX_PRODUCTION_QUALIFIED` remain false. Native
+live hosting is enabled only on macOS ARM64. The mailbox HPKE path remains
+experimental and is not qualified.
 
-Pinned suites and libraries:
+Desktop release 0.5.3 is published. The local 0.5.2 native/browser run passed
+15 checks; release 0.5.3 passed 12 checks each against the public staging and
+production services. Its signed ARM64 artifact was verified for code signing,
+notarization, updater signature and bundled terminal helper operation.
+Production live services are deployed; general crypto and mailbox qualification
+remain disabled.
 
-- Snow 0.10.0, `Noise_XX_25519_ChaChaPoly_SHA256`, Rust default resolver.
-- HPKE 0.14.1, X25519/HKDF-SHA256/ChaCha20Poly1305 base mode, with an additional
-  strict Ed25519 signature covering the complete envelope.
-- ed25519-dalek 2.2.0; SHA-256 fingerprints with sha2 0.10.9.
-- Canonical CBOR encoding with minicbor 0.26.5; wasm-bindgen 0.2.126.
-- getrandom 0.3.4 `wasm_js` for Snow and 0.4.3 `wasm_js` for HPKE/application
-  entropy on WASM. Native uses platform entropy. Snow `std` is enabled only on
-  native because it unnecessarily pulls ring into a WASM build; the suite and
-  default resolver are identical on both targets.
+The live suite remains `Noise_XX_25519_ChaChaPoly_SHA256`, Device initiator and
+Host responder. Vendored Snow 0.10.0 provenance and archive checksum are in
+`vendor/snow/UPSTREAM.md`; MIT and Apache-2.0 licenses are retained. The narrow
+patch preserves the Noise construction while adding owned-memory erasure and
+all-zero X25519 shared-secret rejection. Snow SHA-256 uses sha2 0.11.0 with its
+`zeroize` feature, digest 0.11.3, and block-buffer 0.12.1. SHA-256 public
+fingerprints still use sha2 0.10.9. Ed25519 uses Dalek 2.2.0 with zeroize.
 
-The native typed API and browser WASM API share the exact implementation. Browser
-identities are ephemeral: there is no private-key export/import, wrapping key,
-IndexedDB persistence, or trusted-PWA mode. `test-fixtures` exposes deterministic
-test identities only when explicitly built with that feature. Never ship those
-fixture builds. Entropy comes from maintained libraries/WebCrypto; no custom
-cryptographic primitive or random-number generator is implemented.
+Signed bundles bind account, subject, role, key version and all three public
+keys. A self-signature does not establish trust: callers supply the full bundle
+fingerprint from trusted pairing. Noise prologue binds both fingerprints and
+ChannelContext fields: version, account_id, host_id, device_id, initiator_role,
+responder_role, channel_id, grant_id, session_id, access_epoch, revision.
 
-## Trust and context binding
+PeerApproval fields are version, account_id, host_id, device_id,
+host_fingerprint, device_fingerprint, pairing_nonce, grant_id, session_ids,
+permissions (`observe` or `control`), access_epoch, revision, expires_at.
+V1 sessions are ordered, nonempty, unique and at most 32. Only a matching Host
+identity can sign. Verification pins the complete host bundle, checks its role
+and identity, requires exact equality to caller-provided trusted approval state,
+requires the current epoch, and rejects at or after the trusted deadline.
+The caller must never construct expected state from the received approval.
+The full pairing comparison digest is SHA-256 over UTF-8
+`lomi-remote-pairing-v1\0`, then account16, host16, device16, host fingerprint32,
+device fingerprint32, nonce32, in that order. Browser helper returns 64 lowercase
+hexadecimal characters; display and compare the complete digest.
 
-A signed public bundle binds schema version, account ID, subject ID, host/device
-role, key version, Ed25519 identity key, channel X25519 key, and distinct mailbox
-HPKE public key. Its SHA-256 fingerprint covers the canonical complete public
-bundle. Callers must supply a fingerprint already trusted through pairing.
-Self-signature validation alone does not grant trust; there is no silent TOFU.
+Canonical signed data uses definite CBOR arrays beginning with the profile and
+domain strings. The public-bundle array has 10 elements, channel-context 13,
+noise-prologue 5, peer-approval 15 (session_ids is an array of byte strings).
+The field order above is the canonical order. JSON is an adapter, not signature
+encoding. Byte arrays are arrays of integers in JSON. Keep u64 values exact;
+WASM time/epoch arguments use BigInt. Applications must bound inputs before the
+WASM bridge, which copies JS inputs before Rust validation.
 
-Noise prologue binds protocol version, account, host, device, initiator/responder
-roles, and both full-bundle fingerprints. The only supported role ordering is
-Device initiator → Host responder. Remote static keys are checked against the
-verified pinned bundle before transport is constructed. No application payload
-is permitted during handshake. Channel handles cannot be cloned, and mutable
-ownership serializes all nonce operations. Each encrypted transport payload
-binds its external sequence and routing identifier. Authentication, ordering,
-or routing failure closes the channel; reconnect needs a fresh handshake.
+Native-only export_secret_seed_blob returns Zeroizing bytes: version byte 1
+plus three 32-byte identity/channel/mailbox seeds (97 bytes total). Import accepts
+that exact format and the trusted immutable SignedBundle, verifies its signature,
+reconstructs keys and requires full signed bundle equality. Store the blob only
+in native secure credential storage. There is no browser private-key export or
+import; browser identities are ephemeral. Imported bundle trust and rollback
+protection belong to the authoritative native persistence layer.
 
-Mailbox HPKE info binds canonical metadata and sender/recipient full-bundle
-fingerprints. Metadata is also AEAD AAD. The Ed25519 signature covers canonical
-metadata, HPKE `enc`, and ciphertext. Current trusted policy supplied by the
-caller must match account, host, recipient, grant_ref, access_epoch, revision,
-and grant deadline. Recipient key version, creation time, expiry, maximum
-seven-day retention, sender role, recipient role, and signatures are checked
-before decryption. Envelope IDs are freshly random 128-bit identifiers. Retry
-must reuse the original serialized envelope through a future durable outbox.
+Transport binary format is sequence u64 big endian (8 bytes), routing (16 bytes),
+then Snow ciphertext. Encrypted plaintext repeats the sequence and routing before
+the application payload, authenticating external metadata. Maximum plaintext is
+16 KiB; total binary frame length is plaintext + 64 bytes, minimum 64 bytes.
+The receive API checks bounds before allocating ciphertext and closes on invalid
+length, authentication, order or routing. Mutable non-Clone handles serialize
+nonces; each direction permits 1,000,000 frames, then requires a fresh handshake.
+Handshake frames permit at most 512 bytes and no application payload. Explicit
+dispose and Drop release channel/handshake state. Authentication failures are
+terminal; reconnect starts a fresh handshake.
 
-Replay state is bounded to 5000 unexpired `(sender_host_id,envelope_id)` entries
-and refuses admission at capacity. Expired entries may be removed because the
-same envelope is then rejected by expiry. This state is in memory only; it is
-not a durable replay store. Replay-cache pruning and its clock watermark commit only after successful
-authenticated decryption. A successfully observed clock cannot move backwards.
-Policy validation and trusted time still belong to the authoritative host/client
-policy layer; this crate does not establish grant authority by itself.
+Owned-memory erasure covers application identity seeds, channel secret,
+mailbox secret bytes, Dalek signing state, live plaintext buffers and native
+export blobs; Snow default resolver DH private arrays and ChaCha key arrays;
+symmetric chaining-key/hash state and non-Copy rollback checkpoints; scoped DH,
+HMAC pads/output, HKDF intermediate/output, cipher split and rekey buffers.
+SHA-256 core state and buffered blocks use upstream zeroizing Drop. The patch
+avoids an explicit temporary conversion of the ChaCha key and uses the maintained
+AEAD implementation's Drop. This is an owned-buffer claim, not erasure of every
+compiler temporary, register, allocator remnant, operating-system snapshot,
+WASM copy or JavaScript buffer. HPKE internals are not qualified by this work.
+Only the selected Noise suite has compatibility evidence; other vendored Snow
+algorithms and profiles are outside the claim.
 
-## Provisional canonical encoding
-
-Signed/hashed data is a definite-length CBOR array, with shortest integer/length
-encodings; IDs and keys are byte strings. Every array starts with the text strings
-`lomi-s01-unqualified-v1` and its domain below. Array fields are positional:
-
-| Domain | Remaining fields, in order |
-| --- | --- |
-| `public-bundle` | version, account_id, subject_id, role (host=1/device=2), key_version, identity_key, channel_key, mailbox_key |
-| `channel-context` | version, account_id, host_id, device_id, initiator_role, responder_role |
-| `noise-prologue` | canonical context bytes, device fingerprint, host fingerprint |
-| `mailbox-metadata` | version, account_id, sender_host_id, recipient_device_id, recipient_key_version, envelope_id, grant_ref, access_epoch, grant_revision, created_at, expires_at |
-| `hpke-info` | canonical metadata bytes, sender fingerprint, recipient fingerprint |
-| `signed-envelope` | canonical metadata bytes, enc, ciphertext |
-
-JSON is an API adapter representation, never the signature encoding. Browser
-callers should retain serialized JSON without number conversions; u64 values
-outside JS's exact integer range must not be parsed and reconstructed through
-ordinary JS numbers. Binary framing and durable schema compatibility are still
-future work.
-
-## Limits and unfinished security gates
-
-Handshake frames: 512 bytes. Live plaintext: 16 KiB; encrypted header: 24 bytes;
-AEAD tag: 16 bytes. Per-direction channel lifetime: 1,000,000 frames, followed
-by a required new handshake. Mailbox plaintext: 8 KiB; `enc`: 32 bytes; signature:
-64 bytes. Browser JSON inputs/replies: 128 KiB. Typed native APIs check vector
-sizes before cryptographic processing. wasm-bindgen copies JS inputs before Rust
-validation, so an application adapter must also bound values before crossing the
-WASM boundary. No decompression is implemented.
-
-**Zeroization is a blocking S01 qualification failure.** Stock Snow's resolver
-contains raw key arrays and symmetric temporaries without proven zeroizing Drop.
-Application `Zeroizing` wrappers do not erase Snow's copies, Rust temporaries,
-allocator remnants, WASM linear-memory copies, browser JS buffers, or snapshots.
-No forward-secrecy or complete secret-erasure claim is made by this prototype.
-HPKE's convenience sender uses upstream system randomness and may panic if its
-entropy source fails; failure-injection behavior has not been qualified. Native
-identity generation reports entropy errors explicitly. Key-store integration,
-rollback/revoke durability, pairing transcript approval, cryptographic fuzzing,
-external reference-vector validation, independent review, browser persistence,
-Safari/Firefox/mobile qualification, and deployment controls remain unfinished.
-
-## Reproduce validation
+Validation on macOS ARM64: native tests cover signed key substitution, grants
+and every approval field, expiry/current epoch, durable identity reconstruction,
+binary framing, disposal, replay/tamper/order, and low-order X25519 rejection.
+The upstream bundled Cacophony XX/25519/ChaChaPoly/SHA256 vector checks all
+handshake and bidirectional transport ciphertexts and handshake hash. Chromium
+runs actual WASM entropy, Noise, abort/dispose/tamper and full native-process to
+WASM Noise exchange in both directions with matching transcript and replay
+failure. Legacy HPKE compatibility tests remain experimental evidence only.
 
 ```sh
-cargo test --manifest-path Cargo.toml --locked
-cargo test --manifest-path Cargo.toml --locked --features browser,test-fixtures
-cargo clippy --manifest-path Cargo.toml --locked --all-targets --features browser,test-fixtures -- -D warnings
-cargo build --manifest-path Cargo.toml --locked --target wasm32-unknown-unknown --features browser,test-fixtures
+cargo test --locked
+cargo test --locked --features browser,test-fixtures
+cargo clippy --locked --all-targets --features browser,test-fixtures -- -D warnings
+cargo fmt --check
+cargo build --locked --example live_interoperability --features test-fixtures
+cargo build --locked --target wasm32-unknown-unknown --features browser,test-fixtures
 wasm-bindgen target/wasm32-unknown-unknown/debug/lomi_remote_crypto.wasm --out-dir pkg --target web
 node tests/browser.mjs
 ```
 
-The browser runner requires the enclosing Lomi project's Playwright dependency
-and installed Chromium. It starts a temporary loopback HTTP server for test
-artifacts only. Actual Chromium tests exercise entropy, Noise/Unicode transport,
-negative pin/tamper/expiry/replay cases, matching native/WASM fixed bundle
-fingerprints, native-to-WASM HPKE decryption, and WASM-to-native HPKE decryption.
-Native/WASM mixed-process Noise interoperability and other browser engines have
-not been tested. Generated `pkg/` and `target/` are ignored. This crate has its
-own workspace marker and lockfile until an explicit parent-workspace integration.
+The browser runner requires the enclosing project's Playwright dependency and
+installed Chromium. Generated pkg/ and target/ files are ignored. Test fixture
+seeds require the explicit test-fixtures feature; release compilation rejects
+that feature. Default release builds contain no fixture constructor. Other
+browser engines, external security review, fuzzing and broader product
+qualification remain outstanding. General crypto and mailbox qualification
+remain disabled. Production deployment and normal-auth native/browser live
+qualification are recorded separately from these cryptographic protocol tests.
 
-## Isolated prototype result and integration work
+## Workspace approval and channel context v2
 
-Verified on macOS arm64 with rustc 1.98.1: nine default native tests and ten
-native tests with browser/fixture features pass. Strict Clippy and formatting
-checks pass. The real WASM build and Chromium runner pass eleven checks,
-including bidirectional native/WASM HPKE decryption and fixed signed-bundle
-fingerprints. These are prototype compatibility results; S01 remains unqualified.
+V1 JSON omits all new fields and retains identical canonical bytes. V2 approval
+requires `workspace_id`, `workspace_epoch`, and one `session_epochs` entry per
+ordered session ID. IDs remain unique and limited to 32; an empty scope permits
+metadata only. The 18-element approval array inserts workspace ID and epoch
+before the session IDs array, followed by the session epochs array and the
+existing permission, access epoch, revision and expiry fields.
 
-Before integration, remove the independent workspace marker and reconcile pinned
-features/lockfiles in the parent workspace. Close the documented zeroization,
-entropy-failure, replay durability, pairing, external-vector, fuzzing, and review
-gates; bind trusted policy/clock and pinned bundles to the authoritative host.
-Add a bounded binary network adapter and browser boundary checks, qualified
-native key storage and optional browser wrapping/persistence, and a release
-process that excludes test-fixture builds. No application runtime should depend
-on this crate for production remote access while qualification remains false.
+V2 contexts require `workspace_id`, `workspace_epoch`, `session_epoch`, and
+`purpose` (`terminal` or `metadata`). The 17-element context array appends these
+fields after revision; purpose codes are terminal=1 and metadata=2. Metadata
+uses workspace ID as session ID and workspace epoch as session epoch. Bundles,
+pins, the profile string, and the Noise construction remain unchanged.
+
+After verifying the host signature against trusted grant state, call
+`ChannelContext::validate_approval` (WASM: `validate_channel_approval`) before
+starting Noise. It requires exact grant identity, revision, workspace scope and
+access epoch; terminal contexts additionally require an approved session and
+its corresponding PTY epoch. Metadata contexts never authorize PTY output or
+input; the application must enforce that purpose when processing payloads.
+`Handshake::new` validates the context and binds its canonical bytes in Noise,
+but does not replace approval verification. Scope refresh, monotonic revisions,
+expiry and revocation remain the responsibility of authoritative callers.
+
+`workspace_interoperability` emits deterministic signed terminal and empty-scope
+metadata fixtures with canonical hex. `tests/fixtures/legacy-v1.json` fixes the
+old wire output; `tests/fixtures/workspace-v2.json` fixes the new wire output.
+Workspace tests cover signed-field tampering, downgrade, omitted fields,
+duplicates and bounds, stale PTY/workspace epochs, revision, purpose and Noise
+prologue mismatches. Live crypto is qualified; general crypto and mailbox
+qualification remain disabled. Native hosting is limited to macOS ARM64.

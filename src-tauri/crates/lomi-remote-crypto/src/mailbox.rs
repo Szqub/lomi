@@ -129,6 +129,9 @@ impl Identity {
         if payload.len() > MAX_MAILBOX_PAYLOAD {
             return Err("mailbox payload limit".into());
         }
+        if self.disposed {
+            return Err("identity disposed".into());
+        }
         recipient.verify(pinned_recipient)?;
         let local = &self.signed.bundle;
         let target = &recipient.bundle;
@@ -192,6 +195,9 @@ impl Identity {
             return Err("clock moved backwards; revalidation required".into());
         }
         envelope.metadata.validate(policy, now)?;
+        if self.disposed {
+            return Err("identity disposed".into());
+        }
         sender.verify(pinned_sender)?;
         let local = &self.signed.bundle;
         let host = &sender.bundle;

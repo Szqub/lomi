@@ -30,6 +30,9 @@ impl Handshake {
         peer: &SignedBundle,
         pinned_peer: &[u8; 32],
     ) -> Result<Self> {
+        if identity.disposed {
+            return Err("identity disposed".into());
+        }
         context.validate()?;
         peer.verify(pinned_peer)?;
         let local = &identity.signed.bundle;
@@ -181,10 +184,126 @@ impl Channel {
         {
             return Err("encrypted transport context mismatch".into());
         }
-        plaintext.drain(..HEADER);
-        plaintext.truncate(count - HEADER);
+        let output = Zeroizing::new(plaintext[HEADER..count].to_vec());
         self.receive_seq += 1;
         self.state = Some(state);
-        Ok(plaintext)
+        Ok(output)
+    }
+}
+
+impl TransportFrame {
+    pub fn to_binary(&self) -> Result<Vec<u8>> {
+        if self.ciphertext.len() < HEADER + 16
+            || self.ciphertext.len() > MAX_PLAINTEXT + HEADER + 16
+        {
+            return Err("binary frame length".into());
+        }
+        let mut out = Vec::with_capacity(HEADER + self.ciphertext.len());
+        out.extend_from_slice(&self.sequence.to_be_bytes());
+        out.extend_from_slice(&self.routing);
+        out.extend_from_slice(&self.ciphertext);
+        Ok(out)
+    }
+    pub fn from_binary(frame: &[u8]) -> Result<Self> {
+        if frame.len() < HEADER * 2 + 16 || frame.len() > MAX_PLAINTEXT + HEADER * 2 + 16 {
+            return Err("binary frame length".into());
+        }
+        Ok(Self {
+            sequence: u64::from_be_bytes(frame[..8].try_into().map_err(|_| "sequence length")?),
+            routing: frame[8..HEADER].try_into().map_err(|_| "routing length")?,
+            ciphertext: frame[HEADER..].to_vec(),
+        })
+    }
+}
+impl Channel {
+    pub fn dispose(&mut self) {
+        self.state.take();
+    }
+    pub fn seal_binary(&mut self, routing: [u8; 16], plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.seal(routing, plaintext)?.to_binary()
+    }
+    pub fn open_binary(&mut self, routing: [u8; 16], frame: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        let frame = match TransportFrame::from_binary(frame) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.dispose();
+                return Err(error);
+            }
+        };
+        self.open(routing, &frame)
+    }
+}
+impl Handshake {
+    pub fn dispose(&mut self) {
+        self.state.take();
+    }
+}
+impl Drop for Channel {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+    fn pair() -> (Channel, Channel) {
+        let host = Identity::generate([1; 16], [2; 16], Role::Host, 1).unwrap();
+        let device = Identity::generate([1; 16], [3; 16], Role::Device, 1).unwrap();
+        let context = ChannelContext {
+            version: 1,
+            account_id: [1; 16],
+            host_id: [2; 16],
+            device_id: [3; 16],
+            initiator_role: Role::Device,
+            responder_role: Role::Host,
+            channel_id: [5; 16],
+            grant_id: [4; 16],
+            session_id: [6; 16],
+            workspace_id: None,
+            workspace_epoch: None,
+            session_epoch: None,
+            purpose: None,
+            access_epoch: 1,
+            revision: 1,
+        };
+        let hb = host.public_bundle();
+        let db = device.public_bundle();
+        let mut c = Handshake::new(
+            true,
+            &device,
+            &context,
+            &hb,
+            &hb.bundle.fingerprint().unwrap(),
+        )
+        .unwrap();
+        let mut s = Handshake::new(
+            false,
+            &host,
+            &context,
+            &db,
+            &db.bundle.fingerprint().unwrap(),
+        )
+        .unwrap();
+        s.read(&c.write().unwrap()).unwrap();
+        c.read(&s.write().unwrap()).unwrap();
+        s.read(&c.write().unwrap()).unwrap();
+        (s.finish().unwrap(), c.finish().unwrap())
+    }
+    #[test]
+    fn nonce_exhaustion_and_frame_lifetime_fail_closed() {
+        let (mut s, mut c) = pair();
+        let frame = c.seal_binary([9; 16], b"nonce").unwrap();
+        s.state.as_mut().unwrap().set_receiving_nonce(u64::MAX);
+        assert!(s.open_binary([9; 16], &frame).is_err());
+        assert!(s.seal_binary([9; 16], b"closed").is_err());
+        c.send_seq = MAX_FRAMES;
+        assert!(c.seal_binary([9; 16], b"limit").is_err());
+        assert!(c.state.is_none());
     }
 }

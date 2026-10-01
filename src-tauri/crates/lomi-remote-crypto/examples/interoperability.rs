@@ -53,10 +53,40 @@ fn main() {
         device_id: [3; 16],
         initiator_role: Role::Device,
         responder_role: Role::Host,
+        channel_id: [5; 16],
+        grant_id: [4; 16],
+        session_id: [6; 16],
+        workspace_id: None,
+        workspace_epoch: None,
+        session_epoch: None,
+        purpose: None,
+        access_epoch: 1,
+        revision: 1,
     };
+    let approval = host
+        .sign_peer_approval(PeerApproval {
+            version: 1,
+            account_id: [1; 16],
+            host_id: [2; 16],
+            device_id: [3; 16],
+            host_fingerprint: hb.bundle.fingerprint().unwrap(),
+            device_fingerprint: db.bundle.fingerprint().unwrap(),
+            pairing_nonce: [8; 32],
+            grant_id: [4; 16],
+            session_ids: vec![[6; 16]],
+            workspace_id: None,
+            workspace_epoch: None,
+            session_epochs: vec![],
+            permissions: Permissions::Control,
+            access_epoch: 1,
+            revision: 1,
+            expires_at: 2000,
+        })
+        .unwrap();
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     println!(
         "{}",
-        serde_json::json!({"host_bundle":hb,"device_bundle":db,"host_pin":hb.bundle.fingerprint().unwrap(),"device_pin":db.bundle.fingerprint().unwrap(),"host_canonical":hb.bundle.canonical().unwrap(),"device_canonical":db.bundle.canonical().unwrap(),"context":context,"policy":policy,"envelope":envelope})
+        serde_json::json!({"host_bundle":hb,"device_bundle":db,"host_pin":hb.bundle.fingerprint().unwrap(),"device_pin":db.bundle.fingerprint().unwrap(),"host_canonical":hb.bundle.canonical().unwrap(),"device_canonical":db.bundle.canonical().unwrap(),"context":context,"policy":policy,"envelope":envelope,"approval":approval,"approval_canonical_hex":hex(&approval.approval.canonical().unwrap()),"host_canonical_hex":hex(&hb.bundle.canonical().unwrap()),"device_canonical_hex":hex(&db.bundle.canonical().unwrap()),"pairing_fingerprint_hex":hex(&pairing_fingerprint(&[1;16],&[2;16],&[3;16],&hb.bundle.fingerprint().unwrap(),&db.bundle.fingerprint().unwrap(),&[8;32]))})
     );
 }
 #[cfg(not(feature = "test-fixtures"))]

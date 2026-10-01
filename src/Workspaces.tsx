@@ -1,3 +1,4 @@
+import type { RemoteState } from "./remote-workspaces";
 import ResourceIcon from "./ResourceIcon";
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -37,8 +38,15 @@ export default function Workspaces({
   onRename,
   onAppearanceChange,
   onDelete,
+  remote,
 }: {
   projects: Project[];
+  remote?: {
+    state?: RemoteState;
+    error: string;
+    busy?: string;
+    share: (id: string, shared: boolean) => Promise<void>;
+  };
   activeWorkspaceId?: string;
   activeRoot: string;
   git: GitRepositoryScan & { loading: boolean };
@@ -89,6 +97,11 @@ export default function Workspaces({
           <Plus size={15} />
         </IconButton>
       </div>
+      {remote?.error && (
+        <p className="sidebar-empty" role="alert">
+          {remote.error}
+        </p>
+      )}
       <nav className="workspace-list" aria-label="Workspace list">
         {projects.flatMap((project) =>
           project.workspaces.map((workspace) => {
@@ -105,6 +118,7 @@ export default function Workspaces({
               <div
                 className={`workspace-list-entry${workspace.id === activeWorkspaceId ? " is-active" : ""}`}
                 key={workspace.id}
+                data-workspace-id={workspace.id}
               >
                 <div className="workspace-list-heading">
                   <button
@@ -139,6 +153,13 @@ export default function Workspaces({
                     <WorkspaceAvatar appearance={workspace.appearance} />
                     <span className="workspace-list-details">
                       <span>{workspace.name}</span>
+                      {remote?.state?.workspaces.find(
+                        (w) => w.id === workspace.id,
+                      )?.shared && (
+                        <small className="workspace-remote-status">
+                          Shared remotely
+                        </small>
+                      )}
                       <small className="workspace-folder">
                         {basename(project.path)}
                       </small>
@@ -318,6 +339,23 @@ export default function Workspaces({
           label="Workspace actions"
           actions={[
             { label: "Rename workspace", run: () => onRename(workspace) },
+            remote
+              ? {
+                  label: remote.state?.workspaces.find(
+                    (w) => w.id === workspace.id,
+                  )?.shared
+                    ? "Stop sharing remotely"
+                    : "Share remotely",
+                  disabled: !!remote.busy,
+                  run: () =>
+                    void remote.share(
+                      workspace.id,
+                      !remote.state?.workspaces.find(
+                        (w) => w.id === workspace.id,
+                      )?.shared,
+                    ),
+                }
+              : null,
             {
               label: "Customize workspace…",
               run: () => setCustomizing(workspace),

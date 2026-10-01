@@ -37,6 +37,7 @@ import {
   SettingsSection,
 } from "./settings-ui";
 
+const RemoteSettingsPage = lazy(() => import("./RemoteSettingsPage"));
 const AccountSettingsPage = lazy(() => import("./auth/AccountSettingsPage"));
 const AndroidSettingsPage = lazy(() => import("./android/AndroidSettingsPage"));
 const AgentControlSettingsPage = lazy(
@@ -50,7 +51,8 @@ function SettingsLoading({ title }: { title: string }) {
 export default function SettingsWindow() {
   const [page, setPage] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get("page");
-    return requested === "account" ||
+    return requested === "remote" ||
+      requested === "account" ||
       requested === "android" ||
       requested === "agent-control" ||
       requested === "chat-ai" ||
@@ -62,7 +64,9 @@ export default function SettingsWindow() {
       : "keybinds";
   });
   const preferences = useKeybindings();
-  useProtectedTheme(page === "agent-control" || page === "account");
+  useProtectedTheme(
+    page === "agent-control" || page === "account" || page === "remote",
+  );
   const [listening, setListening] = useState(!native);
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [busy, setBusy] = useState(false);
@@ -78,6 +82,7 @@ export default function SettingsWindow() {
       if (
         current &&
         [
+          "remote",
           "account",
           "android",
           "agent-control",
@@ -242,6 +247,14 @@ export default function SettingsWindow() {
             Agent control
           </button>
           <button
+            className="settings-nav-item"
+            aria-current={page === "remote" ? "page" : undefined}
+            onClick={() => setPage("remote")}
+          >
+            <Monitor size={16} aria-hidden="true" />
+            Remote
+          </button>
+          <button
             className="settings-nav-item settings-nav-account"
             aria-current={page === "account" ? "page" : undefined}
             onClick={() => setPage("account")}
@@ -258,7 +271,11 @@ export default function SettingsWindow() {
             About
           </button>
         </nav>
-        {page === "account" ? (
+        {page === "remote" ? (
+          <Suspense fallback={<SettingsLoading title="Remote" />}>
+            <RemoteSettingsPage />
+          </Suspense>
+        ) : page === "account" ? (
           <Suspense fallback={<SettingsLoading title="Account" />}>
             <AccountSettingsPage />
           </Suspense>
