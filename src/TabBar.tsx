@@ -81,6 +81,7 @@ export default function TabBar({
       .find(Boolean);
   const strip = useRef<HTMLDivElement>(null);
   const newButton = useRef<HTMLButtonElement>(null);
+  const renameCandidate = useRef<string | null>(null);
   const [newMenu, setNewMenu] = useState<{ x: number; y: number } | null>(null);
   const { beginDrag, suppressClick } = useTabDrag({
     tabs,
@@ -202,9 +203,20 @@ export default function TabBar({
                     ? `${tab.untitled ? tab.title : tab.relative}${modified?.has(tab.id) ? " • Modified" : ""}`
                     : tabTitle(tab)
                 }
-                onClick={() => onSelect(tab.id)}
+                onClick={(event) => {
+                  // The first click selects the tab before double-click fires.
+                  if (event.detail === 1)
+                    renameCandidate.current =
+                      tab.id === activeTabId ? tab.id : null;
+                  onSelect(tab.id);
+                }}
                 onDoubleClick={() => {
-                  if (tab.type !== "file") onRename(tab);
+                  if (
+                    tab.type !== "file" &&
+                    tab.id === activeTabId &&
+                    renameCandidate.current === tab.id
+                  )
+                    onRename(tab);
                 }}
                 onKeyDown={(event) => {
                   if (

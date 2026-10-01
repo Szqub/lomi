@@ -170,6 +170,26 @@ test("closing the only tab disposes its terminal and opens a fresh tab", async (
     .toEqual([closedSessionId]);
 });
 
+test("double-click renames a tab only when it was already active", async ({
+  page,
+}) => {
+  await restoreTabs(page, 2, 0);
+  const tab = page.getByRole("tab", { name: "Terminal 2", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Rename tab" });
+
+  await tab.dblclick();
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await expect(dialog).toHaveCount(0);
+
+  await tab.dblclick();
+  await expect(dialog).toBeVisible();
+  await dialog
+    .getByRole("textbox", { name: "Name", exact: true })
+    .fill("Backend");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("tab", { selected: true })).toHaveText("Backend");
+});
+
 test("long names keep the active tab centered and its close button visible", async ({
   page,
 }) => {
