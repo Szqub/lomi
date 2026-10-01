@@ -207,7 +207,7 @@ export default function Workspaces({
                           className="workspace-remote-status"
                           title="Shared remotely"
                         >
-                          <Folder size={12} aria-hidden="true" />
+                          <Globe size={12} aria-hidden="true" />
                           <span className="workspace-visually-hidden">
                             Shared remotely
                           </span>
