@@ -699,13 +699,24 @@ test("right-click sharing starts all inactive terminals and stop sharing retains
     exact: true,
   });
   await customization
-    .getByRole("textbox", { name: "Custom emoji or text" })
-    .fill("🚀");
+    .getByRole("button", { name: "Rocket icon", exact: true })
+    .click();
   await customization
     .getByRole("button", { name: "Save", exact: true })
     .click();
-  await expect(row.locator(".workspace-avatar")).toHaveText("🚀");
+  await expect(
+    row.locator(".workspace-avatar svg.lucide-rocket"),
+  ).toBeVisible();
   await expect(row).toContainText("Shared remotely");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem("test-session") ?? "null")
+            ?.projects?.[0]?.workspaces?.[0]?.appearance,
+      ),
+    )
+    .toEqual({ icon: "rocket" });
   expect(await starts()).toBe(4);
   await page.screenshot({
     path: testInfo.outputPath("shared-inactive-workspace.png"),
@@ -715,7 +726,9 @@ test("right-click sharing starts all inactive terminals and stop sharing retains
     .getByRole("menuitem", { name: "Stop sharing remotely", exact: true })
     .click();
   await expect(row).not.toContainText("Shared remotely");
-  await expect(row.locator(".workspace-avatar")).toHaveText("🚀");
+  await expect(
+    row.locator(".workspace-avatar svg.lucide-rocket"),
+  ).toBeVisible();
   expect(
     await page.evaluate(
       () =>

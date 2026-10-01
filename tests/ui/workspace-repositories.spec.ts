@@ -64,6 +64,43 @@ test("workspace repository scans share roots, retain incomplete counts and bound
   await expect
     .poll(() => page.evaluate(() => (window as any).summaries["/active"].count))
     .toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).summaries["/active"].branch),
+    )
+    .toBe("main");
+  await page.evaluate(() => {
+    const state = window as any;
+    state.activeScan = {
+      ...state.activeScan,
+      repositories: [
+        { root: "/active/nested", branch: "nested", changes: [] },
+        { root: "/active", branch: "root-branch", changes: [] },
+      ],
+    };
+    state.rerender();
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).summaries["/active"].branch),
+    )
+    .toBe("root-branch");
+  await page.evaluate(() => {
+    const state = window as any;
+    state.activeScan = {
+      ...state.activeScan,
+      repositories: [
+        { root: "/active/first", branch: "first", changes: [] },
+        { root: "/active/second", branch: "second", changes: [] },
+      ],
+    };
+    state.rerender();
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).summaries["/active"].branch),
+    )
+    .toBeUndefined();
   await page.evaluate(() => {
     const state = window as any;
     state.requests[0].resolve({
@@ -91,6 +128,7 @@ test("workspace repository scans share roots, retain incomplete counts and bound
     .poll(() => page.evaluate(() => (window as any).summaries["/b"]))
     .toEqual({
       count: 0,
+      branch: undefined,
       loading: false,
       limited: false,
       error: "Unavailable folder",
@@ -131,7 +169,13 @@ test("workspace repository scans share roots, retain incomplete counts and bound
   );
   await expect
     .poll(() => page.evaluate(() => (window as any).summaries["/a"]))
-    .toEqual({ count: 2, loading: false, limited: true, error: undefined });
+    .toEqual({
+      count: 2,
+      branch: undefined,
+      loading: false,
+      limited: true,
+      error: undefined,
+    });
 
   await page.evaluate(() =>
     Object.defineProperty(document, "visibilityState", {

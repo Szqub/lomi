@@ -6,6 +6,7 @@ import type { Project } from "./model";
 
 export interface WorkspaceRepositorySummary {
   count: number;
+  branch?: string;
   loading: boolean;
   limited: boolean;
   error?: string;
@@ -135,8 +136,18 @@ export default function useWorkspaceRepositories(
       root === activeRoot && !activeScan.loading
         ? activeScan
         : cache.current.get(root);
+    const repositories = [
+      ...new Map(
+        scan?.repositories.map((repo) => [gitFilePath(repo.root), repo]),
+      ).values(),
+    ];
+    const repository =
+      repositories.find(
+        (repo) => gitFilePath(repo.root) === gitFilePath(root),
+      ) ?? (repositories.length === 1 ? repositories[0] : undefined);
     summaries[root] = {
-      count: new Set(scan?.repositories.map((repo) => repo.root)).size,
+      count: repositories.length,
+      branch: repository?.branch,
       loading:
         (root === activeRoot && activeScan.loading) ||
         loading.current.has(root) ||

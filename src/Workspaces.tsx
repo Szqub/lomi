@@ -5,7 +5,7 @@ import {
   FileDiff,
   ChevronRight,
   Ellipsis,
-  GitBranch,
+  Folder,
   GitCommitHorizontal,
   Globe,
   MessageSquare,
@@ -15,7 +15,7 @@ import {
   Terminal,
 } from "./icons";
 import type { Project, Workspace } from "./model";
-import { basename, tabTitle } from "./model";
+import { tabTitle } from "./model";
 import type { GitRepositoryScan } from "./api";
 import type { WorkspaceAppearance } from "./workspace-appearance";
 import ContextMenu from "./ContextMenu";
@@ -90,9 +90,7 @@ export default function Workspaces({
   return (
     <div className="sidebar-panel workspace-panel">
       <div className="sidebar-heading">
-        <span>
-          WORKSPACES <span className="workspace-heading-count">{count}</span>
-        </span>
+        <span>WORKSPACES</span>
         <IconButton title="New workspace" onClick={onNew}>
           <Plus size={15} />
         </IconButton>
@@ -107,20 +105,46 @@ export default function Workspaces({
           project.workspaces.map((workspace) => {
             const summary = summarizeWorkspaceAgents(workspace, agents);
             const repository = repositories[project.path];
-            const uncertain = repository?.limited || !!repository?.error;
-            const repositoryCount =
-              !repository || repository.loading
-                ? "…"
-                : repository.error && repository.count === 0
-                  ? "?"
-                  : `${repository.count}${uncertain ? "+" : ""}`;
+            const shared = remote?.state?.workspaces.find(
+              (candidate) => candidate.id === workspace.id,
+            )?.shared;
+            const extraAgents = summary.groups.slice(2);
+            const extraAgentsLabel = extraAgents
+              .map(
+                ({ cli, count }) =>
+                  `${cliNames[cli]} · ${count} ${count === 1 ? "agent" : "agents"}`,
+              )
+              .join(", ");
+            const metadata =
+              repository?.branch ||
+              (repository?.count
+                ? `${repository.count} ${repository.count === 1 ? "repository" : "repositories"}`
+                : !repository || repository.loading
+                  ? "Loading repositories…"
+                  : repository.error
+                    ? "Repositories unavailable"
+                    : repository.limited
+                      ? "Repository scan incomplete"
+                      : `${workspace.tabs.length} ${workspace.tabs.length === 1 ? "tab" : "tabs"}`);
+            const metadataTitle = [
+              repository?.loading ? "Refreshing repositories…" : undefined,
+              repository?.error,
+              repository?.limited
+                ? "Repository discovery reached its limit. Showing discovered repositories."
+                : undefined,
+              metadata,
+            ]
+              .filter(Boolean)
+              .join("\n");
             return (
               <div
                 className={`workspace-list-entry${workspace.id === activeWorkspaceId ? " is-active" : ""}`}
                 key={workspace.id}
                 data-workspace-id={workspace.id}
               >
-                <div className="workspace-list-heading">
+                <div
+                  className={`workspace-list-heading${expanded.has(workspace.id) ? " is-expanded" : ""}${menu?.id === workspace.id ? " is-menu-open" : ""}`}
+                >
                   <button
                     type="button"
                     className="workspace-list-item"
@@ -128,6 +152,8 @@ export default function Workspaces({
                       workspace.id === activeWorkspaceId ? "true" : undefined
                     }
                     title={`${workspace.name}\n${project.path}`}
+                    aria-label={`${workspace.name} ${project.path} ${metadata}${shared ? " Shared remotely" : ""}`}
+                    aria-description={metadataTitle}
                     onClick={() => onSelect(project.path, workspace.id)}
                     aria-haspopup="menu"
                     aria-expanded={menu?.id === workspace.id}
@@ -150,19 +176,33 @@ export default function Workspaces({
                       }
                     }}
                   >
-                    <WorkspaceAvatar appearance={workspace.appearance} />
-                    <span className="workspace-list-details">
-                      <span>{workspace.name}</span>
-                      {remote?.state?.workspaces.find(
-                        (w) => w.id === workspace.id,
-                      )?.shared && (
-                        <small className="workspace-remote-status">
-                          Shared remotely
-                        </small>
+                    <span className="workspace-folder-row">
+                      {workspace.appearance ? (
+                        <WorkspaceAvatar appearance={workspace.appearance} />
+                      ) : (
+                        <Folder size={14} aria-hidden="true" />
                       )}
-                      <small className="workspace-folder">
-                        {basename(project.path)}
-                      </small>
+                      <span className="workspace-folder" title={project.path}>
+                        <bdi dir="ltr">{project.path}</bdi>
+                      </span>
+                      {shared && (
+                        <span
+                          className="workspace-remote-status"
+                          title="Shared remotely"
+                        >
+                          <Folder size={12} aria-hidden="true" />
+                          <span className="workspace-visually-hidden">
+                            Shared remotely
+                          </span>
+                        </span>
+                      )}
+                    </span>
+                    <span className="workspace-name">{workspace.name}</span>
+                    <span
+                      className={`workspace-metadata${summary.total ? " has-agents" : ""}${extraAgents.length ? " has-agent-overflow" : ""}`}
+                      title={metadataTitle}
+                    >
+                      {metadata}
                     </span>
                   </button>
                   <IconButton
@@ -176,67 +216,53 @@ export default function Workspaces({
                   >
                     <Ellipsis size={16} />
                   </IconButton>
-                </div>
-                <div className="workspace-overview">
-                  <span
-                    className="workspace-repository-count"
-                    title={
-                      repository?.error ||
-                      (repository?.limited
-                        ? "Repository discovery reached its limit. Showing discovered repositories."
-                        : "Initialized Git repositories in this folder")
-                    }
-                    aria-label={`${repositoryCount} Git repositories${uncertain ? " (incomplete scan)" : ""}`}
-                  >
-                    <GitBranch size={13} aria-hidden="true" />
-                    {repositoryCount}{" "}
-                    {repository?.count === 1 && !uncertain ? "repo" : "repos"}
-                  </span>
-                  <span
-                    className="workspace-agent-count"
-                    title="Detected CLI agents in open terminal panes"
-                  >
-                    <Terminal size={13} aria-hidden="true" />
-                    {summary.total} {summary.total === 1 ? "agent" : "agents"}
-                  </span>
-                  <button
-                    type="button"
-                    className="workspace-tabs-toggle"
-                    aria-label={`${expanded.has(workspace.id) ? "Collapse" : "Expand"} tabs in ${workspace.name}`}
-                    aria-expanded={expanded.has(workspace.id)}
-                    aria-controls={`workspace-tabs-${workspace.id}`}
-                    onClick={() =>
-                      setExpanded((current) => {
-                        const next = new Set(current);
-                        if (next.has(workspace.id)) next.delete(workspace.id);
-                        else next.add(workspace.id);
-                        return next;
-                      })
-                    }
-                  >
-                    {workspace.tabs.length}{" "}
-                    {workspace.tabs.length === 1 ? "tab" : "tabs"}
-                    <ChevronRight size={12} aria-hidden="true" />
-                  </button>
-                </div>
-                {summary.total > 0 && (
-                  <div
-                    className="workspace-agent-list"
-                    aria-label={`Agents in ${workspace.name}`}
-                  >
-                    {summary.groups.map(({ cli, count }) => (
-                      <span
-                        className="workspace-agent-chip"
-                        key={cli}
-                        role="img"
-                        aria-label={`${cliNames[cli]} · ${count} ${count === 1 ? "agent" : "agents"}`}
-                        title={`${cliNames[cli]} · ${count} ${count === 1 ? "agent" : "agents"}`}
+                  <div className="workspace-footer-controls">
+                    {summary.total > 0 && (
+                      <div
+                        className="workspace-agent-list"
+                        aria-label={`Agents in ${workspace.name}`}
                       >
-                        <CliAgentIcon cli={cli} />
-                      </span>
-                    ))}
+                        {summary.groups.slice(0, 2).map(({ cli, count }) => (
+                          <span
+                            className="workspace-agent-chip"
+                            key={cli}
+                            role="img"
+                            aria-label={`${cliNames[cli]} · ${count} ${count === 1 ? "agent" : "agents"}`}
+                            title={`${cliNames[cli]} · ${count} ${count === 1 ? "agent" : "agents"}`}
+                          >
+                            <CliAgentIcon cli={cli} />
+                          </span>
+                        ))}
+                        {extraAgents.length > 0 && (
+                          <span
+                            className="workspace-agent-chip workspace-agent-overflow"
+                            role="img"
+                            aria-label={extraAgentsLabel}
+                            title={extraAgentsLabel}
+                          >
+                            +{extraAgents.length}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <IconButton
+                      className="icon-button workspace-tabs-toggle"
+                      title={`${expanded.has(workspace.id) ? "Collapse" : "Expand"} tabs in ${workspace.name}`}
+                      aria-expanded={expanded.has(workspace.id)}
+                      aria-controls={`workspace-tabs-${workspace.id}`}
+                      onClick={() =>
+                        setExpanded((current) => {
+                          const next = new Set(current);
+                          if (next.has(workspace.id)) next.delete(workspace.id);
+                          else next.add(workspace.id);
+                          return next;
+                        })
+                      }
+                    >
+                      <ChevronRight size={12} aria-hidden="true" />
+                    </IconButton>
                   </div>
-                )}
+                </div>
                 <ul
                   id={`workspace-tabs-${workspace.id}`}
                   className="workspace-tab-list"

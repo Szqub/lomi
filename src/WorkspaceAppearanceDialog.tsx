@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { Workspace } from "./model";
 import {
   sanitizeWorkspaceAppearance,
@@ -18,39 +18,6 @@ const colors = [
   "#98a6b8",
 ];
 
-async function workspaceImage(file: File) {
-  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type))
-    throw new Error("Choose a PNG, JPEG or WebP image.");
-  if (file.size > 5 * 1024 * 1024)
-    throw new Error("Choose an image smaller than 5 MB.");
-  const url = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Could not read this image."));
-    reader.readAsDataURL(file);
-  });
-  const image = new Image();
-  image.src = url;
-  await image.decode();
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 128;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Could not prepare this image.");
-  const side = Math.min(image.naturalWidth, image.naturalHeight);
-  context.drawImage(
-    image,
-    (image.naturalWidth - side) / 2,
-    (image.naturalHeight - side) / 2,
-    side,
-    side,
-    0,
-    0,
-    128,
-    128,
-  );
-  return canvas.toDataURL("image/png");
-}
-
 export default function WorkspaceAppearanceDialog({
   workspace,
   onSave,
@@ -63,27 +30,18 @@ export default function WorkspaceAppearanceDialog({
   const [appearance, setAppearance] = useState<WorkspaceAppearance>(
     workspace.appearance ?? {},
   );
-  const [error, setError] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  const uploadVersion = useRef(0);
-  const close = () => {
-    uploadVersion.current++;
-    onClose();
-  };
   return (
     <Modal
       title="Customize workspace"
-      onClose={close}
+      onClose={onClose}
       className="workspace-appearance-dialog"
     >
       <form
         className="dialog-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (uploading) return;
           onSave(sanitizeWorkspaceAppearance(appearance));
-          close();
+          onClose();
         }}
       >
         <div className="workspace-appearance-body">
@@ -107,9 +65,6 @@ export default function WorkspaceAppearanceDialog({
                     !appearance.image && (appearance.icon || "layers") === id
                   }
                   onClick={() => {
-                    uploadVersion.current++;
-                    setUploading(false);
-                    setError("");
                     setAppearance(({ image: _image, ...current }) => ({
                       ...current,
                       icon: id,
@@ -120,84 +75,6 @@ export default function WorkspaceAppearanceDialog({
                 </button>
               ))}
             </div>
-            <label className="workspace-custom-icon-label">
-              Custom emoji or text
-              <input
-                aria-label="Custom emoji or text"
-                placeholder="e.g. 🚀"
-                maxLength={16}
-                value={
-                  workspaceIconOptions.some(({ id }) => id === appearance.icon)
-                    ? ""
-                    : (appearance.icon ?? "")
-                }
-                onChange={(event) => {
-                  uploadVersion.current++;
-                  setUploading(false);
-                  setAppearance(({ image: _image, ...current }) => ({
-                    ...current,
-                    icon: event.target.value,
-                  }));
-                }}
-              />
-            </label>
-            <div className="workspace-image-actions">
-              <button
-                type="button"
-                className="button"
-                onClick={() => input.current?.click()}
-              >
-                {uploading ? "Preparing image…" : "Upload image…"}
-              </button>
-              {appearance.image && (
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => {
-                    uploadVersion.current++;
-                    setUploading(false);
-                    setError("");
-                    setAppearance(({ image: _image, ...current }) => current);
-                  }}
-                >
-                  Remove image
-                </button>
-              )}
-              <input
-                ref={input}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                aria-label="Workspace image"
-                hidden
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  event.target.value = "";
-                  if (!file) return;
-                  const version = ++uploadVersion.current;
-                  setUploading(true);
-                  setError("");
-                  try {
-                    const image = await workspaceImage(file);
-                    if (version === uploadVersion.current)
-                      setAppearance((current) => ({ ...current, image }));
-                  } catch (error) {
-                    if (version === uploadVersion.current)
-                      setError(
-                        error instanceof Error
-                          ? error.message
-                          : "Could not load this image.",
-                      );
-                  } finally {
-                    if (version === uploadVersion.current) setUploading(false);
-                  }
-                }}
-              />
-            </div>
-            {error && (
-              <p className="workspace-image-error" role="alert">
-                {error}
-              </p>
-            )}
           </fieldset>
           <fieldset className="workspace-appearance-field">
             <legend>Color</legend>
@@ -215,43 +92,20 @@ export default function WorkspaceAppearanceDialog({
                 />
               ))}
             </div>
-            <label className="workspace-color-label">
-              Custom color{" "}
-              <input
-                type="color"
-                aria-label="Custom color"
-                value={appearance.color ?? colors[0]}
-                onChange={(event) =>
-                  setAppearance((current) => ({
-                    ...current,
-                    color: event.target.value,
-                  }))
-                }
-              />
-            </label>
           </fieldset>
         </div>
         <div className="dialog-actions">
           <button
             type="button"
             className="button workspace-appearance-reset"
-            onClick={() => {
-              uploadVersion.current++;
-              setUploading(false);
-              setError("");
-              setAppearance({});
-            }}
+            onClick={() => setAppearance({})}
           >
             Reset
           </button>
-          <button type="button" className="button" onClick={close}>
+          <button type="button" className="button" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="submit"
-            className="button button-primary"
-            disabled={uploading}
-          >
+          <button type="submit" className="button button-primary">
             Save
           </button>
         </div>
