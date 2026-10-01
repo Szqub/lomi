@@ -187,3 +187,56 @@ test("new hidden tabs, splits and restarted panes join the current shared worksp
   assert.ok(!final.some((terminal) => terminal.paneId === f.started[0][0]));
   assert.equal(f.started.length, 6);
 });
+
+test("projection preserves native tab identities and prunes mixed layouts", () => {
+  const session = addWorkspace(newSession(), "/project", "bash", "Shared");
+  const workspace = active(session)!.workspace;
+  const first = newTab("/project", "bash", "Same title", 2);
+  const second = newTab("/project", "bash", "Same title");
+  const empty = newTab("/project", "bash", "Browser only");
+  const original = first.layout;
+  first.layout = {
+    type: "split",
+    id: "mixed",
+    axis: "vertical",
+    ratio: 0.2,
+    first: newBrowserTab("https://private.example"),
+    second: original,
+  };
+  empty.layout = newBrowserTab();
+  workspace.tabs = [first, empty, newBrowserTab(), second];
+  const projection = workspaceTerminals(session)[0];
+  assert.deepEqual(
+    projection.tabs.map((tab) => [tab.id, tab.title]),
+    [
+      [first.id, "Same title"],
+      [second.id, "Same title"],
+    ],
+  );
+  assert.equal(projection.tabs[0].layout.type, "split");
+  if (original.type !== "split" || projection.tabs[0].layout.type !== "split")
+    throw new Error("Expected split fixture");
+  assert.equal(projection.tabs[0].layout.ratio, original.ratio);
+  assert.equal(projection.terminals.length, 3);
+  assert.ok(!JSON.stringify(projection.tabs).includes("private.example"));
+});
+
+test("layout-only changes publish metadata without restarting terminals", async () => {
+  const f = fixture();
+  await f.engine.notify();
+  const tab = f.workspace.tabs[1];
+  if (tab.type !== "terminal" || tab.layout.type !== "split")
+    throw new Error("Expected split fixture");
+  const previous = f.publications.length;
+  const started = f.started.length;
+  tab.layout = { ...tab.layout, axis: "vertical", ratio: 0.3 };
+  await f.engine.notify();
+  assert.equal(f.publications.length, previous + 1);
+  assert.equal(f.started.length, started);
+  const layout = f.publications.at(-1)!.workspaces[0].tabs![1].layout;
+  assert.equal(layout.type, "split");
+  if (layout.type === "split") {
+    assert.equal(layout.axis, "vertical");
+    assert.equal(layout.ratio, 0.3);
+  }
+});

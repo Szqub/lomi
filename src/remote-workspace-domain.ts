@@ -1,5 +1,5 @@
 import { panes, tabTitle } from "./model.ts";
-import type { Pane, Session, ShellProfile } from "./model.ts";
+import type { Layout, Pane, Session, ShellProfile } from "./model.ts";
 
 export interface RemoteWorkspaceStatus {
   id: string;
@@ -23,10 +23,44 @@ export interface RemoteState {
     revoked: boolean;
   }[];
 }
+export type RemoteLayout =
+  | { type: "terminal"; paneId: string }
+  | {
+      type: "split";
+      axis: "horizontal" | "vertical";
+      ratio: number;
+      first: RemoteLayout;
+      second: RemoteLayout;
+    };
+export interface RemoteTab {
+  id: string;
+  title: string;
+  layout: RemoteLayout;
+}
 export interface WorkspaceProjection {
   id: string;
   name: string;
+  tabs?: RemoteTab[];
   terminals: { paneId: string; sessionId: string | null; title: string }[];
+}
+function terminalLayout(layout: Layout): RemoteLayout | undefined {
+  if (layout.type === "terminal")
+    return { type: "terminal", paneId: layout.id };
+  if (layout.type !== "split") return undefined;
+  const first = terminalLayout(layout.first);
+  const second = terminalLayout(layout.second);
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    type: "split",
+    axis: layout.axis,
+    ratio:
+      Number.isFinite(layout.ratio) && layout.ratio > 0 && layout.ratio < 1
+        ? layout.ratio
+        : 0.5,
+    first,
+    second,
+  };
 }
 export function workspaceTerminals(session: Session | undefined) {
   return (
@@ -34,6 +68,11 @@ export function workspaceTerminals(session: Session | undefined) {
       project.workspaces.map((workspace) => ({
         id: workspace.id,
         name: workspace.name,
+        tabs: workspace.tabs.flatMap((tab) => {
+          if (tab.type !== "terminal") return [];
+          const layout = terminalLayout(tab.layout);
+          return layout ? [{ id: tab.id, title: tabTitle(tab), layout }] : [];
+        }),
         terminals: workspace.tabs.flatMap((tab) =>
           tab.type === "terminal"
             ? panes(tab.layout).map((pane) => ({
@@ -92,6 +131,7 @@ export class WorkspacePublisher {
         (workspace) => ({
           id: workspace.id,
           name: workspace.name,
+          tabs: workspace.tabs,
           terminals: workspace.terminals.map(({ pane, title }) => ({
             paneId: pane.id,
             sessionId: this.ports.sessionId(pane.id),

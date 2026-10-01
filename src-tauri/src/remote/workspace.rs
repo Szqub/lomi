@@ -6,6 +6,97 @@ pub struct WorkspaceProjection {
     pub id: String,
     pub name: String,
     pub terminals: Vec<TerminalProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Vec<TabProjection>>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabProjection {
+    pub id: String,
+    pub title: String,
+    pub layout: RemoteLayout,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RemoteLayout {
+    Terminal {
+        #[serde(rename = "paneId")]
+        pane_id: String,
+    },
+    Split {
+        axis: SplitAxis,
+        ratio: f64,
+        first: Box<RemoteLayout>,
+        second: Box<RemoteLayout>,
+    },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SplitAxis {
+    Horizontal,
+    Vertical,
+}
+impl RemoteLayout {
+    fn validate<'a>(
+        &'a self,
+        depth: usize,
+        members: &HashSet<&str>,
+        seen: &mut HashSet<&'a str>,
+    ) -> Result<(), String> {
+        if depth > 32 {
+            return Err("Workspace layout exceeds its depth budget.".into());
+        }
+        match self {
+            Self::Terminal { pane_id } => {
+                if !members.contains(pane_id.as_str()) || !seen.insert(pane_id.as_str()) {
+                    return Err("Invalid workspace tab membership.".into());
+                }
+            }
+            Self::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if !ratio.is_finite() || *ratio <= 0.0 || *ratio >= 1.0 {
+                    return Err("Invalid workspace split ratio.".into());
+                }
+                first.validate(depth + 1, members, seen)?;
+                second.validate(depth + 1, members, seen)?;
+            }
+        }
+        Ok(())
+    }
+    fn prune(&self, members: &HashSet<&str>) -> Option<Self> {
+        match self {
+            Self::Terminal { pane_id } => members.contains(pane_id.as_str()).then(|| self.clone()),
+            Self::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => match (first.prune(members), second.prune(members)) {
+                (Some(first), Some(second)) => Some(Self::Split {
+                    axis: axis.clone(),
+                    ratio: *ratio,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                }),
+                (first, second) => first.or(second),
+            },
+        }
+    }
+}
+fn filtered_tabs(tabs: &[TabProjection], members: &HashSet<&str>) -> Vec<TabProjection> {
+    tabs.iter()
+        .filter_map(|tab| {
+            tab.layout.prune(members).map(|layout| TabProjection {
+                id: tab.id.clone(),
+                title: tab.title.clone(),
+                layout,
+            })
+        })
+        .collect()
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -65,6 +156,7 @@ impl Domain {
         }
         let mut ids = HashSet::new();
         let mut panes = HashSet::new();
+        let mut tab_ids = HashSet::new();
         let mut sessions = HashSet::new();
         for w in &workspaces {
             uuid_bytes(&w.id)?;
@@ -84,6 +176,26 @@ impl Domain {
                     if !sessions.insert(id) {
                         return Err("Duplicate workspace terminal.".into());
                     }
+                }
+            }
+            if let Some(tabs) = &w.tabs {
+                if tabs.len() > 1024 {
+                    return Err("Workspace tab inventory exceeds its budget.".into());
+                }
+                let members = w.terminals.iter().map(|t| t.pane_id.as_str()).collect();
+                let mut seen = HashSet::new();
+                for tab in tabs {
+                    if tab.id.is_empty()
+                        || tab.id.len() > 256
+                        || !tab_ids.insert(&tab.id)
+                        || tab.title.chars().count() > 256
+                    {
+                        return Err("Invalid workspace tab.".into());
+                    }
+                    tab.layout.validate(0, &members, &mut seen)?;
+                }
+                if seen != members {
+                    return Err("Incomplete workspace tab membership.".into());
                 }
             }
         }
@@ -219,9 +331,17 @@ impl Remote {
             .ok_or("Workspace unavailable.")?;
         let terminals = w.terminals.iter().filter_map(|t| {
             let s = runtime.sessions.get(t.session_id.as_ref()?)?;
-            consent.sessions.contains(&(s.id.clone(), s.epoch.clone())).then(|| json!({"id":s.id,"paneId":t.pane_id,"title":t.title,"cols":s.cols,"rows":s.rows}))
+            (s.available && consent.sessions.contains(&(s.id.clone(), s.epoch.clone())))
+                .then(|| json!({"id":s.id,"paneId":t.pane_id,"title":t.title,"cols":s.cols,"rows":s.rows}))
         }).collect::<Vec<_>>();
-        let value = json!({"v":1,"type":"workspace","workspace":{"id":w.id,"name":w.name,"epoch":consent.epoch,"revision":consent.revision,"terminals":terminals}});
+        let mut value = json!({"v":1,"type":"workspace","workspace":{"id":w.id,"name":w.name,"epoch":consent.epoch,"revision":consent.revision,"terminals":terminals}});
+        if let Some(tabs) = &w.tabs {
+            let members = terminals
+                .iter()
+                .filter_map(|t| t["paneId"].as_str())
+                .collect();
+            value["workspace"]["tabs"] = json!(filtered_tabs(tabs, &members));
+        }
         if serde_json::to_vec(&value)
             .map_err(|_| "Invalid workspace metadata.")?
             .len()
@@ -415,6 +535,124 @@ pub async fn remote_share_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn leaf(id: &str) -> RemoteLayout {
+        RemoteLayout::Terminal { pane_id: id.into() }
+    }
+    fn split(first: RemoteLayout, second: RemoteLayout, ratio: f64) -> RemoteLayout {
+        RemoteLayout::Split {
+            axis: SplitAxis::Horizontal,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+    #[test]
+    fn tab_layouts_validate_membership_bounds_and_legacy_metadata() {
+        let mut domain = Domain::default();
+        let epoch = domain.begin().unwrap();
+        let mut w = WorkspaceProjection {
+            id: uuid().unwrap(),
+            name: "Workspace".into(),
+            terminals: ["one", "two"]
+                .into_iter()
+                .map(|id| TerminalProjection {
+                    pane_id: id.into(),
+                    session_id: None,
+                    title: "Shell".into(),
+                })
+                .collect(),
+            tabs: Some(vec![TabProjection {
+                id: "tab".into(),
+                title: "Shell".into(),
+                layout: split(leaf("one"), leaf("two"), 0.3),
+            }]),
+        };
+        domain.sync(&epoch, 1, vec![w.clone()]).unwrap();
+        let good = w.clone();
+        for layout in [
+            leaf("one"),
+            leaf("unknown"),
+            split(leaf("one"), leaf("one"), 0.5),
+            split(leaf("one"), leaf("two"), 0.0),
+            split(leaf("one"), leaf("two"), 1.0),
+            split(leaf("one"), leaf("two"), f64::NAN),
+        ] {
+            w.tabs.as_mut().unwrap()[0].layout = layout;
+            assert!(domain.sync(&epoch, 2, vec![w.clone()]).is_err());
+            assert_eq!(domain.workspaces, vec![good.clone()]);
+        }
+        let mut deep = leaf("one");
+        for _ in 0..33 {
+            deep = split(deep, leaf("two"), 0.5);
+        }
+        w.tabs.as_mut().unwrap()[0].layout = deep;
+        assert!(domain
+            .sync(&epoch, 2, vec![w.clone()])
+            .unwrap_err()
+            .contains("depth"));
+        w = good.clone();
+        let duplicate = w.tabs.as_ref().unwrap()[0].clone();
+        w.tabs.as_mut().unwrap().push(duplicate);
+        assert!(domain.sync(&epoch, 2, vec![w]).is_err());
+        let mut legacy = serde_json::to_value(&good).unwrap();
+        legacy.as_object_mut().unwrap().remove("tabs");
+        let legacy: WorkspaceProjection = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.tabs.is_none());
+        domain.sync(&epoch, 2, vec![legacy]).unwrap();
+        assert!(serde_json::from_value::<RemoteLayout>(json!({
+            "type":"split", "axis":"diagonal", "ratio":0.5,
+            "first":{"type":"terminal","paneId":"one"},
+            "second":{"type":"terminal","paneId":"two"}
+        }))
+        .is_err());
+    }
+    #[test]
+    fn encrypted_tabs_prune_unapproved_panes_and_omit_empty_tabs() {
+        let tabs = vec![
+            TabProjection {
+                id: "one".into(),
+                title: "Same".into(),
+                layout: split(leaf("a"), split(leaf("b"), leaf("private"), 0.6), 0.3),
+            },
+            TabProjection {
+                id: "two".into(),
+                title: "Same".into(),
+                layout: leaf("c"),
+            },
+            TabProjection {
+                id: "private-tab".into(),
+                title: "Private".into(),
+                layout: leaf("hidden"),
+            },
+        ];
+        let allowed = HashSet::from(["a", "b", "c"]);
+        let filtered = filtered_tabs(&tabs, &allowed);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].layout, split(leaf("a"), leaf("b"), 0.3));
+        assert_eq!(filtered[1].id, "two");
+        assert!(!serde_json::to_string(&filtered)
+            .unwrap()
+            .contains("private"));
+        let mut consent = Consent {
+            id: uuid().unwrap(),
+            epoch: uuid().unwrap(),
+            revision: 1,
+            shared: true,
+            sessions: vec![],
+            projection: None,
+        };
+        let mut workspace = WorkspaceProjection {
+            id: consent.id.clone(),
+            name: "Shared".into(),
+            terminals: vec![],
+            tabs: Some(filtered),
+        };
+        consent.reconcile(Some(&workspace), vec![]).unwrap();
+        workspace.tabs.as_mut().unwrap()[0].layout = split(leaf("b"), leaf("a"), 0.7);
+        assert!(consent.reconcile(Some(&workspace), vec![]).unwrap());
+        assert_eq!(consent.revision, 3);
+        assert!(!consent.reconcile(Some(&workspace), vec![]).unwrap());
+    }
     #[test]
     fn membership_epochs_missing_models_moves_and_metadata_changes_advance_once() {
         let id = uuid().unwrap();
@@ -422,6 +660,7 @@ mod tests {
         let w = WorkspaceProjection {
             id: id.clone(),
             name: "Private".into(),
+            tabs: None,
             terminals: vec![TerminalProjection {
                 pane_id: "pane".into(),
                 session_id: Some(terminal.clone()),
@@ -543,6 +782,7 @@ mod tests {
         let mut w = WorkspaceProjection {
             id: id.clone(),
             name: "Empty".into(),
+            tabs: None,
             terminals: vec![],
         };
         domain.sync(&epoch, 1, vec![w.clone()]).unwrap();
@@ -562,6 +802,7 @@ mod tests {
         let w = WorkspaceProjection {
             id: uuid().unwrap(),
             name: "Private name".into(),
+            tabs: None,
             terminals: vec![TerminalProjection {
                 pane_id: "pane".into(),
                 session_id: Some(uuid().unwrap()),

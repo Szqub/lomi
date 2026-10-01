@@ -704,6 +704,7 @@ mod tests {
         let projection = workspace::WorkspaceProjection {
             id: id.clone(),
             name: "Private".into(),
+            tabs: None,
             terminals: vec![workspace::TerminalProjection {
                 pane_id: "pane".into(),
                 session_id: Some(terminal.clone()),

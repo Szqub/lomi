@@ -415,6 +415,7 @@ mod tests {
                 vec![super::super::workspace::WorkspaceProjection {
                     id: workspace_id.clone(),
                     name: "Refused workspace".into(),
+                    tabs: None,
                     terminals: vec![super::super::workspace::TerminalProjection {
                         pane_id: "budget-pane".into(),
                         session_id: Some(ids[32].clone()),
