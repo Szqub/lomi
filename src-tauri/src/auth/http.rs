@@ -29,6 +29,7 @@ pub(super) enum HttpProblem {
     RateLimited(Option<u64>),
     Unauthorized,
     Forbidden,
+    DesktopUpdateRequired,
     InvalidResponse,
     Rejected,
 }
@@ -74,6 +75,7 @@ impl ApiClient {
             .client
             .request(method, url)
             .bearer_auth(token)
+            .header("X-Lomi-Remote-Protocol", "live-atomic-renew-v1")
             .timeout(Duration::from_secs(5));
         let request = if let Some(body) = body {
             request
@@ -299,7 +301,16 @@ fn classify_status(response: Response, body: &[u8], retry_after: Option<u64>) ->
     classify_http_error(response.status(), body, retry_after)
 }
 
-fn classify_http_error(status: StatusCode, _body: &[u8], retry_after: Option<u64>) -> HttpProblem {
+fn classify_http_error(status: StatusCode, body: &[u8], retry_after: Option<u64>) -> HttpProblem {
+    if status == StatusCode::UPGRADE_REQUIRED
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(Value::as_str) == Some("DESKTOP_UPDATE_REQUIRED")
+            })
+    {
+        return HttpProblem::DesktopUpdateRequired;
+    }
     if status == StatusCode::TOO_MANY_REQUESTS {
         return HttpProblem::RateLimited(retry_after);
     }
@@ -501,6 +512,11 @@ mod tests {
         assert!(api.sign_out("rotated-token").await);
 
         let requests = server.join().unwrap();
+        for request in &requests {
+            assert!(!request
+                .to_ascii_lowercase()
+                .contains("x-lomi-remote-protocol:"));
+        }
         assert!(requests[0].starts_with("POST /v1/desktop/start "));
         assert!(requests[0]
             .to_ascii_lowercase()
@@ -539,11 +555,14 @@ mod tests {
 
     #[tokio::test]
     async fn native_remote_uses_fixed_bearer_origin_without_browser_headers() {
-        let (origin, server) = loopback_server(vec![reply(
-            "200 OK",
-            "",
-            r#"{"authorizationExpiresAt":"2026-10-01T00:00:00Z","pairings":[],"grants":[],"channels":[]}"#,
-        )]);
+        let (origin, server) = loopback_server(vec![
+            reply(
+                "200 OK",
+                "",
+                r#"{"authorizationExpiresAt":"2026-10-01T00:00:00Z","pairings":[],"grants":[],"channels":[]}"#,
+            ),
+            reply("200 OK", "", "{}"),
+        ]);
         let mut api = test_api("https://auth.lomi.dev".into());
         api.remote_origin = Some(origin);
         let state = api
@@ -556,15 +575,28 @@ mod tests {
             .await
             .unwrap();
         assert!(state["authorizationExpiresAt"].is_string());
-        let request = server.join().unwrap().pop().unwrap();
-        let headers = request
-            .split("\r\n\r\n")
-            .next()
-            .unwrap()
-            .to_ascii_lowercase();
-        assert!(headers.contains("authorization: bearer test-native-token"));
-        for forbidden in ["cookie:", "origin:", "sec-fetch-site:"] {
-            assert!(!headers.contains(forbidden));
+        api.remote_request(
+            "test-native-token",
+            reqwest::Method::POST,
+            "/v1/remote/native/hosts/host-1/heartbeat",
+            Some(&serde_json::json!({"shares":[]})),
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /v1/remote/native/session "));
+        assert!(requests[1].starts_with("POST /v1/remote/native/hosts/host-1/heartbeat "));
+        for request in requests {
+            let headers = request
+                .split("\r\n\r\n")
+                .next()
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(headers.contains("authorization: bearer test-native-token"));
+            assert!(headers.contains("x-lomi-remote-protocol: live-atomic-renew-v1\r\n"));
+            for forbidden in ["cookie:", "origin:", "sec-fetch-site:"] {
+                assert!(!headers.contains(forbidden));
+            }
         }
         for path in [
             "/v1/me",
@@ -576,6 +608,49 @@ mod tests {
                 .remote_request("token", reqwest::Method::GET, path, None)
                 .await
                 .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn native_remote_classifies_exact_update_requirement_without_server_text() {
+        let (origin, server) = loopback_server(vec![reply(
+            "426 Upgrade Required",
+            "",
+            r#"{"error":"DESKTOP_UPDATE_REQUIRED","message":"untrusted token or URL"}"#,
+        )]);
+        let mut api = test_api("https://auth.lomi.dev".into());
+        api.remote_origin = Some(origin);
+        assert_eq!(
+            api.remote_request(
+                "token",
+                reqwest::Method::GET,
+                "/v1/remote/native/session",
+                None
+            )
+            .await
+            .unwrap_err(),
+            HttpProblem::DesktopUpdateRequired
+        );
+        server.join().unwrap();
+        for (status, body) in [
+            (
+                StatusCode::UPGRADE_REQUIRED,
+                br#"{"error":"OTHER_ERROR"}"#.as_slice(),
+            ),
+            (
+                StatusCode::UPGRADE_REQUIRED,
+                br#"{"message":"DESKTOP_UPDATE_REQUIRED"}"#.as_slice(),
+            ),
+            (StatusCode::UPGRADE_REQUIRED, b"not json".as_slice()),
+            (
+                StatusCode::BAD_REQUEST,
+                br#"{"error":"DESKTOP_UPDATE_REQUIRED"}"#.as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                classify_http_error(status, body, None),
+                HttpProblem::Rejected
+            );
         }
     }
 

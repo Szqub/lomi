@@ -286,7 +286,7 @@ impl AuthController {
         if generation != core.generation || remote_binding(&core)? != binding {
             return Err("Account session changed.".into());
         }
-        let value = result.map_err(|_| "Remote authorization could not be confirmed.")?;
+        let value = result.map_err(remote_request_message)?;
         Ok((binding, value))
     }
 
@@ -1295,6 +1295,13 @@ fn desktop_start_message(problem: HttpProblem) -> &'static str {
     }
 }
 
+fn remote_request_message(problem: HttpProblem) -> &'static str {
+    match problem {
+        HttpProblem::DesktopUpdateRequired => "Update Lomi to share workspaces remotely.",
+        _ => "Remote authorization could not be confirmed.",
+    }
+}
+
 fn refresh_failure(problem: HttpProblem) -> (AuthStatus, &'static str) {
     match problem {
         HttpProblem::Transport | HttpProblem::Temporary | HttpProblem::RateLimited(_) => (
@@ -1964,6 +1971,18 @@ mod tests {
         assert_eq!(
             refresh_failure(HttpProblem::InvalidResponse).0,
             AuthStatus::Error
+        );
+    }
+
+    #[test]
+    fn remote_update_requirement_uses_a_fixed_sharing_message() {
+        assert_eq!(
+            remote_request_message(HttpProblem::DesktopUpdateRequired),
+            "Update Lomi to share workspaces remotely."
+        );
+        assert_eq!(
+            remote_request_message(HttpProblem::Unauthorized),
+            "Remote authorization could not be confirmed."
         );
     }
 
