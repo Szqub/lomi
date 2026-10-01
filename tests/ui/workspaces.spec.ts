@@ -672,8 +672,50 @@ test("right-click sharing starts all inactive terminals and stop sharing retains
   await page
     .getByRole("menuitem", { name: "Share remotely", exact: true })
     .click();
+  const sharing = page.getByRole("alertdialog", {
+    name: "Share workspace remotely?",
+  });
+  await expect(sharing).toHaveAccessibleDescription(
+    /Hidden.*view and control all terminals.*inactive tabs and new splits/,
+  );
+  await expect(sharing.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.screenshot({
+    path: testInfo.outputPath("start-remote-sharing-dialog.png"),
+  });
+  await sharing.getByRole("button", { name: "Cancel" }).click();
+  await expect(sharing).toHaveCount(0);
+  await expect(row).toBeFocused();
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Share remotely" }).click();
+  await expect(sharing).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sharing).toHaveCount(0);
+  expect(await starts()).toBe(1);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__nativeTest.calls.filter(
+        (call: any) => call.command === "remote_share_workspace",
+      ),
+    ),
+  ).toEqual([]);
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Share remotely" }).click();
+  await sharing.getByRole("button", { name: "Share remotely" }).click();
+  await expect(sharing).toHaveCount(0);
   await expect.poll(starts).toBe(4);
   await expect(row).toContainText("Shared remotely");
+  expect(
+    await page.evaluate(() =>
+      (window as any).__nativeTest.calls.filter(
+        (call: any) => call.command === "remote_share_workspace",
+      ),
+    ),
+  ).toEqual([
+    {
+      command: "remote_share_workspace",
+      args: { workspaceId: hidden.id, shared: true },
+    },
+  ]);
   const projection = await page.evaluate(
     () =>
       (window as any).__nativeTest.calls

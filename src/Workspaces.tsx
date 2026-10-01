@@ -1,6 +1,12 @@
 import type { RemoteState } from "./remote-workspaces";
 import ResourceIcon from "./ResourceIcon";
-import { useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   FileDiff,
   ChevronRight,
@@ -19,7 +25,7 @@ import { tabTitle } from "./model";
 import type { GitRepositoryScan } from "./api";
 import type { WorkspaceAppearance } from "./workspace-appearance";
 import ContextMenu from "./ContextMenu";
-import { IconButton } from "./ui";
+import { IconButton, Modal } from "./ui";
 import WorkspaceAvatar from "./WorkspaceAvatar";
 import WorkspaceAppearanceDialog from "./WorkspaceAppearanceDialog";
 import { getTerminalAgents, subscribeTerminalAgents } from "./terminal-runtime";
@@ -61,6 +67,7 @@ export default function Workspaces({
 }) {
   const [menu, setMenu] = useState<{ id: string; x: number; y: number }>();
   const [customizing, setCustomizing] = useState<Workspace>();
+  const [sharingId, setSharingId] = useState<string>();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const trigger = useRef<HTMLButtonElement>(null);
   const agents = useSyncExternalStore(
@@ -77,6 +84,16 @@ export default function Workspaces({
     projects
       .flatMap((project) => project.workspaces)
       .find((workspace) => workspace.id === menu.id);
+  const sharingWorkspace = projects
+    .flatMap((project) => project.workspaces)
+    .find((workspace) => workspace.id === sharingId);
+  const sharingActive = remote?.state?.workspaces.find(
+    (workspace) => workspace.id === sharingId,
+  )?.shared;
+  useEffect(() => {
+    if (sharingId && (!sharingWorkspace || sharingActive))
+      setSharingId(undefined);
+  }, [sharingId, sharingWorkspace, sharingActive]);
   const showMenu = (
     id: string,
     element: HTMLButtonElement,
@@ -373,13 +390,15 @@ export default function Workspaces({
                     ? "Stop sharing remotely"
                     : "Share remotely",
                   disabled: !!remote.busy,
-                  run: () =>
-                    void remote.share(
-                      workspace.id,
-                      !remote.state?.workspaces.find(
+                  run: () => {
+                    if (
+                      remote.state?.workspaces.find(
                         (w) => w.id === workspace.id,
-                      )?.shared,
-                    ),
+                      )?.shared
+                    )
+                      void remote.share(workspace.id, false);
+                    else setSharingId(workspace.id);
+                  },
                 }
               : null,
             {
@@ -406,6 +425,77 @@ export default function Workspaces({
           onClose={() => setCustomizing(undefined)}
         />
       )}
+      {sharingWorkspace && remote && !sharingActive && (
+        <StartRemoteSharingDialog
+          key={sharingWorkspace.id}
+          workspace={sharingWorkspace}
+          busy={!!remote.busy}
+          error={remote.error}
+          onConfirm={() => remote.share(sharingWorkspace.id, true)}
+          onClose={() => setSharingId(undefined)}
+        />
+      )}
     </div>
+  );
+}
+
+function StartRemoteSharingDialog({
+  workspace,
+  busy,
+  error,
+  onConfirm,
+  onClose,
+}: {
+  workspace: Workspace;
+  busy: boolean;
+  error: string;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const cancel = useRef<HTMLButtonElement>(null);
+  const descriptionId = useId();
+  const [attempted, setAttempted] = useState(false);
+  return (
+    <Modal
+      title="Share workspace remotely?"
+      role="alertdialog"
+      tone="warning"
+      protectTheme
+      descriptionId={descriptionId}
+      initialFocus={cancel}
+      closeDisabled={busy}
+      onClose={onClose}
+    >
+      <div className="dialog-form" aria-busy={busy}>
+        <p id={descriptionId}>
+          Share “{workspace.name}” remotely? Browsers signed in to your account
+          will be able to view and control all terminals in this workspace,
+          including inactive tabs and new splits.
+        </p>
+        {attempted && error && <p role="alert">{error}</p>}
+        <div className="dialog-actions">
+          <button
+            ref={cancel}
+            type="button"
+            className="button"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={busy}
+            onClick={() => {
+              setAttempted(true);
+              void onConfirm();
+            }}
+          >
+            {busy ? "Sharing…" : "Share remotely"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

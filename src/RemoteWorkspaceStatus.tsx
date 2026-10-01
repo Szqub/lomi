@@ -1,0 +1,90 @@
+import { useId, useRef, useState } from "react";
+import { Globe } from "./icons";
+import { Modal } from "./ui";
+
+export default function RemoteWorkspaceStatus({
+  workspace,
+  connectionMessage,
+  busy,
+  error,
+  stopSharing,
+}: {
+  workspace: { id: string; name: string };
+  connectionMessage: string;
+  busy: boolean;
+  error: string;
+  stopSharing: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const descriptionId = useId();
+  return (
+    <>
+      <div
+        className="remote-workspace-status"
+        title={`${workspace.name}: ${connectionMessage}`}
+      >
+        <span className="remote-workspace-status-label">
+          <Globe size={12} aria-hidden="true" />
+          Shared remotely
+        </span>
+        <button
+          type="button"
+          className="remote-workspace-stop"
+          aria-label="Stop sharing remotely"
+          aria-haspopup="dialog"
+          disabled={busy}
+          onClick={() => {
+            setAttempted(false);
+            setOpen(true);
+          }}
+        >
+          Stop sharing
+        </button>
+      </div>
+      {open && (
+        <Modal
+          title="Stop sharing remotely?"
+          role="alertdialog"
+          tone="warning"
+          protectTheme
+          descriptionId={descriptionId}
+          initialFocus={cancel}
+          closeDisabled={busy}
+          onClose={() => setOpen(false)}
+        >
+          <div className="dialog-form" aria-busy={busy}>
+            <p id={descriptionId}>
+              Stop sharing “{workspace.name}” remotely? Remote access will end.
+              Local terminals will keep running.
+            </p>
+            {attempted && error && <p role="alert">{error}</p>}
+            <div className="dialog-actions">
+              <button
+                ref={cancel}
+                type="button"
+                className="button"
+                disabled={busy}
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-primary button-danger"
+                disabled={busy}
+                onClick={() => {
+                  setAttempted(true);
+                  void stopSharing();
+                }}
+              >
+                {busy ? "Stopping…" : "Stop sharing"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}

@@ -1,4 +1,5 @@
 import { useRemoteWorkspaces } from "./remote-workspaces";
+import RemoteWorkspaceStatus from "./RemoteWorkspaceStatus";
 import { useAgentControlBridge } from "./agent-control";
 import AgentControlStartup from "./AgentControlStartup";
 import { useAgentChatApproval } from "./AgentChatApproval";
@@ -1857,6 +1858,9 @@ export default function Workbench() {
       </HostContext.Provider>
     );
   const { project, workspace, tab } = selected;
+  const remoteWorkspace = remoteWorkspaces.state?.workspaces.find(
+    (remote) => remote.id === workspace.id,
+  );
   const panel = activePanel(tab);
   const editorDocument =
     panel?.type === "file" ? loadedEditor(panel) : undefined;
@@ -2757,6 +2761,22 @@ export default function Workbench() {
             {pluginSidebarToggles}
             <Slot name="statusbar" />
             {cliIntegrations.bar}
+            {remoteWorkspace?.shared && (
+              <RemoteWorkspaceStatus
+                key={workspace.id}
+                workspace={workspace}
+                connectionMessage={
+                  remoteWorkspace.message ??
+                  remoteWorkspaces.state?.message ??
+                  (remoteWorkspace.online && remoteWorkspaces.state?.online
+                    ? "Remote access is online"
+                    : "Remote access is offline")
+                }
+                busy={!!remoteWorkspaces.busy}
+                error={remoteWorkspaces.error}
+                stopSharing={() => remoteWorkspaces.share(workspace.id, false)}
+              />
+            )}
             <span className="status-spacer" />
             {editorDocument && (
               <FileEditorStatus
