@@ -5,19 +5,28 @@ import { buffer, mockDesktop } from "./desktop";
 
 type Platform = "macos" | "linux" | "windows";
 
-async function setup(page: Page, platform: Platform, scale = 2, zoom = 1) {
+async function setup(
+  page: Page,
+  platform: Platform,
+  scale = 2,
+  zoom = 1,
+  layout: "horizontal" | "vertical" | "nested" = "nested",
+) {
   const project = newProject("/project", "local:bash");
   const tab = project.workspaces[0].tabs[0];
   if (tab.type !== "terminal") throw new Error("Expected terminal tab");
   const first = tab.activePaneId;
   const second = newPane("/project/second");
   const third = newPane("/project/third");
-  tab.layout = splitPane(
-    splitPane(tab.layout, first, "horizontal", second),
-    second.id,
-    "vertical",
-    third,
-  );
+  tab.layout =
+    layout === "nested"
+      ? splitPane(
+          splitPane(tab.layout, first, "horizontal", second),
+          second.id,
+          "vertical",
+          third,
+        )
+      : splitPane(tab.layout, first, layout, second);
   await mockDesktop(
     page,
     false,
@@ -37,7 +46,8 @@ async function setup(page: Page, platform: Platform, scale = 2, zoom = 1) {
     { platform, scale, zoom },
   );
   await page.goto("/");
-  const ids = [first, second.id, third.id];
+  const ids =
+    layout === "nested" ? [first, second.id, third.id] : [first, second.id];
   await expect(page.locator(".xterm-screen")).toHaveCount(ids.length);
   for (const id of ids)
     await expect.poll(() => buffer(page, id)).toContain("bash $ ");
@@ -178,4 +188,117 @@ test("Explorer pointer dragging reaches the third terminal on Retina", async ({
     .poll(async () => (await writes(page)).map((write: any) => write.id))
     .toEqual([await terminalSession(page, ids[2])]);
   await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+});
+
+async function paintedBorder(page: Page, target: Locator) {
+  const bounds = (await target.boundingBox())!;
+  const color = await target.evaluate(
+    (element) => getComputedStyle(element, "::after").borderTopColor,
+  );
+  const png = await target.screenshot();
+  return page.evaluate(
+    async ({ png, bounds, color }) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${png}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, image.width, image.height).data;
+      const rgb = color
+        .match(/[\d.]+/g)!
+        .slice(0, 3)
+        .map(Number);
+      const scaleX = image.width / bounds.width;
+      const scaleY = image.height / bounds.height;
+      // Search a narrow band along each edge, excluding corners and the centered
+      // overlay label. Count painted dash positions rather than configured borders.
+      const edges = ["left", "top", "right", "bottom"] as const;
+      return {
+        scaleX,
+        scaleY,
+        coverage: Object.fromEntries(
+          edges.map((edge) => {
+            const vertical = edge === "left" || edge === "right";
+            const length = vertical ? image.height : image.width;
+            const depth = Math.ceil(3 * (vertical ? scaleX : scaleY));
+            const start = Math.ceil(length * 0.2);
+            const end = Math.floor(length * 0.8);
+            let painted = 0;
+            for (let along = start; along < end; along++) {
+              for (let across = 0; across < depth; across++) {
+                const x = vertical
+                  ? edge === "left"
+                    ? across
+                    : image.width - 1 - across
+                  : along;
+                const y = vertical
+                  ? along
+                  : edge === "top"
+                    ? across
+                    : image.height - 1 - across;
+                const index = (y * image.width + x) * 4;
+                if (
+                  rgb.every(
+                    (value, channel) =>
+                      Math.abs(pixels[index + channel] - value) < 30,
+                  )
+                ) {
+                  painted++;
+                  break;
+                }
+              }
+            }
+            return [edge, painted / (end - start)];
+          }),
+        ),
+      };
+    },
+    { png: png.toString("base64"), bounds, color },
+  );
+}
+
+test.describe("file-drop borders at Retina resolution", () => {
+  test.use({ deviceScaleFactor: 2 });
+  for (const colorScheme of ["light", "dark"] as const) {
+    for (const layout of ["horizontal", "vertical", "nested"] as const) {
+      test(`${colorScheme} paints every target edge in ${layout} splits`, async ({
+        page,
+      }, testInfo) => {
+        await page.emulateMedia({ colorScheme });
+        const ids = await setup(page, "macos", 2, 1, layout);
+        for (const [index, id] of ids.entries()) {
+          const target = page.locator(`[data-pane-id="${id}"]`);
+          await drag(page, index ? "over" : "enter", target);
+          await expect(target).toHaveClass(/drop-target/);
+          const border = await paintedBorder(page, target);
+          expect(border.scaleX).toBeGreaterThan(1.9);
+          expect(border.scaleY).toBeGreaterThan(1.9);
+          for (const [edge, coverage] of Object.entries(border.coverage)) {
+            expect
+              .soft(
+                coverage,
+                `${layout} pane ${index + 1} ${edge} dashed border coverage`,
+              )
+              .toBeGreaterThan(0.2);
+          }
+          if (index === ids.length - 1)
+            await page.screenshot({
+              path: testInfo.outputPath(
+                `drop-border-${layout}-${colorScheme}.png`,
+              ),
+            });
+        }
+        await drag(
+          page,
+          "leave",
+          page.locator(`[data-pane-id="${ids.at(-1)}"]`),
+        );
+        await expect(page.locator(".drop-target")).toHaveCount(0);
+        expect(await writes(page)).toEqual([]);
+      });
+    }
+  }
 });

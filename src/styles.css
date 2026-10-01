@@ -2192,7 +2192,7 @@ svg {
   content: "Drop to paste paths";
   pointer-events: none;
   position: absolute;
-  inset: 0;
+  inset: var(--border-width);
   z-index: 20;
   display: grid;
   place-items: center;
