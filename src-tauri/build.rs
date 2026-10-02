@@ -1,9 +1,19 @@
 fn main() {
-    assert!(
-        !(std::env::var_os("CARGO_FEATURE_MCP_PROBE").is_some()
-            && std::env::var("PROFILE").as_deref() == Ok("release")),
-        "The mcp-probe qualification fixture must not enter a release build"
-    );
+    for feature in [
+        "NATIVE_SMOKE",
+        "CHAT_PROBE",
+        "ANDROID_PROBE",
+        "REMOTE_PROBE",
+        "MCP_PROBE",
+    ] {
+        let variable = format!("CARGO_FEATURE_{feature}");
+        println!("cargo:rerun-if-env-changed={variable}");
+        assert!(
+            !(std::env::var_os(&variable).is_some()
+                && std::env::var("PROFILE").as_deref() == Ok("release")),
+            "Qualification feature {feature} must not enter a release build"
+        );
+    }
     println!("cargo:rerun-if-changed=../packages/ai-runtime");
     println!("cargo:rerun-if-changed=../src/chat/provider-presets.ts");
     println!("cargo:rerun-if-changed=../scripts/prepare-ai-runtime.mjs");

@@ -1,5 +1,14 @@
-#[cfg(all(feature = "remote-probe", not(debug_assertions)))]
-compile_error!("Remote qualification probes must not enter release builds");
+#[cfg(all(
+    any(
+        feature = "native-smoke",
+        feature = "chat-probe",
+        feature = "android-probe",
+        feature = "remote-probe",
+        feature = "mcp-probe"
+    ),
+    not(debug_assertions)
+))]
+compile_error!("Qualification probes must not enter release builds");
 mod agent_control;
 mod agent_notifications;
 mod android;
