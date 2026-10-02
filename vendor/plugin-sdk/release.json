@@ -1,11 +1,13 @@
 {
   "schemaVersion": 1,
   "name": "@lomi-dev/plugin-sdk",
-  "version": "1.1.0-alpha.1",
-  "file": "lomi-dev-plugin-sdk-1.1.0-alpha.1.tgz",
-  "sourceRepository": "https://github.com/lomi-dev/plugin-sdk",
-  "sourceCommit": "01070882e3112dc7035cd0baea54303f3c64b966",
-  "sha256": "8e599ba1626c20283da8c8b5faec9e4110fb5a3c8600439fbc465827644010af",
-  "integrity": "sha512-IiEk6x5TzuGAUcjaAb7GINdgijpTGxPXtjDw80o/lV4TGPUMlYw0BNlU7WEA2i8ezVTGPtbNpvCyxMYPZksipw==",
-  "bytes": 19528
+  "version": "1.1.0-alpha.2",
+  "file": "lomi-dev-plugin-sdk-1.1.0-alpha.2.tgz",
+  "sha256": "2b58fc2b68f0a6ee342f2e2573a6f3004fc7b5b35f5a250a79955d8403811714",
+  "integrity": "sha512-qjGEqUQdlqiUyUrOplshdgaVavBhiFi6faJ0+5FY7M+l83Qpwrsx4C0A8g4VgcZuRgUcv1uhnb3wHECBtLfM8g==",
+  "bytes": 20444,
+  "sourceCommit": "5f1f2fe779bfdfd70a6abde6e4442c15787d044c",
+  "sourceDirty": true,
+  "buildHelperSHA256": "3e3f9ac742cc064fa7326d57201474144ff2e59d0d0e4053a73cf8303249c908",
+  "sourceRepository": "https://github.com/lomi-dev/plugin-sdk"
 }

@@ -61,10 +61,24 @@ if (bundled) {
   const archive = await readFile(resolve(root, spec.slice(5)));
   assert.equal(release.name, metadata.name);
   assert.equal(release.version, metadata.version);
+  assert.equal(release.file, spec.slice(spec.lastIndexOf("/") + 1));
+  assert.equal(release.bytes, archive.length);
+  assert.equal(
+    release.sha256,
+    createHash("sha256").update(archive).digest("hex"),
+  );
   assert.equal(
     release.integrity,
     `sha512-${createHash("sha512").update(archive).digest("base64")}`,
     "The bundled SDK archive differs from its recorded release integrity.",
+  );
+  const helper = await readFile(
+    new URL(import.meta.resolve("@lomi-dev/plugin-sdk/build")),
+  );
+  assert.equal(
+    release.buildHelperSHA256,
+    createHash("sha256").update(helper).digest("hex"),
+    "The installed build helper differs from the qualified SDK helper.",
   );
 }
 assert.ok(

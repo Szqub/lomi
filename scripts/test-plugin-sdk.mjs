@@ -37,6 +37,17 @@ metadata.dependencies["@lomi-dev/plugin-sdk"] = await pluginSDKSpec(
 );
 await writeFile(path, JSON.stringify(metadata, null, 2));
 run(["install", "--ignore-scripts"], project);
+await cp(
+  join(root, "tests/plugin-sdk-build-safety.mjs"),
+  join(project, "installed-sdk-build-safety.mjs"),
+);
+const safety = spawnSync(
+  process.execPath,
+  ["--test", "installed-sdk-build-safety.mjs"],
+  { cwd: project, env, encoding: "utf8", timeout: 180000 },
+);
+if (safety.status !== 0) throw new Error(safety.stdout + safety.stderr);
+console.log(safety.stdout);
 run(["exec", "tsc", "--noEmit"], project);
 run(["build"], project);
 await writeFile(
