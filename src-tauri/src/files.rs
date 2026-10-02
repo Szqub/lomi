@@ -15,6 +15,7 @@ pub mod editor;
 pub mod images;
 pub mod markdown;
 pub mod operations;
+pub(crate) mod resolved;
 pub mod search;
 pub mod watch;
 
@@ -126,25 +127,32 @@ pub async fn preview_file(
     main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let path = inside(&root, &relative)?;
-        if !path.is_file() {
-            return Err("Only regular files can be previewed.".into());
-        }
-        let mut bytes = Vec::new();
-        fs::File::open(path)
-            .map_err(|error| error.to_string())?
-            .take(1_048_577)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() > 1_048_576 {
-            return Err("This file is larger than the 1 MiB preview limit.".into());
-        }
-        if bytes.contains(&0) {
-            return Err("Binary files cannot be previewed as text.".into());
-        }
-        String::from_utf8(bytes).map_err(|_| "This file is not UTF-8 text.".into())
+        preview_resolved(&path)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn preview_resolved(path: &Path) -> Result<String, String> {
+    let file = resolved::open_resolved_file(path).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Only regular files can be previewed.".into());
+    }
+    if metadata.len() > 1_048_576 {
+        return Err("This file is larger than the 1 MiB preview limit.".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(1_048_577)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 1_048_576 {
+        return Err("This file is larger than the 1 MiB preview limit.".into());
+    }
+    if bytes.contains(&0) {
+        return Err("Binary files cannot be previewed as text.".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "This file is not UTF-8 text.".into())
 }
 
 fn session_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {

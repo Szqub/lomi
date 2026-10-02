@@ -91,60 +91,6 @@ fn revision(bytes: &[u8]) -> String {
 }
 
 #[cfg(unix)]
-fn open_resolved_file(path: &Path) -> Result<fs::File, EditorError> {
-    use std::{
-        ffi::CString,
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::ffi::OsStrExt,
-        },
-        path::Component,
-    };
-    if !path.is_absolute() || path.components().count() > 128 {
-        return Err(EditorError::new(
-            "conflict",
-            "The resolved file path is unavailable.",
-        ));
-    }
-    // Resolve has already checked containment and intentionally followed any
-    // user-selected aliases. Reopen that canonical result without following a
-    // replacement link at any component, including the final file.
-    let mut current = fs::File::open("/").map_err(EditorError::io)?;
-    let mut components = path.components().peekable();
-    while let Some(component) = components.next() {
-        let name = match component {
-            Component::RootDir => continue,
-            Component::Normal(name) => name,
-            _ => {
-                return Err(EditorError::new(
-                    "conflict",
-                    "The resolved file path changed.",
-                ))
-            }
-        };
-        let name = CString::new(name.as_bytes()).map_err(EditorError::io)?;
-        let flags = libc::O_RDONLY
-            | libc::O_NOFOLLOW
-            | libc::O_CLOEXEC
-            | libc::O_NONBLOCK
-            | if components.peek().is_some() {
-                libc::O_DIRECTORY
-            } else {
-                0
-            };
-        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(EditorError::io(std::io::Error::last_os_error()));
-        }
-        current = unsafe { fs::File::from_raw_fd(fd) };
-    }
-    Ok(current)
-}
-#[cfg(not(unix))]
-fn open_resolved_file(path: &Path) -> Result<fs::File, EditorError> {
-    fs::File::open(path).map_err(EditorError::io)
-}
-#[cfg(unix)]
 fn same_file_version(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     a.is_file()
@@ -157,7 +103,7 @@ fn same_file_version(a: &fs::Metadata, b: &fs::Metadata) -> bool {
             == (b.mtime(), b.mtime_nsec(), b.ctime(), b.ctime_nsec())
 }
 fn read_bytes(path: &Path) -> Result<(Vec<u8>, fs::Metadata), EditorError> {
-    let mut file = open_resolved_file(path)?;
+    let mut file = super::resolved::open_resolved_file(path).map_err(EditorError::io)?;
     let metadata = file.metadata().map_err(EditorError::io)?;
     if !metadata.is_file() {
         return Err(EditorError::new(
@@ -185,7 +131,8 @@ fn read_bytes(path: &Path) -> Result<(Vec<u8>, fs::Metadata), EditorError> {
     #[cfg(unix)]
     {
         let after = file.metadata().map_err(EditorError::io)?;
-        let named = open_resolved_file(path)?
+        let named = super::resolved::open_resolved_file(path)
+            .map_err(EditorError::io)?
             .metadata()
             .map_err(EditorError::io)?;
         if !same_file_version(&metadata, &after) || !same_file_version(&metadata, &named) {

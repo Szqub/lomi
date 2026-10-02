@@ -1,6 +1,5 @@
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{
-    fs,
     io::{Cursor, Read},
     sync::Mutex,
 };
@@ -56,20 +55,24 @@ fn convert(bytes: Vec<u8>, format: ImageFormat) -> Result<Vec<u8>, String> {
 fn read(root: &str, relative: &str) -> Result<Vec<u8>, String> {
     let _guard = READ_LOCK.lock().map_err(|error| error.to_string())?;
     let path = super::inside(root, relative)?;
+    read_resolved(&path)
+}
+
+pub(super) fn read_resolved(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
     let format = converted_format(&extension)?;
-    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let file = super::resolved::open_resolved_file(path).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
     if !metadata.is_file() {
         return Err("Only regular image files can be opened.".into());
     }
     if metadata.len() > FILE_LIMIT {
         return Err("This image exceeds the 32 MiB preview limit.".into());
     }
-    let file = fs::File::open(path).map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     file.take(FILE_LIMIT + 1)
         .read_to_end(&mut bytes)
@@ -99,6 +102,7 @@ pub async fn read_image_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn reads_images_without_changing_their_bytes() {

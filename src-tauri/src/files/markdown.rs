@@ -1,10 +1,14 @@
-use std::{fs, io::Read};
+use std::io::Read;
 use tauri::{ipc::Response, Window};
 
 const IMAGE_LIMIT: u64 = 16 * 1024 * 1024;
 
 fn read_image(root: &str, relative: &str) -> Result<Vec<u8>, String> {
     let path = super::inside(root, relative)?;
+    read_resolved(&path)
+}
+
+pub(super) fn read_resolved(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -16,11 +20,11 @@ fn read_image(root: &str, relative: &str) -> Result<Vec<u8>, String> {
     ) {
         return Err("Only image files can be shown in Markdown previews.".into());
     }
-    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let file = super::resolved::open_resolved_file(path).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
     if !metadata.is_file() || metadata.len() > IMAGE_LIMIT {
         return Err("Markdown images must be regular files no larger than 16 MiB.".into());
     }
-    let file = fs::File::open(path).map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     file.take(IMAGE_LIMIT + 1)
         .read_to_end(&mut bytes)
@@ -46,6 +50,7 @@ pub async fn read_markdown_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn images_stay_inside_the_project_and_are_bounded() {
