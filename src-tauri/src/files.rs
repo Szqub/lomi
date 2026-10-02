@@ -295,6 +295,14 @@ pub fn write_json(path: &Path, data: &impl Serialize, limit: usize) -> Result<()
             limit / 1024
         ));
     }
+    #[cfg(windows)]
+    let _write_guard = {
+        // Serialize ACL updates and atomic replacements for app-owned settings.
+        static JSON_WRITES: Mutex<()> = Mutex::new(());
+        JSON_WRITES
+            .lock()
+            .map_err(|_| "Cannot serialize application settings updates.")?
+    };
     use crate::chat::storage::{private, reject_link};
     use std::io::Write;
     let parent = path.parent().ok_or("Invalid settings path.")?;
@@ -356,6 +364,35 @@ mod tests {
             "preserve"
         );
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn json_write_preserves_locked_destination_and_succeeds_after_release() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let first = serde_json::json!({"setting": "previous"});
+        let replacement = serde_json::json!({"setting": "new"});
+        write_json(&path, &first, 1024).unwrap();
+        let previous = fs::read(&path).unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+        assert!(write_json(&path, &replacement, 1024).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        drop(held);
+        write_json(&path, &replacement, 1024).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+            replacement
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]
