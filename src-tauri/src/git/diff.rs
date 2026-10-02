@@ -1,4 +1,5 @@
 use super::{
+    checked,
     history::{limit_patch, patch_bytes, CommitDiff, PATCH_LIMIT},
     relative, status,
 };
@@ -36,6 +37,7 @@ pub(super) fn read(root: &str, path: &str, staged: bool) -> Result<FileDiff, Str
             "--patch",
             "--no-ext-diff",
             "--no-textconv",
+            "--ignore-submodules=dirty",
             "--no-color",
             "--find-renames",
             "--unified=2147483647",
@@ -80,6 +82,26 @@ pub(super) fn read(root: &str, path: &str, staged: bool) -> Result<FileDiff, Str
             return Ok(FileDiff {
                 diff: limit_patch(&[]),
                 notice: Some("This empty file was deleted.".into()),
+            });
+        }
+        let index = checked(
+            root,
+            &[
+                "--literal-pathspecs",
+                "ls-files",
+                "--stage",
+                "-z",
+                "--",
+                path,
+            ],
+        )?;
+        if index
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"160000 "))
+        {
+            return Ok(FileDiff {
+                diff: limit_patch(&[]),
+                notice: Some("Submodule: open its repository to compare its working files. Gitlink changes are shown when its checked-out commit changes.".into()),
             });
         }
         notice = Some(if bytes.is_empty() {
@@ -148,8 +170,8 @@ pub(super) fn read(root: &str, path: &str, staged: bool) -> Result<FileDiff, Str
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_checked as checked;
     use super::*;
-    use crate::git::checked;
 
     fn repository() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();

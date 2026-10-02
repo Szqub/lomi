@@ -1,20 +1,22 @@
 use crate::files::{directory, main_window};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
-    process::{Command, Output},
+    process::{Child, Command, Output, Stdio},
     sync::{Mutex, OnceLock},
 };
 use tauri::Window;
 
 mod diff;
 pub mod history;
+mod observation;
 #[cfg(test)]
 mod regression;
 
-fn configured_command(root: &Path, args: &[&str]) -> Command {
+fn mutation_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -31,10 +33,89 @@ fn configured_command(root: &Path, args: &[&str]) -> Command {
     command
 }
 
-fn command(root: &Path, args: &[&str]) -> Result<Output, String> {
-    configured_command(root, args)
+// Configuration overrides are defense in depth. The platform process policy
+// enforces helper isolation without enumerating mutable repository config.
+fn configured_command(root: &Path, args: &[&str]) -> Result<Command, String> {
+    let mut command = observation::configured()?;
+    command
+        .args([
+            "--no-pager",
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.preloadIndex=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "index.threads=1",
+            "-c",
+            "pack.threads=1",
+            "-c",
+            "diff.submodule=short",
+        ])
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root)
+        .env("LC_ALL", "C")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_SYSTEM", observation::null_device())
+        .env("GIT_CONFIG_GLOBAL", observation::null_device())
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Git for Windows needs its native loader and executable search environment.
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR", "PATH"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    Ok(command)
+}
+
+fn spawn_observation(root: &Path, args: &[&str]) -> Result<(Child, observation::Guard), String> {
+    observation::spawn(&mut configured_command(root, args)?)
+        .map_err(|error| format!("Cannot safely observe Git: {error}"))
+}
+
+fn spawn_observation_with_stdin(
+    root: &Path,
+    args: &[&str],
+) -> Result<(Child, observation::Guard), String> {
+    let mut command = configured_command(root, args)?;
+    command.stdin(Stdio::piped());
+    observation::spawn(&mut command).map_err(|error| format!("Cannot safely observe Git: {error}"))
+}
+
+#[cfg(test)]
+pub(crate) fn test_checked(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = mutation_command(root, args)
         .output()
-        .map_err(|error| format!("Cannot run Git: {error}"))
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(output.stdout)
+}
+
+fn command(root: &Path, args: &[&str]) -> Result<Output, String> {
+    let (child, _guard) = spawn_observation(root, args)?;
+    child
+        .wait_with_output()
+        .map_err(|error| format!("Cannot read Git: {error}"))
 }
 
 pub(crate) fn checked(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -88,7 +169,27 @@ fn parse_status(bytes: &[u8]) -> Vec<Change> {
     changes
 }
 
+#[derive(Default)]
+struct StatusBudget {
+    visited: HashSet<PathBuf>,
+    entries: usize,
+}
+
 pub fn status(path: &str) -> Result<Option<GitStatus>, String> {
+    observed_status(path, &mut StatusBudget::default(), 0, true)
+}
+
+fn observed_status(
+    path: &str,
+    budget: &mut StatusBudget,
+    depth: usize,
+    include_untracked: bool,
+) -> Result<Option<GitStatus>, String> {
+    if depth > 8 || budget.visited.len() >= 64 {
+        return Err(
+            "Safe Git submodule observation exceeded its depth or repository limit.".into(),
+        );
+    }
     let directory = directory(path)?;
     let probe = command(&directory, &["rev-parse", "--show-toplevel"])?;
     if !probe.status.success() {
@@ -100,6 +201,10 @@ pub fn status(path: &str) -> Result<Option<GitStatus>, String> {
     }
     let root = String::from_utf8_lossy(&probe.stdout).trim().to_string();
     let root_path = Path::new(&root);
+    let canonical = fs::canonicalize(root_path).map_err(|error| error.to_string())?;
+    if !budget.visited.insert(canonical.clone()) {
+        return Err("A Git submodule points to an already observed repository.".into());
+    }
     let branch = command(root_path, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
     let branch = if branch.status.success() {
         String::from_utf8_lossy(&branch.stdout).trim().to_owned()
@@ -108,15 +213,239 @@ pub fn status(path: &str) -> Result<Option<GitStatus>, String> {
             .trim()
             .to_owned()
     };
-    let changes = parse_status(&checked(
+    let mut changes = parse_status(&checked(
         root_path,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            if include_untracked {
+                "--untracked-files=all"
+            } else {
+                "--untracked-files=no"
+            },
+            "--ignore-submodules=dirty",
+        ],
     )?);
+    observe_submodules(&canonical, &mut changes, budget, depth, include_untracked)?;
     Ok(Some(GitStatus {
         root,
         branch,
         changes,
     }))
+}
+
+fn submodule_configuration_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    const LIMIT: u64 = 1024 * 1024;
+    let file = match crate::files::resolved::open_resolved_file(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot safely read .gitmodules: {error}")),
+    };
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return Err(
+            "The .gitmodules configuration must be a regular file no larger than 1 MiB.".into(),
+        );
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("The .gitmodules configuration exceeds its 1 MiB input limit.".into());
+    }
+    Ok(Some(bytes))
+}
+
+fn submodule_ignore_modes(root: &Path) -> Result<HashMap<String, String>, String> {
+    let Some(bytes) = submodule_configuration_file(&root.join(".gitmodules"))? else {
+        return Ok(HashMap::new());
+    };
+    submodule_ignore_modes_from_bytes(root, bytes)
+}
+
+fn submodule_ignore_modes_from_bytes(
+    root: &Path,
+    module_bytes: Vec<u8>,
+) -> Result<HashMap<String, String>, String> {
+    const CONFIG_LIMIT: usize = 1024 * 1024;
+    let read = |args: &[&str], input: Option<Vec<u8>>| -> Result<HashMap<String, String>, String> {
+        let bytes = match input {
+            Some(input) => history::bounded_bytes_with_input(root, args, CONFIG_LIMIT, input)?,
+            None => history::bounded_bytes(root, args, CONFIG_LIMIT)?,
+        };
+        if bytes.len() > CONFIG_LIMIT {
+            return Err("Safe Git submodule configuration exceeded its output limit.".into());
+        }
+        let mut values = HashMap::new();
+        for entry in bytes
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+        {
+            let separator = entry
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .unwrap_or(entry.len());
+            if !entry[..separator].starts_with(b"submodule.") {
+                continue;
+            }
+            let key = std::str::from_utf8(&entry[..separator])
+                .map_err(|_| "Invalid Git submodule configuration key.")?;
+            if !key.starts_with("submodule.")
+                || !(key.ends_with(".path") || key.ends_with(".ignore"))
+            {
+                continue;
+            }
+            let value = std::str::from_utf8(entry.get(separator + 1..).unwrap_or(b"true"))
+                .map_err(|_| "Invalid Git submodule configuration value.")?;
+            values.insert(key.to_owned(), value.to_owned());
+        }
+        Ok(values)
+    };
+    // Git parses only the validated descriptor snapshot, never reopens the
+    // .gitmodules pathname after the no-follow/nonblocking regular-file check.
+    let modules = read(
+        &["config", "--null", "--file", "-", "--no-includes", "--list"],
+        Some(module_bytes),
+    )?;
+    // The isolated command sees effective repository/worktree configuration;
+    // local ignore settings take precedence over the .gitmodules defaults.
+    let local = read(&["config", "--null", "--list"], None)?;
+    let mut modes = HashMap::new();
+    for (key, path) in &modules {
+        let Some(name) = key
+            .strip_prefix("submodule.")
+            .and_then(|key| key.strip_suffix(".path"))
+        else {
+            continue;
+        };
+        relative(path)?;
+        let key = format!("submodule.{name}.ignore");
+        let mode = local
+            .get(&key)
+            .or_else(|| modules.get(&key))
+            .map(String::as_str)
+            .unwrap_or("none");
+        if !matches!(mode, "none" | "untracked" | "dirty" | "all") {
+            return Err("Invalid Git submodule ignore setting.".into());
+        }
+        modes.insert(path.clone(), mode.to_owned());
+    }
+    Ok(modes)
+}
+
+fn observe_submodules(
+    root: &Path,
+    changes: &mut Vec<Change>,
+    budget: &mut StatusBudget,
+    depth: usize,
+    include_untracked: bool,
+) -> Result<(), String> {
+    // Let Git report gitlink HEAD/index changes without spawning its own nested
+    // status processes. Observe initialized submodules through the same guarded
+    // launcher and aggregate their dirty/untracked state into porcelain-v1 M.
+    const INDEX_LIMIT: usize = 64 * 1024 * 1024;
+    let index = history::bounded_bytes(root, &["ls-files", "--stage", "-z"], INDEX_LIMIT)?;
+    if index.len() > INDEX_LIMIT {
+        return Err("Safe Git submodule observation exceeded its index output limit.".into());
+    }
+    if !index
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.starts_with(b"160000 "))
+    {
+        return Ok(());
+    }
+    let ignore_modes = submodule_ignore_modes(root)?;
+    let mut seen = HashSet::new();
+    for entry in index
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        if !entry.starts_with(b"160000 ") {
+            continue;
+        }
+        budget.entries += 1;
+        if budget.entries > 100_000 {
+            return Err("Safe Git submodule observation exceeded its gitlink entry limit.".into());
+        }
+        let separator = entry
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or("Invalid Git submodule index entry.")?;
+        let path = &entry[separator + 1..];
+        let path =
+            std::str::from_utf8(path).map_err(|_| "This Git submodule path is not UTF-8.")?;
+        relative(path)?;
+        if !seen.insert(path) {
+            continue;
+        }
+        let ignore = ignore_modes.get(path).map(String::as_str).unwrap_or("none");
+        if ignore == "all" {
+            // Configured ignore=all hides worktree/gitlink HEAD changes, but
+            // explicitly staged changes and merge conflicts remain visible.
+            changes.retain_mut(|change| {
+                if change.path != path {
+                    return true;
+                }
+                if change.index == ' ' {
+                    return false;
+                }
+                let conflict = change.index == 'U'
+                    || change.worktree == 'U'
+                    || matches!((change.index, change.worktree), ('A', 'A') | ('D', 'D'));
+                if !conflict {
+                    change.worktree = ' ';
+                }
+                true
+            });
+            continue;
+        }
+        if ignore == "dirty" {
+            continue;
+        }
+        let candidate = root.join(path);
+        // Missing .git means an uninitialized/deleted submodule. The root
+        // porcelain result already reports a deleted gitlink where appropriate.
+        match fs::symlink_metadata(candidate.join(".git")) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+        let canonical = fs::canonicalize(&candidate).map_err(|error| error.to_string())?;
+        if canonical == root || !canonical.starts_with(root) {
+            return Err("This Git submodule points outside its containing repository.".into());
+        }
+        let child = observed_status(
+            canonical
+                .to_str()
+                .ok_or("This Git submodule path is not UTF-8.")?,
+            budget,
+            depth + 1,
+            include_untracked && ignore != "untracked",
+        )?
+        .ok_or("An initialized Git submodule is no longer a repository.")?;
+        if fs::canonicalize(&child.root).map_err(|error| error.to_string())? != canonical {
+            return Err("The Git submodule changed while observing its status.".into());
+        }
+        if child.changes.is_empty() {
+            continue;
+        }
+        if let Some(change) = changes.iter_mut().find(|change| change.path == path) {
+            if change.worktree == ' ' {
+                change.worktree = 'M';
+            }
+        } else {
+            changes.push(Change {
+                path: path.into(),
+                original_path: None,
+                index: ' ',
+                worktree: 'M',
+            });
+        }
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(())
 }
 
 #[tauri::command]
@@ -346,12 +675,18 @@ fn exact_status(root: &str) -> Result<GitStatus, String> {
 }
 
 pub(crate) fn repository(root: &str) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(exact_status(root)?.root))
+    let expected = directory(root)?;
+    let found = checked(&expected, &["rev-parse", "--show-toplevel"])?;
+    let found = String::from_utf8_lossy(&found);
+    if directory(found.trim())? != expected {
+        return Err("The Git repository changed. Refresh Source Control and try again.".into());
+    }
+    Ok(expected)
 }
 
 // Prevent Git's parent discovery even if .git disappears after validation.
 pub(crate) fn checked_repository(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut command = configured_command(root, args);
+    let mut command = mutation_command(root, args);
     if let Some(parent) = root.parent() {
         command.env(
             "GIT_CEILING_DIRECTORIES",
@@ -535,6 +870,7 @@ pub async fn git_commit(window: Window, root: String, message: String) -> Result
 
 #[cfg(test)]
 mod tests {
+    use super::test_checked as checked;
     use super::*;
 
     fn test_repository() -> tempfile::TempDir {

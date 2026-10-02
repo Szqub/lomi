@@ -507,10 +507,10 @@ mod tests {
     #[test]
     fn ignore_rejects_a_missing_nested_repository_without_writing_to_its_parent() {
         let parent = tempfile::tempdir().unwrap();
-        crate::git::checked(parent.path(), &["init", "-b", "main"]).unwrap();
+        crate::git::test_checked(parent.path(), &["init", "-b", "main"]).unwrap();
         let child = parent.path().join("child");
         fs::create_dir(&child).unwrap();
-        crate::git::checked(&child, &["init", "-b", "main"]).unwrap();
+        crate::git::test_checked(&child, &["init", "-b", "main"]).unwrap();
         fs::write(child.join("file.txt"), "keep").unwrap();
         fs::remove_dir_all(child.join(".git")).unwrap();
         assert!(ignore_item(child.to_str().unwrap(), "file.txt", false).is_err());
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn ignore_rules_are_literal_and_preserve_existing_contents() {
         let root = tempfile::tempdir().unwrap();
-        crate::git::checked(root.path(), &["init"]).unwrap();
+        crate::git::test_checked(root.path(), &["init"]).unwrap();
         let path = root.path().to_str().unwrap();
         #[cfg(not(windows))]
         let filename = "odd [x]* #.txt";

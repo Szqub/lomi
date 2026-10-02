@@ -1,11 +1,10 @@
-use super::{checked, configured_command, relative};
+use super::{checked, relative, spawn_observation, spawn_observation_with_stdin};
 use crate::files::{directory, main_window};
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
-    process::Stdio,
     thread,
 };
 use tauri::Window;
@@ -317,11 +316,37 @@ pub(super) fn limit_patch(bytes: &[u8]) -> CommitDiff {
 }
 
 pub(super) fn patch_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut child = configured_command(root, args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Cannot run Git: {error}"))?;
+    bounded_bytes(root, args, PATCH_LIMIT)
+}
+
+pub(super) fn bounded_bytes(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8>, String> {
+    bounded_bytes_inner(root, args, limit, None)
+}
+
+pub(super) fn bounded_bytes_with_input(
+    root: &Path,
+    args: &[&str],
+    limit: usize,
+    input: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    bounded_bytes_inner(root, args, limit, Some(input))
+}
+
+fn bounded_bytes_inner(
+    root: &Path,
+    args: &[&str],
+    limit: usize,
+    input: Option<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    let (mut child, _guard) = if input.is_some() {
+        spawn_observation_with_stdin(root, args)?
+    } else {
+        spawn_observation(root, args)?
+    };
+    let input = input.map(|bytes| {
+        let mut stdin = child.stdin.take().expect("piped Git stdin");
+        thread::spawn(move || stdin.write_all(&bytes))
+    });
     let mut stderr = child.stderr.take().expect("piped Git stderr");
     let errors = thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -334,18 +359,27 @@ pub(super) fn patch_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String>
         .stdout
         .take()
         .expect("piped Git stdout")
-        .take((PATCH_LIMIT + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut bytes);
-    let truncated = bytes.len() > PATCH_LIMIT;
+    let truncated = bytes.len() > limit;
     if truncated || read.is_err() {
         let _ = child.kill();
     }
     let status = child.wait();
     let stderr = errors.join().unwrap_or_default();
+    let input = input.map(|writer| {
+        writer
+            .join()
+            .map_err(|_| "Cannot finish Git input.".to_string())
+            .and_then(|result| result.map_err(|error| format!("Cannot write Git input: {error}")))
+    });
     read.map_err(|error| format!("Cannot read Git content: {error}"))?;
     let status = status.map_err(|error| error.to_string())?;
     if !truncated && !status.success() {
         return Err(format!("Cannot read Git content: {}", text(&stderr).trim()));
+    }
+    if !truncated {
+        input.transpose()?;
     }
     Ok(bytes)
 }
@@ -396,6 +430,7 @@ pub async fn git_commit_diff(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_checked as checked;
     use super::*;
 
     fn repository() -> tempfile::TempDir {
