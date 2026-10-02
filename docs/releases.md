@@ -12,7 +12,17 @@ did not exist when this workflow was prepared on 2026-09-11.
 named **publish** and starts when a version tag matching `v*` is pushed.
 Branch pushes and pull requests do not start a workflow, and **publish** has no
 manual dispatch trigger. Create release tags using the `vX.Y.Z` format below.
-The workflow follows Simple Voice's `publish-tauri` matrix:
+The workflow first runs a required `security-regressions` job on Ubuntu against
+the tag's exact commit. It has read-only repository permissions and no signing
+secrets. Frozen dependency installation, SDK archive/helper digest checks,
+installed-archive build safety tests, frontend checks/tests, JSON persistence,
+IPC authentication, project containment, broker revocation and crypto tests must
+pass before the `publish-tauri` matrix starts. Empty Rust test selections fail
+the gate. Run its native suites locally with
+`node scripts/security-regressions.mjs`, and SDK checks with
+`pnpm sdk:verify && pnpm sdk:test:consumer`.
+
+After the security gate, the workflow follows the `publish-tauri` matrix:
 
 1. Start four parallel jobs on `macos-latest` (Apple Silicon), `macos-15-intel`,
    `ubuntu-22.04`, and `windows-latest`.
@@ -33,9 +43,9 @@ The workflow follows Simple Voice's `publish-tauri` matrix:
 
 The release stays a draft if a platform fails or updater metadata is incomplete.
 The previous stable release remains the updater endpoint until publication.
-GitHub Actions only builds and distributes the application; test suites,
-formatting checks and Clippy run locally. TypeScript checking remains part of
-the frontend build, and release metadata and signatures are verified before
+GitHub Actions runs the required security gate before building and distributing
+the application. Formatting checks, Clippy and native platform qualification
+also run locally. Release metadata and signatures are verified before
 publication. Run the relevant local checks before tagging, as described in the
 [development guide](../README.md#validation-and-builds).
 
