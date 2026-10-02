@@ -1,3 +1,4 @@
 # build.rs stages these generated files; watching them causes a rebuild loop.
 /binaries/
 /resources/ai-runtime/
+/resources/remote-terminal/
