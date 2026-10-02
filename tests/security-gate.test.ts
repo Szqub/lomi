@@ -154,3 +154,40 @@ test("failed native builds retain terminal diagnostics even with a large compile
     },
   );
 });
+
+test("Windows loader receipts run only for entry-point failures and cannot pass the gate", async () => {
+  for (const [platform, status, inspect] of [
+    ["win32", 0xc0000139, true],
+    ["win32", 101, false],
+    ["linux", 0xc0000139, false],
+  ] as const) {
+    const calls: string[] = [];
+    await assert.rejects(
+      () =>
+        runSecurityRegressions(platform, (command: string, args: string[]) => {
+          calls.push(command);
+          if (command === "pwsh") {
+            assert.ok(args.includes("-NoProfile"));
+            assert.ok(
+              args[args.indexOf("-TestExecutable") + 1].endsWith(
+                "lomi_lib-123.exe",
+              ),
+            );
+            return {
+              status: 0,
+              stdout: "Import inspection completed\n",
+              stderr: "",
+            };
+          }
+          return {
+            status,
+            stdout: "",
+            stderr:
+              "Running unittests src/lib.rs (src-tauri/target/debug/deps/lomi_lib-123.exe)\n",
+          };
+        }),
+      /Security suite failed or selected no tests/,
+    );
+    assert.deepEqual(calls, inspect ? ["cargo", "pwsh"] : ["cargo"]);
+  }
+});

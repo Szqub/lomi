@@ -2312,7 +2312,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn identifies_native_clis_and_node_launchers_without_matching_prompt_arguments() {
         for (path, cli) in [
@@ -2325,22 +2325,27 @@ mod tests {
             ),
             ("/cursor/cursor-agent-sea", TitleCli::Cursor),
         ] {
-            assert_eq!(identify(Path::new(path), b""), Some(cli));
+            assert_eq!(identify(Path::new(path), &[]), Some(cli));
         }
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("cursor-agent"), "launcher").unwrap();
-        let argv = format!(
-            "/home/user/.local/bin/agent\0--use-system-ca\0{}/index.js\0",
-            dir.path().display()
-        );
+        let script = format!("{}/index.js", dir.path().display());
+        let argv: &[&[u8]] = &[
+            b"/home/user/.local/bin/agent",
+            b"--use-system-ca",
+            script.as_bytes(),
+        ];
         assert_eq!(
-            identify(&dir.path().join("node"), argv.as_bytes()),
+            identify(&dir.path().join("node"), argv),
             Some(TitleCli::Cursor)
         );
         assert_eq!(
             identify(
                 Path::new("/usr/bin/node"),
-                b"node\0/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js\0"
+                &[
+                    b"node",
+                    b"/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+                ]
             ),
             Some(TitleCli::Claude)
         );
@@ -2354,7 +2359,14 @@ mod tests {
             assert_eq!(
                 identify(
                     Path::new(path),
-                    b"node\0other.js\0codex\0agy\0claude\0cursor-agent\0"
+                    &[
+                        b"node",
+                        b"other.js",
+                        b"codex",
+                        b"agy",
+                        b"claude",
+                        b"cursor-agent"
+                    ]
                 ),
                 None
             );

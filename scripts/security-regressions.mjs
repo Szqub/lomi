@@ -52,6 +52,46 @@ export async function runSecurityRegressions(
         error ? reject(error) : resolve(),
       );
     });
+    if (platform === "win32" && result.status === 0xc0000139) {
+      const cleanStderr = (result.stderr ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+      const executable = cleanStderr.match(
+        /Running\s+unittests[^\r\n]*\(([^)\r\n]+\.exe)\)/,
+      )?.[1];
+      if (executable) {
+        console.log(
+          "Windows loader failure: inspecting the failed native test executable.",
+        );
+        const diagnostic = run(
+          "pwsh",
+          [
+            "-NoProfile",
+            "-File",
+            resolve(root, "scripts/diagnose-windows-native-test.ps1"),
+            "-TestExecutable",
+            resolve(root, executable),
+          ],
+          {
+            cwd: root,
+            encoding: "utf8",
+            timeout: 120000,
+            maxBuffer: 16 * 1024 * 1024,
+          },
+        );
+        await new Promise((resolve, reject) => {
+          process.stdout.write(diagnostic.stdout ?? "", (error) =>
+            error ? reject(error) : resolve(),
+          );
+        });
+        await new Promise((resolve, reject) => {
+          process.stderr.write(diagnostic.stderr ?? "", (error) =>
+            error ? reject(error) : resolve(),
+          );
+        });
+        console.log(
+          `Windows loader diagnostic exit status: ${diagnostic.status}; ${diagnostic.error ?? ""}`,
+        );
+      }
+    }
     if (
       result.status !== 0 ||
       !/test result: ok\. [1-9]\d* passed; 0 failed/.test(result.stdout ?? "")
