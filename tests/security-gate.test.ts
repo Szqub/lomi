@@ -10,7 +10,9 @@ test(
   "the native release gate stops on failures and empty test selections",
   {
     skip:
-      process.platform === "win32" ? "The release gate runs on Ubuntu." : false,
+      process.platform === "win32"
+        ? "The fake Cargo executable fixture requires a Unix shebang."
+        : false,
   },
   () => {
     const directory = mkdtempSync(join(tmpdir(), "lomi-security-gate-"));

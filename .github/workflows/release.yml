@@ -7,8 +7,13 @@ on:
 
 jobs:
   security-regressions:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    name: Security regressions (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, macos-15-intel, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -23,14 +28,19 @@ jobs:
           cache: "pnpm"
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # dtolnay/rust-toolchain@stable
       - name: install native test dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: install pinned frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: verify SDK archive and installed build safety
-        run: pnpm sdk:verify && pnpm sdk:test:consumer
+      - name: verify SDK archive integrity
+        run: pnpm sdk:verify
+      - name: verify installed SDK build safety
+        if: runner.os == 'Linux'
+        run: pnpm sdk:test:consumer
       - name: check frontend and run tests
+        if: runner.os == 'Linux'
         run: pnpm check && pnpm test
       - name: run native security regressions
         run: node scripts/security-regressions.mjs
