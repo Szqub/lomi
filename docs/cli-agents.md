@@ -139,9 +139,22 @@ their current contracts do not provide.
 When a recognized agent runs in a local Lomi terminal, a compact usage control
 appears beside the account/settings control. It includes agents in background
 tabs and workspaces. The percentage means **remaining account quota**, using the
-most restrictive reported window. Click or right-click it to see each agent's
+most restrictive reported window. Click or right-click it to see each CLI account's
 windows, reset times, last successful update and availability. Keyboard users can
 open it with Enter or Arrow Down and dismiss it with Escape.
+
+The details merge running sessions with the same verified account key into one
+entry per CLI. Different accounts remain separate even when their quota values
+match. Codex uses the selected ChatGPT workspace and user identity from its
+[native token claims](https://github.com/openai/codex/blob/ca466061d64f0b44f416135c7fd06aa7af850bbc/codex-rs/login/src/token_data.rs),
+so different credential stores and token revisions can share one entry while
+different workspace members remain separate. Missing or mismatched identity
+claims fall back to the credential fingerprint. Other HTTP readers use the saved
+credential fingerprint, including the selected Cursor team or Kimi region; separate logins
+with different tokens remain separate when no verified account ID is available.
+Antigravity merges only identical native report contexts because it manages its
+own authentication. Unknown account identities remain separate. Only opaque,
+process-local keys reach the interface; credentials and account IDs stay native.
 
 Lomi checks usage every 15 seconds while agents are running, and when the window
 regains focus or the details menu opens. Refresh requests share an in-flight

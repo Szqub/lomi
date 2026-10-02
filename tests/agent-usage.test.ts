@@ -6,6 +6,7 @@ import {
   agentUsageTargetBatches,
   agentUsageTargets,
   isCliAgent,
+  groupAgentUsage,
   worstRemainingWindow,
 } from "../src/agent-usage.ts";
 import type { AgentUsageEntry } from "../src/agent-usage.ts";
@@ -128,4 +129,172 @@ test("the summary chooses the lowest valid remaining quota and ignores unknown v
   assert.equal(worstRemainingWindow(entries)?.entry.id, "claude-pane");
   assert.equal(worstRemainingWindow(entries)?.window.label, "Monthly");
   assert.equal(worstRemainingWindow([]), null);
+});
+
+function accountEntry(
+  id: string,
+  accountKey?: string | null,
+  options: Partial<AgentUsageEntry> = {},
+): AgentUsageEntry {
+  return {
+    id,
+    process: { cli: "codex", pid: Number(id) },
+    accountKey,
+    status: "ready",
+    windows: [
+      {
+        label: "Weekly",
+        remainingPercent: 70,
+        used: null,
+        limit: null,
+        unit: null,
+        resetsAt: null,
+      },
+    ],
+    updatedAt: 1000,
+    retryAt: null,
+    message: null,
+    source: null,
+    ...options,
+  };
+}
+
+function targetsFor(entries: AgentUsageEntry[]) {
+  return entries.map(({ id, process }) => ({ id, process }));
+}
+
+test("four CLI sessions share one account row while requests retain all sessions", () => {
+  const entries = [1, 2, 3, 4].map((id) =>
+    accountEntry(String(id), "account-a"),
+  );
+  const targets = targetsFor(entries);
+  const groups = groupAgentUsage(targets, entries);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].entry?.id, "1");
+  assert.equal(agentUsageTargetBatches(targets).flat().length, 4);
+});
+
+test("different accounts keep separate rows even with identical quota values", () => {
+  const entries = [
+    accountEntry("1", "account-a"),
+    accountEntry("2", "account-b"),
+  ];
+  assert.equal(groupAgentUsage(targetsFor(entries), entries).length, 2);
+});
+
+test("account grouping is scoped to the CLI provider", () => {
+  const entries = [
+    accountEntry("1", "shared"),
+    accountEntry("2", "shared", { process: { cli: "claude", pid: 2 } }),
+  ];
+  assert.equal(groupAgentUsage(targetsFor(entries), entries).length, 2);
+});
+
+test("unknown, missing and empty account identities each retain their session row", () => {
+  const entries = [
+    accountEntry("1", null),
+    accountEntry("2"),
+    accountEntry("3", ""),
+    accountEntry("4", null),
+  ];
+  const targets = [
+    ...targetsFor(entries),
+    { id: "5", process: { cli: "codex" as const, pid: 5 } },
+  ];
+  const groups = groupAgentUsage(targets, entries);
+  assert.equal(groups.length, 5);
+  assert.equal(groups[4].entry, null);
+});
+
+test("account rows prefer usable snapshots, then latest updates with deterministic ties", () => {
+  const saved = accountEntry("1", "shared", {
+    status: "error",
+    updatedAt: 100,
+  });
+  const empty = accountEntry("2", "shared", { windows: [], updatedAt: 400 });
+  const failed = accountEntry("3", "shared", {
+    windows: [],
+    status: "error",
+    updatedAt: 500,
+  });
+  const ready = accountEntry("4", "shared", { updatedAt: 200 });
+  const latest = accountEntry("5", "shared", { updatedAt: 300 });
+  const tie = accountEntry("6", "shared", { updatedAt: 300 });
+  const choose = (entries: AgentUsageEntry[]) =>
+    groupAgentUsage(targetsFor(entries), entries)[0].entry;
+  assert.equal(choose([empty, failed, saved]), saved);
+  assert.equal(choose([saved, ready]), ready);
+  assert.equal(choose([ready, latest]), latest);
+  assert.equal(choose([tie, latest]), latest);
+  assert.equal(choose([latest, tie]), latest);
+  const invalid = accountEntry("7", "shared", {
+    windows: [{ ...saved.windows[0], remainingPercent: NaN, used: Infinity }],
+    updatedAt: 600,
+  });
+  assert.equal(choose([invalid, saved]), saved);
+});
+
+test("newer saved usage wins over older ready usage and ready wins equal-time ties", () => {
+  const ready = accountEntry("1", "shared", {
+    windows: [
+      {
+        label: "Weekly",
+        remainingPercent: 50,
+        used: null,
+        limit: null,
+        unit: null,
+        resetsAt: null,
+      },
+    ],
+    updatedAt: 1000,
+  });
+  const saved = accountEntry("2", "shared", {
+    status: "rate-limited",
+    windows: [{ ...ready.windows[0], remainingPercent: 40 }],
+    updatedAt: 2000,
+  });
+  const groups = groupAgentUsage(targetsFor([ready, saved]), [ready, saved]);
+  assert.equal(groups[0].entry?.windows[0].remainingPercent, 40);
+  assert.equal(groups[0].entry?.status, "rate-limited");
+  const equalTimeReady = { ...ready, updatedAt: saved.updatedAt };
+  assert.equal(
+    groupAgentUsage(targetsFor([saved, equalTimeReady]), [
+      saved,
+      equalTimeReady,
+    ])[0].entry,
+    equalTimeReady,
+  );
+  assert.equal(
+    groupAgentUsage(targetsFor([equalTimeReady, saved]), [
+      equalTimeReady,
+      saved,
+    ])[0].entry,
+    equalTimeReady,
+  );
+});
+
+test("removed and replaced processes cannot supply identities or snapshots to current rows", () => {
+  const entries = [
+    accountEntry("1", "shared", { updatedAt: 2000 }),
+    accountEntry("2", "shared"),
+  ];
+  assert.equal(
+    groupAgentUsage(targetsFor(entries).slice(1), entries)[0].entry?.id,
+    "2",
+  );
+  const targets = [
+    { id: "1", process: { cli: "codex" as const, pid: 99 } },
+    targetsFor(entries)[1],
+  ];
+  const groups = groupAgentUsage(targets, entries);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].entry, null);
+  assert.equal(groups[1].entry?.id, "2");
+  assert.equal(
+    groupAgentUsage(
+      [{ id: "2", process: { cli: "claude", pid: 2 } }],
+      entries,
+    )[0].entry,
+    null,
+  );
 });

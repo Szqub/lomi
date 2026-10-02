@@ -14,6 +14,7 @@ import {
   agentUsageTargetBatches,
   agentUsageSignature,
   agentUsageTargets,
+  groupAgentUsage,
   type AgentUsageEntry,
   type AgentUsageTarget,
   type AgentUsageWindow,
@@ -389,6 +390,7 @@ function AgentUsageBar({
 
   const entryFor = (target: AgentUsageTarget) =>
     entries.find((entry) => sameProcess(target, entry)) ?? null;
+  const groups = groupAgentUsage(targets, entries);
   const providers = (Object.keys(cliNames) as CliAgent[]).flatMap((cli) => {
     const providerTargets = targets.filter(
       (target) => target.process.cli === cli,
@@ -634,7 +636,7 @@ function AgentUsageBar({
             <div className="agent-usage-menu-heading" role="presentation">
               <strong>Account usage</strong>
               <span>
-                {count} active CLI agent{count === 1 ? "" : "s"}
+                {count} active CLI session{count === 1 ? "" : "s"}
               </span>
             </div>
             <div
@@ -644,8 +646,7 @@ function AgentUsageBar({
               aria-label="Usage details by agent"
               tabIndex={0}
             >
-              {targets.map((target, index) => {
-                const entry = entryFor(target);
+              {groups.map(({ target, entry }, index) => {
                 const stale = isStale(entry, requestFailed, now);
                 const updated = relativeUpdate(entry?.updatedAt ?? null, now);
                 const statusText = entryStatus(entry, requestFailed, now);

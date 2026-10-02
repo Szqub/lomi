@@ -89,6 +89,7 @@ struct UsageWindow {
 struct UsageEntry {
     id: String,
     process: TitleProcess,
+    account_key: Option<String>,
     status: UsageStatus,
     windows: Vec<UsageWindow>,
     updated_at: Option<i64>,
@@ -269,6 +270,7 @@ async fn inspect_target(
         }
     };
 
+    let account_key = credential_account_key(&credential);
     let key = CacheKey {
         namespace: credential.namespace.clone(),
         identity: credential.identity.clone(),
@@ -302,7 +304,7 @@ async fn inspect_target(
                 .await
                 == Some(generation)
         {
-            return entry_from_snapshot(target, cached);
+            return entry_from_snapshot(target, cached, account_key.as_deref());
         }
         return empty_entry(
             target,
@@ -325,7 +327,7 @@ async fn inspect_target(
             )
             .await
             {
-                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                Some(snapshot) => entry_from_snapshot(target, snapshot, account_key.as_deref()),
                 None => empty_entry(
                     target,
                     UsageStatus::Error,
@@ -391,19 +393,21 @@ async fn inspect_target(
                     Some(source_name(process.cli)),
                 );
             }
-            entry_from_snapshot(target, snapshot)
+            entry_from_snapshot(target, snapshot, account_key.as_deref())
         }
         Err(failure) => {
             if failure.status == UsageStatus::Unauthenticated
                 || failure.status == UsageStatus::Unsupported
             {
                 invalidate_namespace_if_generation(state, &credential.namespace, generation).await;
-                return empty_entry(
+                let mut entry = empty_entry(
                     target,
                     failure.status,
                     failure.message,
                     Some(source_name(process.cli)),
                 );
+                entry.account_key = account_key;
+                return entry;
             }
             let snapshot = failed_snapshot(
                 state,
@@ -415,7 +419,7 @@ async fn inspect_target(
             )
             .await;
             match snapshot {
-                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                Some(snapshot) => entry_from_snapshot(target, snapshot, account_key.as_deref()),
                 None => empty_entry(
                     target,
                     UsageStatus::Error,
@@ -473,6 +477,13 @@ async fn inspect_agy_target(
         );
     }
 
+    // Authentication is CLI-managed, so only identical native report contexts share a row.
+    let account_key = opaque_account_key(
+        TitleCli::Agy,
+        &format!("report:{}", context.identity),
+        None,
+        None,
+    );
     let request_lock = request_lock(state, &key).await;
     let _guard = request_lock.lock().await;
     if !terminal_process_is_current(terminals, &target.id, process)
@@ -492,7 +503,7 @@ async fn inspect_agy_target(
                 .await
                 == Some(generation)
         {
-            return entry_from_snapshot(target, cached);
+            return entry_from_snapshot(target, cached, account_key.as_deref());
         }
         return empty_entry(
             target,
@@ -518,7 +529,7 @@ async fn inspect_agy_target(
             )
             .await
             {
-                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                Some(snapshot) => entry_from_snapshot(target, snapshot, account_key.as_deref()),
                 None => empty_entry(
                     target,
                     UsageStatus::Error,
@@ -617,11 +628,11 @@ async fn inspect_agy_target(
                     Some(source_name(TitleCli::Agy)),
                 );
             }
-            entry_from_snapshot(target, snapshot)
+            entry_from_snapshot(target, snapshot, account_key.as_deref())
         }
         Err(failure) => {
             match failed_snapshot_clearing_values(state, &key, failure, generation).await {
-                Some(snapshot) => entry_from_snapshot(target, snapshot),
+                Some(snapshot) => entry_from_snapshot(target, snapshot, account_key.as_deref()),
                 None => empty_entry(
                     target,
                     UsageStatus::Error,
@@ -720,6 +731,7 @@ fn empty_entry(
     UsageEntry {
         id: target.id,
         process: target.process,
+        account_key: None,
         status,
         windows: Vec::new(),
         updated_at: None,
@@ -729,10 +741,15 @@ fn empty_entry(
     }
 }
 
-fn entry_from_snapshot(target: UsageTarget, snapshot: UsageSnapshot) -> UsageEntry {
+fn entry_from_snapshot(
+    target: UsageTarget,
+    snapshot: UsageSnapshot,
+    account_key: Option<&str>,
+) -> UsageEntry {
     UsageEntry {
         id: target.id,
         process: target.process,
+        account_key: account_key.map(str::to_owned),
         status: snapshot.status,
         windows: snapshot.windows,
         updated_at: snapshot.updated_at,
@@ -786,6 +803,87 @@ struct NativeCredential {
     account_id: Option<String>,
     team_id: Option<String>,
     usage_endpoint: Option<&'static str>,
+}
+
+fn credential_account_key(credential: &NativeCredential) -> Option<String> {
+    let identity = (credential.cli == TitleCli::Codex)
+        .then(|| codex_account_identity(credential))
+        .flatten()
+        .unwrap_or_else(|| format!("credential:{}", credential.identity));
+    opaque_account_key(
+        credential.cli,
+        &identity,
+        credential.team_id.as_deref(),
+        credential.usage_endpoint,
+    )
+}
+
+fn codex_account_identity(credential: &NativeCredential) -> Option<String> {
+    use base64::{engine::general_purpose, Engine};
+
+    let account_id = credential.account_id.as_deref()?.trim();
+    if account_id.is_empty() || credential.token.len() > MAX_CREDENTIAL_BYTES {
+        return None;
+    }
+    let mut segments = credential.token.split('.');
+    let header = segments.next()?;
+    let encoded = segments.next()?;
+    let signature = segments.next()?;
+    if header.is_empty() || encoded.is_empty() || signature.is_empty() || segments.next().is_some()
+    {
+        return None;
+    }
+    let payload = general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .or_else(|_| general_purpose::URL_SAFE.decode(encoded))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&payload).ok()?;
+    let auth = claims.get("https://api.openai.com/auth")?;
+    let claim = |name| {
+        auth.get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    // Claims group existing credentials only; requests and cache validation remain token-sensitive.
+    if claim("chatgpt_account_id")? != account_id {
+        return None;
+    }
+    let principal = claim("chatgpt_user_id")
+        .or_else(|| claim("user_id"))
+        .map(|id| ("user", id))
+        .or_else(|| claim("chatgpt_account_user_id").map(|id| ("membership", id)))?;
+    serde_json::to_string(&(account_id, principal)).ok()
+}
+
+fn opaque_account_key(
+    cli: TitleCli,
+    identity: &str,
+    team_id: Option<&str>,
+    usage_endpoint: Option<&str>,
+) -> Option<String> {
+    // Keep grouping keys private to this app process without changing credential cache identities.
+    static KEY: OnceLock<Option<ring::hmac::Key>> = OnceLock::new();
+    let key = KEY
+        .get_or_init(|| {
+            let mut bytes = [0_u8; 32];
+            ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).ok()?;
+            Some(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &bytes))
+        })
+        .as_ref()?;
+    let provider = format!("{cli:?}");
+    let mut fingerprint = ring::hmac::Context::with_key(key);
+    for part in [
+        "lomi-cli-usage-account-v1",
+        provider.as_str(),
+        identity,
+        team_id.unwrap_or_default(),
+        usage_endpoint.unwrap_or_default(),
+    ] {
+        fingerprint.update(&(part.len() as u64).to_be_bytes());
+        fingerprint.update(part.as_bytes());
+    }
+    Some(hex_digest(fingerprint.sign().as_ref()))
 }
 
 type ProviderAuth = (String, Option<String>, Option<String>, Option<&'static str>);
@@ -2484,6 +2582,257 @@ mod tests {
             failure_count: 0,
             last_used: Instant::now(),
         }
+    }
+
+    fn test_credential(
+        cli: TitleCli,
+        token: &str,
+        account_id: Option<&str>,
+        team_id: Option<&str>,
+        usage_endpoint: Option<&'static str>,
+    ) -> NativeCredential {
+        make_credential(
+            cli,
+            UsageNamespace {
+                cli,
+                directory: PathBuf::from("/test/account-home"),
+                store: "native".into(),
+            },
+            token.into(),
+            account_id.map(str::to_owned),
+            team_id.map(str::to_owned),
+            usage_endpoint,
+        )
+    }
+
+    fn codex_test_token(account_id: &str, user_id: &str, revision: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+        let payload = json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "chatgpt_user_id": user_id,
+            },
+            "revision": revision,
+        });
+        format!(
+            "e30.{}.signature",
+            URL_SAFE_NO_PAD.encode(payload.to_string())
+        )
+    }
+
+    #[test]
+    fn account_grouping_ignores_codex_token_rotation_and_configuration_directory() {
+        let first = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("account-x", "user-a", "first"),
+            Some("account-x"),
+            None,
+            None,
+        );
+        let mut second = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("account-x", "user-a", "second"),
+            Some("account-x"),
+            None,
+            None,
+        );
+        second.namespace.directory = PathBuf::from("/another/codex-home");
+        second.namespace.store = "another-store".into();
+        let different = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("account-y", "user-a", "first"),
+            Some("account-y"),
+            None,
+            None,
+        );
+
+        let key = credential_account_key(&first).unwrap();
+        assert_eq!(Some(key.clone()), credential_account_key(&second));
+        assert_ne!(Some(key), credential_account_key(&different));
+        assert_ne!(first.identity, second.identity);
+        assert_ne!(first.namespace, second.namespace);
+    }
+
+    #[test]
+    fn codex_workspace_members_and_unqualified_principals_stay_separate() {
+        let first = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("shared-workspace", "user-a", "first"),
+            Some("shared-workspace"),
+            None,
+            None,
+        );
+        let another_user = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("shared-workspace", "user-b", "first"),
+            Some("shared-workspace"),
+            None,
+            None,
+        );
+        assert_ne!(
+            credential_account_key(&first),
+            credential_account_key(&another_user)
+        );
+
+        for token in [
+            "opaque-token-a".to_owned(),
+            "opaque-token-b".to_owned(),
+            codex_test_token("different-workspace", "user-a", "first"),
+            codex_test_token("shared-workspace", "", "first"),
+            "e30.invalid.signature".to_owned(),
+        ] {
+            let unqualified = test_credential(
+                TitleCli::Codex,
+                &token,
+                Some("shared-workspace"),
+                None,
+                None,
+            );
+            assert!(codex_account_identity(&unqualified).is_none());
+            assert_ne!(
+                credential_account_key(&first),
+                credential_account_key(&unqualified)
+            );
+        }
+        let missing_user_a = test_credential(
+            TitleCli::Codex,
+            "opaque-token-a",
+            Some("shared-workspace"),
+            None,
+            None,
+        );
+        let missing_user_b = test_credential(
+            TitleCli::Codex,
+            "opaque-token-b",
+            Some("shared-workspace"),
+            None,
+            None,
+        );
+        assert_ne!(
+            credential_account_key(&missing_user_a),
+            credential_account_key(&missing_user_b)
+        );
+    }
+
+    #[test]
+    fn codex_account_identity_accepts_qualified_user_and_membership_claims() {
+        use base64::{engine::general_purpose::URL_SAFE, Engine};
+
+        for field in ["chatgpt_user_id", "user_id", "chatgpt_account_user_id"] {
+            let payload = json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "workspace",
+                    field: "principal",
+                },
+            });
+            let token = format!("e30.{}.signature", URL_SAFE.encode(payload.to_string()));
+            let credential =
+                test_credential(TitleCli::Codex, &token, Some("workspace"), None, None);
+            assert!(codex_account_identity(&credential).is_some(), "{field}");
+        }
+    }
+
+    #[test]
+    fn credential_grouping_keeps_unknown_accounts_providers_and_scopes_separate() {
+        for cli in [
+            TitleCli::Codex,
+            TitleCli::Claude,
+            TitleCli::Cursor,
+            TitleCli::Kimi,
+        ] {
+            let first = test_credential(cli, "first-token", None, None, None);
+            let mut duplicate = test_credential(cli, "first-token", None, None, None);
+            duplicate.namespace.directory = PathBuf::from("/another/account-home");
+            let different = test_credential(cli, "second-token", None, None, None);
+            let key = credential_account_key(&first).unwrap();
+            assert_eq!(Some(key.clone()), credential_account_key(&duplicate));
+            assert_ne!(Some(key), credential_account_key(&different));
+        }
+
+        let codex = test_credential(TitleCli::Codex, "shared-token", None, None, None);
+        let claude = test_credential(TitleCli::Claude, "shared-token", None, None, None);
+        assert_ne!(
+            credential_account_key(&codex),
+            credential_account_key(&claude)
+        );
+        let team_a = test_credential(TitleCli::Cursor, "shared-token", None, Some("team-a"), None);
+        let team_b = test_credential(TitleCli::Cursor, "shared-token", None, Some("team-b"), None);
+        assert_ne!(
+            credential_account_key(&team_a),
+            credential_account_key(&team_b)
+        );
+        let mainland = test_credential(
+            TitleCli::Kimi,
+            "shared-token",
+            None,
+            None,
+            Some(KIMI_MAINLAND_USAGE_ENDPOINT),
+        );
+        let global = test_credential(
+            TitleCli::Kimi,
+            "shared-token",
+            None,
+            None,
+            Some(KIMI_GLOBAL_USAGE_ENDPOINT),
+        );
+        assert_ne!(
+            credential_account_key(&mainland),
+            credential_account_key(&global)
+        );
+    }
+
+    #[test]
+    fn usage_entries_expose_only_opaque_account_keys_and_retain_failed_snapshot_grouping() {
+        let token = codex_test_token("private-account-id", "private-user-id", "first");
+        let credential = test_credential(
+            TitleCli::Codex,
+            &token,
+            Some("private-account-id"),
+            Some("private-team-id"),
+            None,
+        );
+        let key = credential_account_key(&credential).unwrap();
+        let mut snapshot = successful_snapshot();
+        snapshot.status = UsageStatus::RateLimited;
+        let entry = entry_from_snapshot(
+            UsageTarget {
+                id: "terminal-x".into(),
+                process: TitleProcess {
+                    cli: TitleCli::Codex,
+                    pid: 123,
+                },
+            },
+            snapshot,
+            Some(&key),
+        );
+        let serialized = serde_json::to_value(entry).unwrap();
+        assert_eq!(serialized["accountKey"], key);
+        assert_eq!(serialized["status"], "rate-limited");
+        assert_eq!(serialized["windows"][0]["remainingPercent"], 73.0);
+        for private in [
+            token.as_str(),
+            "private-account-id",
+            "private-user-id",
+            "private-team-id",
+            "/test/account-home",
+        ] {
+            assert!(!serialized.to_string().contains(private));
+        }
+
+        let unknown = empty_entry(
+            UsageTarget {
+                id: "stopped-terminal".into(),
+                process: TitleProcess {
+                    cli: TitleCli::Codex,
+                    pid: 124,
+                },
+            },
+            UsageStatus::Error,
+            "The CLI is no longer running.",
+            None,
+        );
+        assert!(serde_json::to_value(unknown).unwrap()["accountKey"].is_null());
     }
 
     #[tokio::test]

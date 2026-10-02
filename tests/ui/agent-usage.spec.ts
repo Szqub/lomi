@@ -24,6 +24,7 @@ function entry(
   pid: number,
   windows: TestUsageWindow[],
   options: {
+    accountKey?: string | null;
     status?: string;
     updatedAt?: number | null;
     retryAt?: number | null;
@@ -34,6 +35,7 @@ function entry(
   return {
     id,
     process: { cli, pid },
+    accountKey: options.accountKey,
     status: options.status ?? "ready",
     windows,
     updatedAt: options.updatedAt === undefined ? Date.now() : options.updatedAt,
@@ -924,4 +926,143 @@ test("usage details stay within a compact titlebar at reduced zoom", async ({
   expect(bounds!.x).toBeGreaterThanOrEqual(8);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(432);
   await page.screenshot({ path: "/tmp/lomi-agent-usage-menu-compact.png" });
+});
+
+test("account usage groups four sessions and retains different accounts with identical quotas", async ({
+  page,
+}) => {
+  await mockDesktop(page, false);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toBeVisible();
+  const contexts = Object.fromEntries(
+    [1, 2, 3, 4].map((id) => [
+      `account-session-${id}`,
+      context("codex", 800 + id),
+    ]),
+  );
+  const entries = [1, 2, 3, 4].map((id) =>
+    entry(`account-session-${id}`, "codex", 800 + id, [quota("Weekly", 70)], {
+      accountKey: "account-a",
+    }),
+  );
+  await setUsage(page, contexts, entries);
+  const trigger = page.locator(".agent-usage-trigger");
+  await expectProviderValue(trigger, "codex", "70%");
+  await trigger.click();
+  const menu = page.locator(".agent-usage-menu");
+  await expect(menu.getByRole("group")).toHaveCount(1);
+  await expect(menu).toContainText("4 active CLI sessions");
+  expect((await usageCalls(page)).at(-1).targets).toHaveLength(4);
+  await page.screenshot({ path: "/tmp/lomi-account-usage-grouped.png" });
+
+  await setUsage(
+    page,
+    contexts,
+    entries.map((value, index) => ({
+      ...value,
+      accountKey: index < 2 ? "account-a" : "account-b",
+    })),
+  );
+  await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+  await expect(menu.getByRole("group")).toHaveCount(2);
+  await expect(menu.getByRole("progressbar")).toHaveCount(2);
+  await expect(menu.getByRole("progressbar").nth(0)).toHaveAttribute(
+    "value",
+    "70",
+  );
+  await expect(menu.getByRole("progressbar").nth(1)).toHaveAttribute(
+    "value",
+    "70",
+  );
+});
+
+test("account rows keep a good snapshot through duplicate failure and representative removal", async ({
+  page,
+}) => {
+  await mockDesktop(page, false);
+  await page.goto("/");
+  await expect(page.locator(".xterm-screen")).toBeVisible();
+  const contexts = {
+    first: context("codex", 811),
+    second: context("codex", 812),
+  };
+  const now = Date.now();
+  const entries = [
+    entry("first", "codex", 811, [], {
+      accountKey: "account-a",
+      status: "error",
+      message: "Duplicate check failed",
+    }),
+    entry("second", "codex", 812, [quota("Weekly", 65)], {
+      accountKey: "account-a",
+      updatedAt: now,
+    }),
+  ];
+  await setUsage(page, contexts, entries);
+  const trigger = page.locator(".agent-usage-trigger");
+  await expectProviderValue(trigger, "codex", "65%");
+  await trigger.click();
+  const menu = page.locator(".agent-usage-menu");
+  await expect(menu.getByRole("group")).toHaveCount(1);
+  await expect(menu.getByRole("group")).toContainText("Current");
+  await expect(menu.getByRole("group")).not.toContainText(
+    "Duplicate check failed",
+  );
+
+  const saved = [
+    entry("first", "codex", 811, [quota("Weekly", 50)], {
+      accountKey: "account-a",
+      updatedAt: now - 1000,
+    }),
+    entry("second", "codex", 812, [quota("Weekly", 40)], {
+      accountKey: "account-a",
+      status: "rate-limited",
+      updatedAt: now,
+    }),
+  ];
+  await setUsage(page, contexts, saved);
+  await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+  await expect(menu.getByRole("group")).toHaveCount(1);
+  await expect(menu.getByRole("progressbar")).toHaveAttribute("value", "40");
+  await expect(menu.getByRole("group")).toContainText(
+    "Rate limited · showing saved values",
+  );
+  await expect(menu.locator(".agent-usage-status")).toHaveAttribute(
+    "data-stale",
+    "true",
+  );
+  await expectProviderValue(trigger, "codex", "40%");
+
+  await setUsage(page, contexts, [{ ...saved[0], updatedAt: now }, saved[1]]);
+  await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+  await expect(menu.getByRole("progressbar")).toHaveAttribute("value", "50");
+  await expect(menu.getByRole("group")).toContainText("Current");
+  await expectProviderValue(trigger, "codex", "40%");
+
+  const healthy = [
+    entry("first", "codex", 811, [quota("Weekly", 66)], {
+      accountKey: "account-a",
+      updatedAt: now - 1000,
+    }),
+    entries[1],
+  ];
+  await setUsage(page, contexts, healthy);
+  await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+  await expect(menu.getByRole("progressbar")).toHaveAttribute("value", "65");
+  await setUsage(page, { first: contexts.first }, healthy);
+  await expect(menu.getByRole("group")).toHaveCount(1);
+  await expect(menu.getByRole("progressbar")).toHaveAttribute("value", "66");
+
+  await setUsage(page, contexts, [
+    healthy[0],
+    { ...entries[1], accountKey: "account-b" },
+  ]);
+  await expect(menu.getByRole("group")).toHaveCount(2);
+  await setUsage(page, contexts, [
+    healthy[0],
+    { ...entries[1], accountKey: null },
+  ]);
+  await menu.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+  await expect(menu.getByRole("group")).toHaveCount(2);
+  await expect(menu.getByRole("progressbar")).toHaveCount(2);
 });

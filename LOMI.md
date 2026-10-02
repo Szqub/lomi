@@ -154,7 +154,8 @@ or acronym.
 - `src/AgentUsage.tsx` observes the existing terminal-context stream and shows
   each active CLI provider's icon and remaining account quota beside the
   titlebar account/settings control. Show one summary per provider using its
-  tightest remaining quota across sessions; the menu keeps session details.
+  tightest remaining quota across sessions; the menu groups details by CLI account
+  using opaque native keys and keeps unknown identities separate.
   Native `cli_usage.rs` verifies owned CLI processes, reads existing credential stores
   or verified read-only CLI reports, and shares bounded requests with scoped
   caching. Keep credentials out of webviews; never initiate CLI login or infer
