@@ -40,6 +40,7 @@ mod mcp_browser_probe;
 #[cfg(all(feature = "mcp-probe", target_os = "macos"))]
 #[path = "../../tests/native/mcp-control-support.rs"]
 mod mcp_control_probe;
+mod notifications;
 mod remote;
 #[cfg(feature = "remote-probe")]
 #[path = "../../tests/native/remote-support.rs"]
@@ -178,6 +179,7 @@ pub fn run() {
         .manage(cli_titles::CliTitleConfig::default())
         .manage(cli_usage::CliUsage::default())
         .manage(cli_integrations::CliIntegrations::default())
+        .manage(notifications::Notifications::default())
         .manage(files::SessionFile::default())
         .manage(files::search::ProjectSearch::default())
         .manage(files::editor::EditorFiles::default())
@@ -503,6 +505,10 @@ pub fn run() {
                 agent_notifications::inspect_agent_notifications,
                 agent_notifications::enable_agent_notifications,
                 agent_notifications::notify_agent,
+                notifications::load_notifications,
+                notifications::mark_notifications_read,
+                notifications::dismiss_notification,
+                notifications::clear_read_notifications,
                 cli_titles::enable_cli_titles
             ];
             handler(invoke)

@@ -12,6 +12,7 @@ import {
 import type { Session } from "./model";
 import { runningTerminal } from "./terminal-runtime";
 import { Modal } from "./ui";
+import { reportNotificationError } from "./notifications";
 
 interface NotificationSetup {
   path: string;
@@ -33,7 +34,6 @@ export function useAgentNotifications(
   const [reviewRequired, setReviewRequired] = useState(false);
   const descriptionId = useId();
   const cancel = useRef<HTMLButtonElement>(null);
-  const permissionReported = useRef(false);
   const saving = useRef(false);
   useEffect(() => {
     if (!native) return;
@@ -45,33 +45,27 @@ export function useAgentNotifications(
       if (pending.has(key)) return;
       pending.add(key);
       void (async () => {
-        const granted = await isPermissionGranted();
         if (
           !alive ||
           !current.current.enabled ||
           runningTerminal(event.paneId)?.sessionId !== event.sessionId
         )
           return;
-        if (!granted) {
-          if (!permissionReported.current) {
-            permissionReported.current = true;
-            current.current.onError(
-              "Agent notifications are blocked. Allow notifications for Lomi in your system settings, or use the CLI notification button to check permission.",
-            );
-          }
-          return;
-        }
         const context = notificationContext(
           current.current.session,
           event.paneId,
         );
         if (context === null) return;
-        await api("notify_agent", { kind: event.kind, context });
+        await api("notify_agent", {
+          kind: event.kind,
+          context,
+          source: event.source,
+        });
       })()
         .catch((error) => {
           if (alive)
-            current.current.onError(
-              `Could not send agent notification: ${errorMessage(error)}`,
+            reportNotificationError(
+              `Could not save notification: ${errorMessage(error)}`,
             );
         })
         .finally(() => pending.delete(key));
@@ -131,7 +125,6 @@ export function useAgentNotifications(
         path: setup.path,
         revision: setup.revision,
       });
-      permissionReported.current = false;
       const granted =
         (await isPermissionGranted()) ||
         (await requestPermission()) === "granted";

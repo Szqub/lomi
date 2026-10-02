@@ -268,6 +268,7 @@ test("locked account menu exposes explicit sign-out before a new remembered logi
   const menu = page.getByRole("menu", { name: "Account menu" });
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Settings",
+    "Notifications",
     "Account settings",
     "Sign out",
   ]);
@@ -387,7 +388,10 @@ test("the signed-out chevron opens the settings menu without starting sign-in", 
   await menuButton.click();
   await expect(menu).toBeVisible();
   await expect(menuButton).toHaveAttribute("aria-expanded", "true");
-  await expect(menu.getByRole("menuitem")).toHaveText(["Settings"]);
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Settings",
+    "Notifications",
+  ]);
   const menuBounds = await menu.boundingBox();
   const triggerBounds = await menuButton.boundingBox();
   expect(menuBounds!.x + menuBounds!.width).toBeCloseTo(
@@ -709,6 +713,7 @@ test("a failed avatar falls back to initials and opens the account menu at 800px
   await expect(menu).toBeVisible();
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Settings",
+    "Notifications",
     "Account settings",
     "Manage account",
     "Sign out",
@@ -767,16 +772,16 @@ test("account categories keep visible separators at 90% zoom", async ({
     };
   });
   expect(layout.dividers[0].bounds.top).toBeGreaterThanOrEqual(
-    layout.items[0].bottom,
+    layout.items[1].bottom,
   );
   expect(layout.dividers[0].bounds.bottom).toBeLessThanOrEqual(
-    layout.items[1].top,
+    layout.items[2].top,
   );
   expect(layout.dividers[1].bounds.top).toBeGreaterThanOrEqual(
-    layout.items[2].bottom,
+    layout.items[3].bottom,
   );
   expect(layout.dividers[1].bounds.bottom).toBeLessThanOrEqual(
-    layout.items[3].top,
+    layout.items[4].top,
   );
   for (const divider of layout.dividers) {
     expect(divider.bounds.height).toBeGreaterThanOrEqual(2);
@@ -800,6 +805,10 @@ test("account menu supports keyboard navigation, toggle, and outside dismissal",
   await expect(account).toHaveAttribute("aria-expanded", "true");
   await expect(
     menu.getByRole("menuitem", { name: "Settings", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    menu.getByRole("menuitem", { name: "Notifications" }),
   ).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(

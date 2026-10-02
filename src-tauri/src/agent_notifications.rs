@@ -1,4 +1,6 @@
-use crate::{cli_config, cli_titles::CliTitleConfig, files::main_window};
+use crate::{
+    cli_config, cli_titles::CliTitleConfig, files::main_window, notifications::NotificationKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -181,11 +183,12 @@ pub fn enable_agent_notifications(
     enable(&current, revision.as_deref())
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum NotificationKind {
-    Attention,
-    Finished,
+pub enum NotificationSource {
+    #[default]
+    Claude,
+    Terminal,
 }
 
 #[tauri::command]
@@ -195,6 +198,7 @@ pub fn notify_agent(
     preferences: State<'_, crate::terminal_preferences::TerminalPreferencesFile>,
     kind: NotificationKind,
     context: String,
+    source: Option<NotificationSource>,
 ) -> Result<bool, String> {
     main_window(&window)?;
     let enabled = crate::terminal_preferences::load_terminal_preferences(
@@ -207,18 +211,27 @@ pub fn notify_agent(
     if context.chars().count() > 300 || context.chars().any(char::is_control) {
         return Err("Invalid notification context.".into());
     }
-    let requested = enabled && !window.is_focused().map_err(|error| error.to_string())?;
-    let title = match kind {
-        NotificationKind::Attention => "Claude Code needs your input",
-        NotificationKind::Finished => "Claude Code finished responding",
+    let title = match (source.unwrap_or_default(), kind) {
+        (NotificationSource::Claude, NotificationKind::Attention) => "Claude Code needs your input",
+        (NotificationSource::Claude, NotificationKind::Finished) => {
+            "Claude Code finished responding"
+        }
+        (NotificationSource::Terminal, NotificationKind::Attention) => "Agent needs your input",
+        (NotificationSource::Terminal, NotificationKind::Finished) => "Agent finished responding",
     };
+    let recorded = if enabled {
+        crate::notifications::record(&app, kind, title, &context)
+    } else {
+        Ok(())
+    };
+    let requested = enabled && !window.is_focused().map_err(|error| error.to_string())?;
     if requested {
-        app.notification()
+        let _ = app
+            .notification()
             .builder()
             .title(title)
             .body(&context)
-            .show()
-            .map_err(|error| error.to_string())?;
+            .show();
     }
     #[cfg(feature = "native-smoke")]
     if std::env::var_os("LOMI_NOTIFICATION_SMOKE_DIRECTORY").is_some() {
@@ -228,6 +241,7 @@ pub fn notify_agent(
             json!({"requested": requested, "context": context, "title": title}),
         );
     }
+    recorded?;
     Ok(requested)
 }
 

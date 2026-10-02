@@ -43,7 +43,13 @@ test("hidden terminals notify once and preferences disable and re-enable alerts 
   await emit(page, first.sessionId);
   await expect
     .poll(() => notices(page))
-    .toEqual([{ kind: "finished", context: "project · Default · Terminal" }]);
+    .toEqual([
+      {
+        kind: "finished",
+        context: "project · Default · Terminal",
+        source: "claude",
+      },
+    ]);
   await emit(page, first.sessionId);
   await page.evaluate(
     (id) => (window as any).__nativeTest.emit(id, "\r\nAFTER_SIGNAL\r\n"),
@@ -174,7 +180,7 @@ test("setup requires explicit consent and re-review after a failed write", async
   ).toBeVisible();
 });
 
-test("permission denial and disabling during a pending check suppress delivery", async ({
+test("denied system permission keeps inbox notifications and receives no in-app alert", async ({
   page,
 }) => {
   await mockDesktop(page, false);
@@ -183,59 +189,51 @@ test("permission denial and disabling during a pending check suppress delivery",
   await page.evaluate(() => {
     (window as any).__nativeTest.agentNotificationPermission = false;
   });
-  await emit(page, first.sessionId);
-  await expect(
-    page.getByText("Agent notifications are blocked.", { exact: false }),
-  ).toBeVisible();
-  expect(await notices(page)).toHaveLength(0);
-  const previousPermissionChecks = await page.evaluate(
+  const permissionChecksBeforeSignal = await page.evaluate(
     () =>
       (window as any).__nativeTest.calls.filter(
         (c: any) => c.command === "plugin:notification|is_permission_granted",
       ).length,
   );
-  await page.evaluate(() => {
-    (window as any).__nativeTest.agentNotificationPermission = true;
-    (window as any).__nativeTest.agentNotificationPermissionDelay = 500;
-  });
+  await emit(page, first.sessionId);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async () =>
+          (
+            await (window as any).__TAURI_INTERNALS__.invoke(
+              "load_notifications",
+            )
+          ).items.length,
+      ),
+    )
+    .toBe(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Notifications" })).toHaveCount(
+    0,
+  );
+  expect(await notices(page)).toHaveLength(0);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__nativeTest.calls.filter(
+        (c: any) => c.command === "plugin:notification|is_permission_granted",
+      ),
+    ),
+  ).toHaveLength(permissionChecksBeforeSignal);
   await emit(page, first.sessionId, "attention");
   await expect
     .poll(() =>
       page.evaluate(
-        () =>
-          (window as any).__nativeTest.calls.filter(
-            (c: any) =>
-              c.command === "plugin:notification|is_permission_granted",
-          ).length,
+        async () =>
+          (
+            await (window as any).__TAURI_INTERNALS__.invoke(
+              "load_notifications",
+            )
+          ).items.length,
       ),
     )
-    .toBeGreaterThan(previousPermissionChecks);
-  await page.evaluate(async () => {
-    const { defaultTerminalPreferences } =
-      await import("/src/terminal-preferences.ts");
-    localStorage.setItem(
-      "test-terminal-preferences",
-      JSON.stringify({
-        version: 1,
-        ...defaultTerminalPreferences,
-        agentNotifications: false,
-      }),
-    );
-    await (window as any).__nativeTest.emitEvent(
-      "terminal-preferences-changed",
-    );
-  });
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as any).__nativeTest.calls.filter(
-            (c: any) => c.command === "load_terminal_preferences",
-          ).length,
-      ),
-    )
-    .toBeGreaterThan(1);
-  await page.waitForTimeout(600);
+    .toBe(2);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   expect(await notices(page)).toHaveLength(0);
 });
 
@@ -260,6 +258,7 @@ test("hidden OSC 9 alerts expose no terminal text and ignore duplicate and progr
       {
         kind: "attention",
         context: "project · Default · Terminal",
+        source: "terminal",
       },
     ]);
   expect(
@@ -274,6 +273,7 @@ test("hidden OSC 9 alerts expose no terminal text and ignore duplicate and progr
       args: {
         kind: "attention",
         context: "project · Default · Terminal",
+        source: "terminal",
       },
     },
   ]);

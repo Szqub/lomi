@@ -108,6 +108,20 @@ pub fn result(
                 .hide()
                 .map_err(|error| error.to_string())?;
         }
+        "notification-inbox-corrupt" | "notification-inbox-preserved" => {
+            let path = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?
+                .join("notifications.json");
+            let fixture = "invalid notification inbox fixture";
+            if stage == "notification-inbox-corrupt" {
+                std::fs::write(&path, fixture).map_err(|error| error.to_string())?;
+            } else if std::fs::read_to_string(&path).map_err(|error| error.to_string())? != fixture
+            {
+                return Err("Corrupt notification inbox was overwritten.".into());
+            }
+        }
         "passed" | "failed" => {
             let directory = std::env::var("LOMI_NOTIFICATION_SMOKE_DIRECTORY")
                 .map_err(|error| error.to_string())?;

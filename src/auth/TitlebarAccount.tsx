@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { LogOut } from "lucide-react";
+import { Bell, LogOut } from "lucide-react";
 import { api, errorMessage, native } from "../api";
 import ContextMenu from "../ContextMenu";
+import NotificationCenter, { useNotifications } from "../NotificationCenter";
+import { notificationBadge } from "../notifications";
 import { ChevronDown, ExternalLink, Github, Settings } from "../icons";
 import { authStatusLabel, newestAuthState, unavailableState } from "./model";
 import type { AuthState } from "./model";
@@ -23,6 +25,9 @@ export default function TitlebarAccount({
   const pending = useRef(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const notifications = useNotifications();
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const closeInbox = useCallback(() => setInboxOpen(false), []);
   const [opening, setOpening] = useState(false);
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
   const accept = useCallback((incoming: AuthState) => {
@@ -107,6 +112,7 @@ export default function TitlebarAccount({
 
   const showMenu = () => {
     if (!native || pending.current || !trigger.current) return;
+    setInboxOpen(false);
     const bounds = trigger.current.getBoundingClientRect();
     setMenu({ x: bounds.right, y: bounds.bottom + 6 });
   };
@@ -246,10 +252,10 @@ export default function TitlebarAccount({
             type="button"
             className="titlebar-account titlebar-account-avatar"
             title={title}
-            aria-label={buttonLabel}
+            aria-label={`${buttonLabel}${notifications.unread ? `, ${notifications.unread} unread notifications` : ""}`}
             aria-busy={opening || undefined}
             aria-haspopup="menu"
-            aria-expanded={Boolean(menu)}
+            aria-expanded={Boolean(menu) || inboxOpen}
             disabled={!native || opening}
             onClick={toggleMenu}
             onContextMenu={(event) => {
@@ -282,6 +288,14 @@ export default function TitlebarAccount({
                 <Github size={13} />
               )}
             </span>
+            {notifications.unread > 0 && (
+              <span
+                className="notification-badge titlebar-account-badge"
+                aria-hidden="true"
+              >
+                {notificationBadge(notifications.unread)}
+              </span>
+            )}
           </button>
         ) : (
           <>
@@ -303,7 +317,7 @@ export default function TitlebarAccount({
               title={`Open account menu · ${status}`}
               aria-label="Open account menu"
               aria-haspopup="menu"
-              aria-expanded={Boolean(menu)}
+              aria-expanded={Boolean(menu) || inboxOpen}
               disabled={!native || opening}
               onClick={toggleMenu}
               onContextMenu={(event) => {
@@ -327,6 +341,13 @@ export default function TitlebarAccount({
           </>
         )}
       </div>
+      {inboxOpen && (
+        <NotificationCenter
+          trigger={trigger}
+          notifications={notifications}
+          onClose={closeInbox}
+        />
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -341,6 +362,23 @@ export default function TitlebarAccount({
               label: "Settings",
               icon: <Settings size={15} aria-hidden="true" />,
               run: onOpenSettings,
+            },
+            {
+              label: "Notifications",
+              description: notifications.unread
+                ? `${notifications.unread} unread notifications`
+                : "No unread notifications",
+              icon: <Bell size={15} aria-hidden="true" />,
+              badge:
+                notifications.unread > 0 ? (
+                  <span
+                    className="notification-badge"
+                    aria-label={`${notifications.unread} unread notifications`}
+                  >
+                    {notificationBadge(notifications.unread)}
+                  </span>
+                ) : undefined,
+              run: () => setInboxOpen(true),
             },
             ...(hasAccount || state?.status === "storage-locked"
               ? [
