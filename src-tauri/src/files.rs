@@ -295,19 +295,152 @@ pub fn write_json(path: &Path, data: &impl Serialize, limit: usize) -> Result<()
             limit / 1024
         ));
     }
-    let temporary = path.with_extension("json.tmp");
-    {
-        use std::io::Write;
-        let mut file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
-        file.write_all(&bytes).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
+    use crate::chat::storage::{private, reject_link};
+    use std::io::Write;
+    let parent = path.parent().ok_or("Invalid settings path.")?;
+    reject_link(parent)?;
+    reject_link(path)?;
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if !metadata.is_file() {
+            return Err("The settings destination must be a regular file.".into());
+        }
     }
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    // These callers persist app-owned settings, never arbitrary project files.
+    private(parent, true)?;
+    let parent = fs::canonicalize(parent).map_err(|error| error.to_string())?;
+    let destination = parent.join(path.file_name().ok_or("Invalid settings filename.")?);
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(&parent).map_err(|error| error.to_string())?;
+    private(temporary.path(), false)?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    reject_link(&destination)?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn json_write_preserves_previous_file_on_failure_and_cleans_temporaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let first = serde_json::json!({"setting": "previous"});
+        write_json(&path, &first, 1024).unwrap();
+        let previous = fs::read(&path).unwrap();
+        assert!(write_json(&path, &serde_json::json!({"setting": "new"}), 1).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&previous).unwrap(),
+            first
+        );
+        let blocked = temp.path().join("directory.json");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep"), "preserve").unwrap();
+        assert!(write_json(&blocked, &first, 1024).is_err());
+        assert_eq!(
+            fs::read_to_string(blocked.join("keep")).unwrap(),
+            "preserve"
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn json_parallel_writes_publish_complete_documents_without_shared_temporary_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for revision in 0..10 {
+                        write_json(
+                            &path,
+                            &serde_json::json!({"writer": writer, "revision": revision,
+                        "payload": "x".repeat(4096)}),
+                            8192,
+                        )
+                        .unwrap();
+                        let read: serde_json::Value =
+                            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                        assert_eq!(read["payload"], "x".repeat(4096));
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_write_preserves_old_temporary_symlink_and_secures_the_published_file() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("settings");
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let sentinel = temp.path().join("valuable.txt");
+        fs::write(&sentinel, "preserve").unwrap();
+        let path = directory.join("settings.json");
+        symlink(&sentinel, path.with_extension("json.tmp")).unwrap();
+        write_json(&path, &serde_json::json!({"saved": true}), 1024).unwrap();
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "preserve");
+        assert!(fs::symlink_metadata(path.with_extension("json.tmp"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),
+            serde_json::json!({"saved": true})
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_write_rejects_destination_and_parent_symlinks_without_touching_the_target() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let sentinel = temp.path().join("valuable.txt");
+        fs::write(&sentinel, "preserve").unwrap();
+        let destination = temp.path().join("settings.json");
+        symlink(&sentinel, &destination).unwrap();
+        assert!(write_json(&destination, &serde_json::json!({"saved": true}), 1024).is_err());
+        let link = temp.path().join("linked");
+        symlink(temp.path(), &link).unwrap();
+        assert!(write_json(
+            &link.join("new.json"),
+            &serde_json::json!({"saved": true}),
+            1024
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "preserve");
+        assert!(!temp.path().join("new.json").exists());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+    }
     #[test]
     fn session_upgrade_backs_up_exact_legacy_bytes_and_preserves_unknown_files() {
         let temp = tempfile::tempdir().unwrap();
