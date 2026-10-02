@@ -258,7 +258,7 @@ pub async fn agent_control_set_yolo_mode(
                 restore_broker.set_yolo_mode(previous_effective)
             })
             .await
-            .map_or(false, |result| result.is_ok());
+            .is_ok_and(|result| result.is_ok());
             let preference_restored = startup::save(&path, auto_start, previous).is_ok();
             if !preference_restored {
                 state

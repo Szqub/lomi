@@ -533,6 +533,10 @@ pub async fn remote_share_workspace(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "Keep lifecycle fixtures beside the state transitions they exercise."
+)]
 mod tests {
     use super::*;
     fn leaf(id: &str) -> RemoteLayout {

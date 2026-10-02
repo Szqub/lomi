@@ -904,6 +904,10 @@ impl AuthController {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The callback task owns the exact credentials, expiry, and cancellation values for one attempt."
+    )]
     async fn await_browser_callback_and_exchange(
         &self,
         attempt_id: String,

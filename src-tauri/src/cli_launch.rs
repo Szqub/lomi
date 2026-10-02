@@ -523,7 +523,7 @@ mod tests {
             codex.canonicalize().unwrap()
         );
         assert!(!found.contains_key(&TitleCli::Claude));
-        assert!(found.len() >= 1);
+        assert!(!found.is_empty());
     }
 
     #[test]

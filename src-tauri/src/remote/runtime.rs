@@ -368,6 +368,10 @@ impl Helper {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "Keep lifecycle fixtures beside the state transitions they exercise."
+)]
 mod tests {
     use super::*;
     fn runtime() -> Runtime {

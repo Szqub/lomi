@@ -713,13 +713,12 @@ impl Backend {
                     })
                 })
                 .await;
-                if transfer.is_err()
+                if (transfer.is_err()
                     || transfer
-                        .is_ok_and(|result| result.is_err() && result != Err("cancelled".into()))
+                        .is_ok_and(|result| result.is_err() && result != Err("cancelled".into())))
+                    && !request_task.cancelled.load(Ordering::Acquire)
                 {
-                    if !request_task.cancelled.load(Ordering::Acquire) {
-                        let _ = backend.cancel_known(&request_id, &request_task);
-                    }
+                    let _ = backend.cancel_known(&request_id, &request_task);
                 }
             })
         });

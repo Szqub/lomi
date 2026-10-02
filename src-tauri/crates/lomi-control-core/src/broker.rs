@@ -729,7 +729,7 @@ impl Broker {
         refreshed.android_devices = previous.android_devices.clone();
         refreshed
             .chat_conversations
-            .extend(previous.chat_conversations.iter().cloned().take(64));
+            .extend(previous.chat_conversations.iter().take(64).cloned());
         refreshed.terminal_profile = previous.terminal_profile.clone();
         // Current roots take priority over retired roots, so a long-lived session
         // cannot lose access to a newly projected workspace at the 500-root cap.
