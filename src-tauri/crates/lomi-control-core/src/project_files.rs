@@ -391,14 +391,16 @@ mod tests {
             project.list("", || Ok(())).unwrap().revision,
             first.revision
         );
+        let previous_links = fs::metadata(&root).unwrap().nlink();
         let calls = Cell::new(0);
         let changed = project.list("", || {
             calls.set(calls.get() + 1);
             if calls.get() == 3 {
-                fs::write(root.join("changed-during-list.txt"), b"new").unwrap();
+                fs::create_dir(root.join("changed-during-list")).unwrap();
             }
             Ok(())
         });
+        assert_ne!(fs::metadata(&root).unwrap().nlink(), previous_links);
         assert!(matches!(changed, Err(ErrorCode::RevisionConflict)));
         assert!(matches!(
             project.list("", || Err(ErrorCode::ControlRevoked)),
