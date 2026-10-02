@@ -46,10 +46,13 @@ export default function RemoteSettingsPage({
       setBusy(false);
     }
   };
+  const sharedWorkspaces = state?.workspaces?.filter((w) => w.shared) ?? [];
+  const connectedBrowsers =
+    state?.grants?.filter((grant) => !grant.revoked) ?? [];
   return (
     <SettingsPage
       title="Remote"
-      status={state?.online ? "Online" : state?.enabled ? "Connecting" : "Off"}
+      description="Access your workspace terminals from a browser."
     >
       {!available && (
         <SettingsNotice>Sign in to use remote sharing.</SettingsNotice>
@@ -65,21 +68,75 @@ export default function RemoteSettingsPage({
         </SettingsNotice>
       ) : (
         <>
-          <SettingsSection title="Workspace access">
-            <SettingsNotice>
-              Right-click a workspace and choose Share remotely. Browsers signed
-              in to the same account can view and control all its terminals,
-              including inactive tabs and new splits. Choose Stop sharing
-              remotely to end access.
-            </SettingsNotice>
-            <SettingsNotice>
+          {state?.message && <SettingsNotice>{state.message}</SettingsNotice>}
+          <SettingsSection
+            title="Workspace access"
+            description={
+              <>
+                Right-click a workspace and choose{" "}
+                <strong>Share remotely</strong>. Browsers signed in to your
+                account can view and control all its terminals, including
+                inactive tabs and new splits. Choose{" "}
+                <strong>Stop sharing remotely</strong> to end access.
+              </>
+            }
+          >
+            <p className="settings-help">
               Terminal contents and input are encrypted between your devices.
               Local typing immediately takes control back.
-            </SettingsNotice>
-            {state?.message && <SettingsNotice>{state.message}</SettingsNotice>}
+            </p>
+          </SettingsSection>
+          <SettingsSection
+            title="Shared workspaces"
+            count={sharedWorkspaces.length}
+          >
+            {!sharedWorkspaces.length && (
+              <p className="settings-help">No workspaces are shared.</p>
+            )}
+            {sharedWorkspaces.map((workspace, index) => (
+              <SettingRow
+                key={workspace.id}
+                label={`Workspace ${index + 1}`}
+                description={
+                  workspace.message ??
+                  (workspace.online
+                    ? "Available to your account"
+                    : "Waiting for connection")
+                }
+              >
+                <span className="setting-value">
+                  {workspace.online ? "Online" : "Offline"}
+                </span>
+              </SettingRow>
+            ))}
+          </SettingsSection>
+          <SettingsSection
+            title="Connected browsers"
+            count={connectedBrowsers.length}
+          >
+            {!connectedBrowsers.length && (
+              <p className="settings-help">No browsers have access.</p>
+            )}
+            {connectedBrowsers.map((grant, index) => (
+              <SettingRow
+                key={grant.id}
+                label={`Browser ${index + 1}`}
+                description={`${grant.sessionIds.length} terminals · expires ${new Date(grant.expiresAt * 1000).toLocaleString()}`}
+              >
+                <button
+                  className="button"
+                  disabled={!available || busy}
+                  onClick={() => void revoke(grant.id)}
+                >
+                  Revoke access
+                </button>
+              </SettingRow>
+            ))}
+          </SettingsSection>
+          <SettingsSection title="Background sessions">
             <SettingRow
               label="Keep Lomi running"
-              description="Closing the workspace hides its window and keeps its terminals running. Quit Lomi saves and stops sessions through the existing close guards."
+              description="Closing the workspace window keeps its terminals running. Quit Lomi saves and stops sessions after checking for unsaved work."
             >
               <button
                 className="button"
@@ -102,49 +159,6 @@ export default function RemoteSettingsPage({
                 Quit Lomi
               </button>
             </SettingRow>
-          </SettingsSection>
-          <SettingsSection title="Shared workspaces">
-            {!state?.workspaces?.some((w) => w.shared) && (
-              <SettingsNotice>No workspaces are shared.</SettingsNotice>
-            )}
-            {state?.workspaces
-              ?.filter((w) => w.shared)
-              .map((workspace, index) => (
-                <SettingRow
-                  key={workspace.id}
-                  label={`Workspace ${index + 1}`}
-                  description={
-                    workspace.message ??
-                    (workspace.online
-                      ? "Available to your account"
-                      : "Waiting for connection")
-                  }
-                >
-                  <span>{workspace.online ? "Online" : "Offline"}</span>
-                </SettingRow>
-              ))}
-          </SettingsSection>
-          <SettingsSection title="Connected browsers">
-            {!state?.grants?.some((grant) => !grant.revoked) && (
-              <SettingsNotice>No browsers have access.</SettingsNotice>
-            )}
-            {state?.grants
-              ?.filter((grant) => !grant.revoked)
-              .map((grant, index) => (
-                <SettingRow
-                  key={grant.id}
-                  label={`Browser ${index + 1}`}
-                  description={`${grant.sessionIds.length} terminals · expires ${new Date(grant.expiresAt * 1000).toLocaleString()}`}
-                >
-                  <button
-                    className="button"
-                    disabled={!available || busy}
-                    onClick={() => void revoke(grant.id)}
-                  >
-                    Revoke access
-                  </button>
-                </SettingRow>
-              ))}
           </SettingsSection>
         </>
       )}
