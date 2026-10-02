@@ -12,6 +12,7 @@ import {
   type Emit,
   errorCode,
   MAX_RESPONSE,
+  MAX_TEXT_RESPONSE,
   MAX_TOOL_STEPS,
   VERSION,
 } from "./protocol.ts";
@@ -74,6 +75,8 @@ export async function generate(
   let failure: string | undefined;
   let usage: unknown;
   let rawBytes = 0;
+  let textBytes = 0;
+  let reader: ReadableStreamDefaultReader<UIMessageChunk> | undefined;
   let count = 0;
   let lastSnapshot = Date.now();
   let snapshotBytes = 0;
@@ -128,9 +131,15 @@ export async function generate(
         new TransformStream({
           transform(part, sink) {
             rawBytes += Buffer.byteLength(JSON.stringify(part));
+            if (part.type === "text-delta" || part.type === "reasoning-delta")
+              textBytes += Buffer.byteLength(part.text);
             // streamText internally retains a tee. Bound bytes AND tiny event count
             // before that tee rather than assuming its unused branch is drained.
-            if (++count > 32768 || rawBytes > MAX_RESPONSE) {
+            if (
+              ++count > 32768 ||
+              rawBytes > MAX_RESPONSE ||
+              textBytes > MAX_TEXT_RESPONSE
+            ) {
               failure = "response-limit";
               controller.abort();
               throw new Error("response-limit");
@@ -145,7 +154,10 @@ export async function generate(
       generateMessageId: () => input.assistantId,
       onError: () => failure ?? "network",
     });
-    for await (const raw of stream) {
+    reader = stream.getReader();
+    for (;;) {
+      const { done, value: raw } = await reader.read();
+      if (done) break;
       let chunk: UIMessageChunk;
       switch (raw.type) {
         case "start":
@@ -218,6 +230,12 @@ export async function generate(
     controller.abort();
   } finally {
     clearTimeout(deadline);
+    if (reader) {
+      // SDK streams retain another tee branch. Its cancellation can wait for
+      // that branch, so terminal output must not depend on its completion.
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
   }
   const status =
     failure && failure !== "cancelled"

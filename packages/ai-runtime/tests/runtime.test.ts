@@ -46,7 +46,18 @@ function runtime() {
       assert.ok(
         Date.now() < end,
         "Fixture deadline exceeded: " +
-          JSON.stringify({ exited, stderr, events }),
+          JSON.stringify({
+            exited,
+            stderrBytes: Buffer.byteLength(stderr),
+            eventCount: events.length,
+            lastEvents: events
+              .slice(-5)
+              .map(({ type, requestId, sequence }) => ({
+                type,
+                requestId,
+                sequence,
+              })),
+          }),
       );
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -277,6 +288,15 @@ test("a local response limit aborts generation and reports the limit once", asyn
     const count = r.events.length;
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(r.events.length, count);
+    assert.ok(!JSON.stringify(r.events).includes("PRIVATE"));
+    r.start("fixture", "after-limit");
+    await r.waitFor(() =>
+      r.events.some(
+        (event) =>
+          event.requestId === "after-limit" && event.type === "completed",
+      ),
+    );
+    assert.equal(r.exited(), undefined);
     assert.equal(r.stderr(), "");
   } finally {
     r.child.kill();

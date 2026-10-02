@@ -262,7 +262,7 @@ void serve(
               input.model === "fixture-fast"
                 ? 10000
                 : input.model === "fixture-large"
-                  ? 100
+                  ? 1000
                   : 40;
             for (let i = 0; i < count && !abortSignal?.aborted; i++) {
               controller.enqueue({
