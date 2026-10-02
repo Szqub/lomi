@@ -8,6 +8,12 @@ const signedOut: AuthState = {
   status: "signed-out",
 };
 
+const storageLocked: AuthState = {
+  ...signedOut,
+  status: "storage-locked",
+  message: "The account session is unavailable in the system key store.",
+};
+
 const signedIn: AuthState = {
   ...signedOut,
   revision: 10,
@@ -155,6 +161,182 @@ async function assertVerificationLaunch(page: Page) {
       { command: "auth_open_verification", args: { attemptId: "attempt-1" } },
     ]);
 }
+
+async function accountSettingsCalls(page: Page) {
+  return page.evaluate(() =>
+    (window as any).__nativeTest.calls.filter(
+      (call: any) => call.command === "open_settings",
+    ),
+  );
+}
+
+test("Sign In opens account recovery when saved storage is locked", async ({
+  page,
+}) => {
+  await mockMainWindow(page, { state: storageLocked });
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  await expect
+    .poll(() => accountSettingsCalls(page))
+    .toEqual([{ command: "open_settings", args: { page: "account" } }]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (call: any) => call.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([]);
+});
+
+test("a fresh locked login response opens recovery without silently changing storage", async ({
+  page,
+}) => {
+  await mockMainWindow(page);
+  await page.evaluate((locked) => {
+    const desktop = window as any;
+    const invoke = desktop.__authInvoke;
+    desktop.__authInvoke = async (command: string, args: any) => {
+      if (command !== "auth_begin_login") return invoke(command, args);
+      desktop.__authTest.calls.push({ command, args });
+      return (desktop.__authTest.state = { ...locked, revision: 2 });
+    };
+  }, storageLocked);
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  await expect
+    .poll(() => accountSettingsCalls(page))
+    .toEqual([{ command: "open_settings", args: { page: "account" } }]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter((call: any) =>
+        [
+          "auth_begin_login",
+          "auth_open_verification",
+          "auth_sign_out",
+        ].includes(call.command),
+      ),
+    ),
+  ).toEqual([{ command: "auth_begin_login", args: { storage: "persistent" } }]);
+  await expect(
+    page.getByText(storageLocked.message!, { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("a stale locked login response cannot open recovery after a newer signed-in event", async ({
+  page,
+}) => {
+  await mockMainWindow(page);
+  await page.evaluate((locked) => {
+    const desktop = window as any;
+    const invoke = desktop.__authInvoke;
+    desktop.__authInvoke = async (command: string, args: any) => {
+      if (command !== "auth_begin_login") return invoke(command, args);
+      return new Promise((resolve) => {
+        desktop.__finishLockedLogin = () => resolve({ ...locked, revision: 2 });
+      });
+    };
+  }, storageLocked);
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as any).__finishLockedLogin))
+    .toBe("function");
+  await emitAuthState(page, { ...signedIn, revision: 3 });
+  await page.evaluate(() => (window as any).__finishLockedLogin());
+  await expect(
+    page.getByRole("button", { name: "Open account menu for Lomi User" }),
+  ).toBeEnabled();
+  expect(await accountSettingsCalls(page)).toEqual([]);
+});
+
+test("locked account menu exposes explicit sign-out before a new remembered login", async ({
+  page,
+}, testInfo) => {
+  await mockMainWindow(page, { state: storageLocked });
+  await page.evaluate(() => {
+    const desktop = window as any;
+    desktop.__authTest.remoteRevocationConfirmed = false;
+    const invoke = desktop.__authInvoke;
+    desktop.__authInvoke = async (command: string, args: unknown) => {
+      const result = await invoke(command, args);
+      if (command === "auth_sign_out")
+        result.message =
+          "Signed out locally. System key store cleanup will be retried.";
+      return result;
+    };
+  });
+  await page
+    .getByRole("button", { name: "Open account menu", exact: true })
+    .click();
+  const menu = page.getByRole("menu", { name: "Account menu" });
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Settings",
+    "Account settings",
+    "Sign out",
+  ]);
+  await page.screenshot({
+    path: testInfo.outputPath("locked-account-menu.png"),
+  });
+  await menu.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "System key store cleanup will be retried.",
+  );
+  await expect(page.getByRole("alert")).toContainText(
+    "The server could not confirm that its session was revoked.",
+  );
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter((call: any) =>
+        [
+          "auth_sign_out",
+          "auth_begin_login",
+          "auth_open_verification",
+        ].includes(call.command),
+      ),
+    ),
+  ).toEqual([
+    { command: "auth_sign_out", args: {} },
+    { command: "auth_begin_login", args: { storage: "persistent" } },
+    { command: "auth_open_verification", args: { attemptId: "attempt-1" } },
+  ]);
+});
+
+test("failed sign-out from a locked menu reports failure and preserves recovery", async ({
+  page,
+}) => {
+  await mockMainWindow(page, { state: storageLocked });
+  await page.evaluate(() => {
+    const desktop = window as any;
+    const invoke = desktop.__authInvoke;
+    desktop.__authInvoke = async (command: string, args: unknown) => {
+      const result = await invoke(command, args);
+      if (command === "auth_sign_out") {
+        result.status = "storage-locked";
+        result.remoteRevocationConfirmed = false;
+        result.message =
+          "Could not safely persist local sign-out. Unlock storage and retry.";
+      }
+      return result;
+    };
+  });
+  await page
+    .getByRole("button", { name: "Open account menu", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Could not safely persist local sign-out.");
+  await expect(alert).toContainText("The server could not confirm");
+  await expect(alert).not.toContainText("Signed out on this device.");
+  await page.getByRole("button", { name: "Sign In", exact: true }).click();
+  await expect
+    .poll(() => accountSettingsCalls(page))
+    .toEqual([{ command: "open_settings", args: { page: "account" } }]);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (call: any) => call.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([]);
+});
 
 for (const destination of ["welcome", "workspace"] as const) {
   test(`Sign In starts GitHub login from the ${destination}`, async ({

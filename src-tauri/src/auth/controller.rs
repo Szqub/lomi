@@ -375,9 +375,9 @@ impl AuthController {
                 .is_some_and(CredentialStore::has_active_reference);
             if has_unresolved_session && storage == AuthStorage::Persistent {
                 core.state.status = AuthStatus::StorageLocked;
-                core.state.message = Some(
-                    "A previously stored session must be checked or signed out before replacing it.".into(),
-                );
+                core.state.message.get_or_insert_with(|| {
+                    "The saved session could not be restored. Open Account settings to check it or sign out of this device before signing in again.".into()
+                });
                 drop(core);
                 self.publish();
                 return self.snapshot();
@@ -802,20 +802,20 @@ impl AuthController {
     }
 
     pub async fn sign_out(&self) -> AuthState {
-        let (generation, token, tombstone_error, remote_attempted) = {
+        let (generation, token, tombstone_error, had_session) = {
             let Ok(mut core) = self.inner.core.lock() else {
                 return self.snapshot();
             };
             let generation = core.next_generation();
             core.attempt = None;
             let token = core.token.take();
-            let remote_attempted = token.is_some();
             let persistent_reference = core.token_storage == Some(AuthStorage::Persistent)
                 || core
                     .store
                     .as_ref()
                     .is_some_and(CredentialStore::has_active_reference)
                 || (core.store.is_none() && core.state.status == AuthStatus::StorageLocked);
+            let had_session = token.is_some() || persistent_reference;
             let tombstone_error = match core.store.as_mut() {
                 Some(store) => store.tombstone().err(),
                 None if persistent_reference => {
@@ -838,7 +838,7 @@ impl AuthController {
                 "Could not safely persist local sign-out. Unlock storage and retry.".into()
             });
             core.state.remote_revocation_confirmed = None;
-            (generation, token, tombstone_error, remote_attempted)
+            (generation, token, tombstone_error, had_session)
         };
         self.publish();
 
@@ -847,6 +847,7 @@ impl AuthController {
                 Some(api) => Some(api.sign_out(token.exposed()).await),
                 None => Some(false),
             },
+            None if had_session => Some(false),
             None => None,
         };
         drop(token);
@@ -861,12 +862,12 @@ impl AuthController {
                                 "Signed out locally. System key store cleanup will be retried."
                                     .into(),
                             );
-                        } else if remote_attempted && remote_confirmed == Some(false) {
+                        } else if had_session && remote_confirmed == Some(false) {
                             core.state.message = Some(
                                 "Signed out locally. The remote session may remain active until it expires or is revoked online.".into(),
                             );
                         }
-                    } else if remote_attempted && remote_confirmed == Some(false) {
+                    } else if had_session && remote_confirmed == Some(false) {
                         core.state.message = Some(
                             "Signed out locally. The remote session may remain active until it expires or is revoked online.".into(),
                         );
@@ -1671,6 +1672,185 @@ mod tests {
                 core: Mutex::new(Core::new(status, None)),
             }),
         }
+    }
+
+    fn attach_unreadable_store(controller: &AuthController, root: &Path) {
+        std::fs::write(
+            root.join("credentials.json"),
+            br#"{"version":1,"activeId":"credential-1","journalIds":[],"logoutTombstone":false}"#,
+        )
+        .unwrap();
+        let mut store = CredentialStore::open(root, "test-unreadable-reference").unwrap();
+        store.deny_key_store_access();
+        let mut core = controller.inner.core.lock().unwrap();
+        core.store = Some(store);
+        core.state.message =
+            Some("The account session is unavailable in the system key store.".into());
+    }
+
+    #[tokio::test]
+    async fn persistent_sign_in_preserves_unreadable_reference_and_its_diagnosis() {
+        let temp = tempfile::tempdir().unwrap();
+        let controller =
+            controller_for_origin("https://auth.lomi.dev".into(), AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, temp.path());
+        let before = std::fs::read(temp.path().join("credentials.json")).unwrap();
+
+        let state = controller.begin_login(AuthStorage::Persistent).await;
+        assert_eq!(state.status, AuthStatus::StorageLocked);
+        assert_eq!(
+            state.message.as_deref(),
+            Some("The account session is unavailable in the system key store.")
+        );
+        assert!(state.attempt.is_none());
+        assert_eq!(
+            std::fs::read(temp.path().join("credentials.json")).unwrap(),
+            before
+        );
+        assert!(controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .has_active_reference());
+    }
+
+    #[tokio::test]
+    async fn explicit_session_sign_in_tombstones_unreadable_reference_before_browser_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let metadata_path = temp.path().join("credentials.json");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_complete_http_request(&mut stream);
+            let metadata: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(metadata_path).unwrap()).unwrap();
+            assert_eq!(metadata["logoutTombstone"], true);
+            assert_eq!(metadata["journalIds"], serde_json::json!(["credential-1"]));
+            respond_probe(&mut stream, "503 Service Unavailable");
+            request
+        });
+        let controller = controller_for_origin(origin, AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, temp.path());
+
+        controller.begin_login(AuthStorage::Session).await;
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /v1/desktop/start "));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path().join("credentials.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["logoutTombstone"], true);
+        assert_eq!(metadata["activeId"], "credential-1");
+        assert_eq!(metadata["journalIds"], serde_json::json!(["credential-1"]));
+        assert!(!controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .has_active_reference());
+    }
+
+    #[tokio::test]
+    async fn failed_tombstone_blocks_session_sign_in_without_changing_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let controller =
+            controller_for_origin("https://auth.lomi.dev".into(), AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, temp.path());
+        let before = std::fs::read(temp.path().join("credentials.json")).unwrap();
+        controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_mut()
+            .unwrap()
+            .fail_next_metadata_write();
+
+        let state = controller.begin_login(AuthStorage::Session).await;
+        assert_eq!(state.status, AuthStatus::StorageLocked);
+        assert!(state.attempt.is_none());
+        assert_eq!(
+            std::fs::read(temp.path().join("credentials.json")).unwrap(),
+            before
+        );
+        assert!(controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .has_active_reference());
+    }
+
+    #[tokio::test]
+    async fn signing_out_an_unreadable_reference_reports_unconfirmed_remote_revocation() {
+        let temp = tempfile::tempdir().unwrap();
+        let controller =
+            controller_for_origin("https://auth.lomi.dev".into(), AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, temp.path());
+
+        let state = controller.sign_out().await;
+        assert_eq!(state.status, AuthStatus::SignedOut);
+        assert_eq!(state.remote_revocation_confirmed, Some(false));
+        assert!(state.message.unwrap().contains("cleanup will be retried"));
+        let mut core = controller.inner.core.lock().unwrap();
+        let store = core.store.as_mut().unwrap();
+        assert!(!store.has_active_reference());
+        assert_eq!(store.load_active().unwrap(), None);
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path().join("credentials.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["logoutTombstone"], true);
+        assert_eq!(metadata["journalIds"], serde_json::json!(["credential-1"]));
+    }
+
+    #[tokio::test]
+    async fn failed_sign_out_preserves_unreadable_reference_and_reports_storage_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let controller =
+            controller_for_origin("https://auth.lomi.dev".into(), AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, temp.path());
+        let before = std::fs::read(temp.path().join("credentials.json")).unwrap();
+        controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_mut()
+            .unwrap()
+            .fail_next_metadata_write();
+
+        let state = controller.sign_out().await;
+        assert_eq!(state.status, AuthStatus::StorageLocked);
+        assert_eq!(state.remote_revocation_confirmed, Some(false));
+        assert!(state
+            .message
+            .unwrap()
+            .contains("Could not safely persist local sign-out"));
+        assert_eq!(
+            std::fs::read(temp.path().join("credentials.json")).unwrap(),
+            before
+        );
+        assert!(controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .has_active_reference());
     }
 
     #[tokio::test]

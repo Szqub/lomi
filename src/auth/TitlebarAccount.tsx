@@ -134,11 +134,16 @@ export default function TitlebarAccount({
           command === "auth_sign_out" &&
           latest?.revision === result.revision
         ) {
-          if (result.message) onError(result.message);
-          else if (result.remoteRevocationConfirmed === false)
+          if (result.remoteRevocationConfirmed === false) {
+            const localMessage =
+              result.message ||
+              (result.status === "signed-out"
+                ? "Signed out on this device."
+                : "");
             onError(
-              "Signed out on this device. The server could not confirm that its session was revoked. You can remove it from your account in a browser.",
+              `${localMessage} The server could not confirm that its session was revoked. You can remove it from your account in a browser.`.trim(),
             );
+          } else if (result.message) onError(result.message);
         }
       }
     } catch (error) {
@@ -151,6 +156,14 @@ export default function TitlebarAccount({
 
   const signIn = () => {
     if (!native || pending.current) return;
+    if (
+      current.current?.status === "storage-locked" &&
+      !current.current.user &&
+      !current.current.session
+    ) {
+      void runAccountAction("open_settings");
+      return;
+    }
     pending.current = true;
     setOpening(true);
     void (async () => {
@@ -166,11 +179,18 @@ export default function TitlebarAccount({
           if (!mounted.current) return;
           const latest = accept(started);
           if (latest && latest.revision > started.revision) return;
+          if (
+            started.status === "storage-locked" &&
+            latest?.status === "storage-locked" &&
+            latest.revision === started.revision
+          ) {
+            await api("open_settings", { page: "account" });
+            return;
+          }
           if (started.status === "unavailable" || !started.attempt) {
             if (
               started.status === "unavailable" ||
-              started.status === "error" ||
-              started.status === "storage-locked"
+              started.status === "error"
             ) {
               onError(started.message || "Sign-in is not available right now.");
             }
@@ -322,7 +342,7 @@ export default function TitlebarAccount({
               icon: <Settings size={15} aria-hidden="true" />,
               run: onOpenSettings,
             },
-            ...(hasAccount
+            ...(hasAccount || state?.status === "storage-locked"
               ? [
                   null,
                   {
@@ -330,12 +350,16 @@ export default function TitlebarAccount({
                     icon: <Settings size={15} aria-hidden="true" />,
                     run: () => void runAccountAction("open_settings"),
                   },
-                  {
-                    label: "Manage account",
-                    icon: <ExternalLink size={15} aria-hidden="true" />,
-                    run: () =>
-                      void runAccountAction("auth_open_account_portal"),
-                  },
+                  ...(hasAccount
+                    ? [
+                        {
+                          label: "Manage account",
+                          icon: <ExternalLink size={15} aria-hidden="true" />,
+                          run: () =>
+                            void runAccountAction("auth_open_account_portal"),
+                        },
+                      ]
+                    : []),
                   null,
                   {
                     label: "Sign out",

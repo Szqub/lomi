@@ -3,9 +3,13 @@
 Account sign-in is optional. Projects, terminals, local files, plugins, and Chat AI
 provider credentials do not depend on the account service. The account controls
 live in Settings → Account. The titlebar's Sign In button starts the same browser
-flow directly, using persistent storage by default. An existing authorization
-attempt is reopened instead of replaced. The arrow beside Sign In opens a menu
-with Settings. The signed-in avatar opens an account
+flow directly, using persistent storage by default. When a stored session is
+locked and no account is available, Sign In opens Settings → Account for recovery.
+A fresh sign-in response reporting locked storage also opens that page unless a
+newer account state has already arrived. An existing authorization attempt is
+reopened instead of replaced. The arrow beside Sign In opens a menu with Settings;
+locked storage also exposes Account settings and Sign out even without an account.
+The signed-in avatar opens an account
 menu with Settings, Account settings, Manage account (the browser portal), and
 Sign out (this device). The menu also remains available while the account is
 offline. General settings remain available through the Open settings keyboard
@@ -70,9 +74,16 @@ the signed-out account. Unreadable metadata is preserved for recovery.
 
 On macOS, Lomi disables Keychain password and access dialogs for its process.
 Credentials that require interaction remain unavailable, and their references and
-pending cleanup are preserved. Use Sign out (this device) before a new browser
-sign-in, or turn off Remember me to explicitly use a session for this process.
+pending cleanup are preserved. Settings → Account explains the recovery choices:
+use Check connection to retry access, explicitly Sign out of this device before
+replacing the stored session with a persistent sign-in, or turn off Remember me on
+this device to select a session for this process. Damaged metadata or storage
+owned by another Lomi process must be resolved first; these choices do not bypass
+native storage ownership and recovery checks.
 Lomi never automatically falls back to memory when persistent storage fails.
+If remote revocation cannot be confirmed, the UI warns that the server session
+may remain active. It reports successful local sign-out only after the logout
+tombstone was saved, even when key store cleanup must be retried.
 
 The Remember me switch explicitly selects persistent storage or memory for the
 current process. There is no plaintext fallback. Replacing an unresolved persistent

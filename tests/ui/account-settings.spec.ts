@@ -7,6 +7,11 @@ const signedOut: AuthState = {
   revision: 1,
   status: "signed-out",
 };
+const storageLocked: AuthState = {
+  ...signedOut,
+  status: "storage-locked",
+  message: "The account session is unavailable in the system key store.",
+};
 const signedIn: AuthState = {
   ...signedOut,
   revision: 10,
@@ -73,6 +78,126 @@ async function mockAccount(page: Page, state = signedOut) {
     page.getByRole("heading", { name: "Account", exact: true }),
   ).toBeVisible();
 }
+
+test("locked storage explains recovery and keeps session-only login an explicit choice", async ({
+  page,
+}, testInfo) => {
+  await mockAccount(page, storageLocked);
+  await expect(
+    page.getByText(/Use Check connection to retry access/),
+  ).toBeVisible();
+  const remember = page.getByRole("switch", {
+    name: "Remember me on this device",
+  });
+  await expect(remember).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Sign out of this device" }),
+  ).toBeEnabled();
+  await page.screenshot({
+    path: testInfo.outputPath("locked-account-recovery.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (call: any) => call.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([]);
+  await remember.uncheck();
+  await expect(
+    page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Sign in with GitHub", exact: true })
+    .click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (call: any) => call.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([{ command: "auth_begin_login", args: { storage: "session" } }]);
+});
+
+test("explicit local sign-out enables a fresh persistent login and reports unconfirmed revocation", async ({
+  page,
+}) => {
+  await mockAccount(page, storageLocked);
+  await page.getByRole("button", { name: "Sign out of this device" }).click();
+  await expect(
+    page.getByText(/The server could not confirm that its session was revoked/),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Sign in with GitHub", exact: true })
+    .click();
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter((call: any) =>
+        ["auth_sign_out", "auth_begin_login"].includes(call.command),
+      ),
+    ),
+  ).toEqual([
+    { command: "auth_sign_out", args: {} },
+    { command: "auth_begin_login", args: { storage: "persistent" } },
+  ]);
+});
+
+test("failed durable sign-out keeps recovery blocked without claiming local success", async ({
+  page,
+}) => {
+  await mockAccount(page, storageLocked);
+  await page.evaluate(() => {
+    const desktop = window as any;
+    const invoke = desktop.__authInvoke;
+    desktop.__authInvoke = async (command: string, args: unknown) => {
+      const result = await invoke(command, args);
+      if (command === "auth_sign_out") {
+        result.status = "storage-locked";
+        result.message =
+          "Could not safely persist local sign-out. Unlock storage and retry.";
+      }
+      return result;
+    };
+  });
+  await page.getByRole("button", { name: "Sign out of this device" }).click();
+  await expect(
+    page.getByText(
+      "Could not safely persist local sign-out. Unlock storage and retry.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/Signed out on this device/)).toHaveCount(0);
+  await expect(
+    page.getByText(/The server could not confirm that its session was revoked/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+  ).toBeDisabled();
+});
+
+test("Check connection can restore a locked saved account without starting a new login", async ({
+  page,
+}) => {
+  await mockAccount(page, storageLocked);
+  await page.evaluate((state) => {
+    (window as any).__authTest.state = state;
+  }, signedIn);
+  await page.getByRole("button", { name: "Check connection" }).click();
+  await expect(page.getByText("Lomi User", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(/Use Check connection to retry access/),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      (window as any).__authTest.calls.filter(
+        (call: any) => call.command === "auth_begin_login",
+      ),
+    ),
+  ).toEqual([]);
+});
 
 test("session-only login waits for browser approval and survives page changes", async ({
   page,

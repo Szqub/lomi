@@ -193,10 +193,18 @@ export default function AccountSettingsPage() {
           successful connection. Your local work is unaffected.
         </SettingsNotice>
       )}
+      {status === "storage-locked" && (
+        <SettingsNotice tone="warning" role="status">
+          Use Check connection to retry access. To replace the saved sign-in,
+          choose Sign out of this device. To sign in only until Lomi closes,
+          turn off Remember me on this device.
+        </SettingsNotice>
+      )}
       {state?.remoteRevocationConfirmed === false && !hasAccount && (
         <SettingsNotice tone="warning" role="status">
-          Signed out on this device. The server could not confirm that its
-          session was revoked. You can remove it from your account in a browser.
+          {status === "signed-out" && "Signed out on this device. "}
+          The server could not confirm that its session was revoked. You can
+          remove it from your account in a browser.
         </SettingsNotice>
       )}
       {state?.user && (
@@ -290,7 +298,7 @@ export default function AccountSettingsPage() {
           <div className="account-actions">
             <button
               className="button button-primary"
-              disabled={busy}
+              disabled={busy || (status === "storage-locked" && remember)}
               onClick={() =>
                 void run(
                   "auth_begin_login",

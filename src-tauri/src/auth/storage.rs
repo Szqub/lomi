@@ -236,6 +236,16 @@ impl CredentialStore {
         self.metadata.active_id.is_some() && !self.metadata.logout_tombstone
     }
 
+    #[cfg(test)]
+    pub(super) fn deny_key_store_access(&mut self) {
+        self.fail_key_store_access = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_metadata_write(&mut self) {
+        self.fail_persist_on = Some(self.persist_count + 1);
+    }
+
     fn entry(&self, id: &str) -> Result<keyring::Entry, String> {
         if !valid_credential_id(id) {
             return Err("Invalid account credential identifier.".into());
