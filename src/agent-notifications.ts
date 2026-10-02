@@ -46,6 +46,7 @@ export interface AgentNotification {
   paneId: string;
   sessionId: string;
   kind: "attention" | "finished";
+  source: "claude" | "terminal";
 }
 const listeners = new Set<(event: AgentNotification) => void>();
 export function subscribeAgentNotifications(

@@ -151,6 +151,15 @@ or acronym.
   agy's supplied JSON state, reading current conversation names from its local
   annotation files without starting the GUI or reading transcripts. Never
   configure a CLI silently or restart it automatically.
+- `src/NotificationCenter.tsx` exposes the local notification inbox from the
+  titlebar account menu for signed-in and signed-out users. Arrivals stay quiet
+  in the interface; only the signed-in avatar shows an unread count capped at
+  `9+`. Signed-out counts appear inside the menu. Reading and dismissing entries
+  are explicit actions. `src-tauri/src/notifications.rs` persists a bounded,
+  versioned inbox independently of the workspace session and OS alert delivery.
+  Subscribe before loading and accept only current revisioned snapshots. Agent
+  notification preferences gate recording and delivery; focused-window events
+  still enter the inbox, while system alerts are requested in the background.
 - `src/AgentUsage.tsx` observes the existing terminal-context stream and shows
   each active CLI provider's icon and remaining account quota beside the
   titlebar account/settings control. Show one summary per provider using its

@@ -1389,7 +1389,7 @@ export default function Workbench() {
         document.querySelector("dialog[open]") ||
         (event.target instanceof Element &&
           event.target.closest(
-            ".tab-context-menu, .editor-status-menu, .sidebar-context-menu, .markdown-preview-menu, .explorer-context-menu",
+            ".tab-context-menu, .editor-status-menu, .sidebar-context-menu, .markdown-preview-menu, .explorer-context-menu, .notification-center",
           )) ||
         (isTextInput(event.target) &&
           !(

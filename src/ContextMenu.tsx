@@ -8,6 +8,8 @@ export interface ContextAction {
   run: () => void;
   disabled?: boolean;
   shortcut?: string;
+  badge?: ReactNode;
+  description?: string;
   danger?: boolean;
 }
 
@@ -107,6 +109,7 @@ export default function ContextMenu({
             type="button"
             role="menuitem"
             aria-label={action.label}
+            aria-description={action.description}
             tabIndex={-1}
             key={action.label}
             className={`menu-item${action.danger ? " text-error" : ""}`}
@@ -118,6 +121,9 @@ export default function ContextMenu({
           >
             {action.icon}
             <span>{action.label}</span>
+            {action.badge && (
+              <span className="menu-item-badge">{action.badge}</span>
+            )}
             {action.shortcut && <kbd>{action.shortcut}</kbd>}
           </button>
         ) : (

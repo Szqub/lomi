@@ -8,6 +8,7 @@ if (process.platform !== "darwin")
   throw Error("This native notification runner currently supports macOS.");
 const root = resolve(import.meta.dirname, "../..");
 const directory = await mkdtemp(join(tmpdir(), "lomi-notification-native-"));
+const inboxOnly = process.argv.includes("--inbox-only");
 const identifier = `dev.lomi.notification-smoke-${Date.now()}`;
 const appData = join(homedir(), "Library/Application Support", identifier);
 const folder = join(directory, "project");
@@ -36,7 +37,7 @@ await writeFile(
     identifier,
     build: {
       beforeDevCommand: `pnpm dev --port ${port}`,
-      devUrl: `http://127.0.0.1:${port}`,
+      devUrl: `http://127.0.0.1:${port}${inboxOnly ? "/?notification-smoke=inbox" : ""}`,
     },
   }),
 );

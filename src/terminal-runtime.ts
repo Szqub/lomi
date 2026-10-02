@@ -288,6 +288,7 @@ export class TerminalRuntime {
           paneId: this.paneId,
           sessionId: this.sessionId,
           kind: "attention",
+          source: "terminal",
         });
       return true;
     });
@@ -301,6 +302,7 @@ export class TerminalRuntime {
           paneId: this.paneId,
           sessionId: this.sessionId,
           kind,
+          source: "claude",
         });
       return true;
     });

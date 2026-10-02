@@ -23,130 +23,136 @@
           .status === "running",
     );
     const id = runtime.sessionId;
-    checkpoint = "terminal activity title";
-    await invoke("plugin_smoke_result", {
-      stage: "notification-foreground",
-      data: null,
-    });
-    await wait(() => runtime.getSnapshot().cwd && document.hasFocus());
-    await invoke("write_terminal", {
-      id,
-      data: "printf '\\033]2;⠋ Native agent task\\007\\033]777;notify;Lomi;claude;working\\007'; sleep 3\r",
-    });
-    await wait(
-      () =>
-        document.querySelector(".terminal-activity")?.textContent === "Working",
-    );
-    if (
-      document.querySelector(".terminal-title")?.textContent !==
-      "Native agent task"
-    )
-      throw Error("Single terminal did not display its title");
-    if (document.querySelector(".terminal-heading button"))
-      throw Error("Single terminal offered maximization");
-    if (document.querySelector(".terminal-title-box svg"))
-      throw Error("Single terminal still has a terminal icon");
-    await wait(() => runtime.getSnapshot().agentSignal === null);
-    if (document.querySelector(".terminal-activity"))
-      throw Error("Activity remained visible after the shell prompt");
-    checkpoint = "native agent quit confirmation";
-    await invoke("write_terminal", {
-      id,
-      data: "printf '\\033]777;notify;Lomi;claude;working\\007'; sleep 30\r",
-    });
-    await wait(async () =>
-      (await invoke("busy_terminals", { ids: [id] })).includes(id),
-    );
-    for (const stage of [
-      "notification-cmd-q",
-      "notification-quit",
-      "notification-close",
-    ]) {
-      checkpoint = stage;
-      await invoke("plugin_smoke_result", { stage, data: null });
-      await wait(
-        () =>
-          document.querySelector("dialog[open] h2")?.textContent ===
-          "Quit Lomi?",
-      );
-      const dialog = document.querySelector("dialog[open]");
-      const cancel = [...dialog.querySelectorAll("button")].find(
-        (button) => button.textContent === "Cancel",
-      );
-      if (document.activeElement !== cancel)
-        throw Error("Quit confirmation did not focus Cancel");
-      if (!dialog.textContent.includes("running processes"))
-        throw Error(
-          "Quit confirmation did not detect the real terminal process",
-        );
-      await invoke("plugin_smoke_result", { stage, data: null });
-      await pause(100);
-      if (document.querySelectorAll("dialog[open]").length !== 1)
-        throw Error("Repeated native quit opened multiple dialogs");
-      cancel.click();
-      await wait(() => !document.querySelector("dialog[open]"));
-      await pause(100);
-      if (!(await invoke("busy_terminals", { ids: [id] })).includes(id))
-        throw Error("Cancelling quit stopped the terminal process");
-      if (runningTerminal("notification-terminal")?.sessionId !== id)
-        throw Error("Cancelling quit replaced the PTY");
-    }
-    await invoke("write_terminal", { id, data: "\u0003" });
-    await wait(() => runtime.getSnapshot().agentSignal === null);
-    checkpoint = "native quit with an interactive terminal program";
-    await invoke("write_terminal", {
-      id,
-      data: "/usr/bin/vim -Nu NONE -n -i NONE quit-guard.txt\r",
-    });
-    await wait(() => runtime.terminal.buffer.active.type === "alternate");
-    await invoke("write_terminal", { id, data: "iUNSAVED QUIT GUARD" });
-    const vimText = () =>
-      Array.from({ length: runtime.terminal.buffer.active.length }, (_, i) =>
-        runtime.terminal.buffer.active.getLine(i)?.translateToString(),
-      ).join("\n");
-    await wait(() => vimText().includes("UNSAVED QUIT GUARD"));
-    for (const focus of ["terminal", "settings"]) {
-      checkpoint = `native Cmd+Q with vim and ${focus} focused`;
-      if (focus === "settings") {
-        await invoke("plugin_smoke_result", {
-          stage: "notification-settings",
-          data: null,
-        });
-        await wait(() => !document.hasFocus());
-      } else {
-        runtime.terminal.focus();
-      }
+    const inboxOnly =
+      new URLSearchParams(location.search).get("notification-smoke") ===
+      "inbox";
+    if (!inboxOnly) {
+      checkpoint = "terminal activity title";
       await invoke("plugin_smoke_result", {
-        stage: "notification-cmd-q",
+        stage: "notification-foreground",
         data: null,
+      });
+      await wait(() => runtime.getSnapshot().cwd && document.hasFocus());
+      await invoke("write_terminal", {
+        id,
+        data: "printf '\\033]2;⠋ Native agent task\\007\\033]777;notify;Lomi;claude;working\\007'; sleep 3\r",
       });
       await wait(
         () =>
-          document.querySelector("dialog[open] h2")?.textContent ===
-          "Quit Lomi?",
+          document.querySelector(".terminal-activity")?.textContent ===
+          "Working",
       );
-      const dialog = document.querySelector("dialog[open]");
-      const cancel = [...dialog.querySelectorAll("button")].find(
-        (button) => button.textContent === "Cancel",
-      );
-      if (!dialog.textContent.includes("running processes"))
-        throw Error("Quit did not detect the interactive terminal program");
-      if (document.activeElement !== cancel)
-        throw Error("Cmd+Q did not focus Cancel");
-      cancel.click();
-      await wait(() => !document.querySelector("dialog[open]"));
       if (
-        runtime.terminal.buffer.active.type !== "alternate" ||
-        !vimText().includes("UNSAVED QUIT GUARD") ||
-        runningTerminal("notification-terminal")?.sessionId !== id ||
-        !(await invoke("busy_terminals", { ids: [id] })).includes(id)
+        document.querySelector(".terminal-title")?.textContent !==
+        "Native agent task"
       )
-        throw Error(
-          "Cancelling Cmd+Q lost the running vim session or its input",
+        throw Error("Single terminal did not display its title");
+      if (document.querySelector(".terminal-heading button"))
+        throw Error("Single terminal offered maximization");
+      if (document.querySelector(".terminal-title-box svg"))
+        throw Error("Single terminal still has a terminal icon");
+      await wait(() => runtime.getSnapshot().agentSignal === null);
+      if (document.querySelector(".terminal-activity"))
+        throw Error("Activity remained visible after the shell prompt");
+      checkpoint = "native agent quit confirmation";
+      await invoke("write_terminal", {
+        id,
+        data: "printf '\\033]777;notify;Lomi;claude;working\\007'; sleep 30\r",
+      });
+      await wait(async () =>
+        (await invoke("busy_terminals", { ids: [id] })).includes(id),
+      );
+      for (const stage of [
+        "notification-cmd-q",
+        "notification-quit",
+        "notification-close",
+      ]) {
+        checkpoint = stage;
+        await invoke("plugin_smoke_result", { stage, data: null });
+        await wait(
+          () =>
+            document.querySelector("dialog[open] h2")?.textContent ===
+            "Quit Lomi?",
         );
+        const dialog = document.querySelector("dialog[open]");
+        const cancel = [...dialog.querySelectorAll("button")].find(
+          (button) => button.textContent === "Cancel",
+        );
+        if (document.activeElement !== cancel)
+          throw Error("Quit confirmation did not focus Cancel");
+        if (!dialog.textContent.includes("running processes"))
+          throw Error(
+            "Quit confirmation did not detect the real terminal process",
+          );
+        await invoke("plugin_smoke_result", { stage, data: null });
+        await pause(100);
+        if (document.querySelectorAll("dialog[open]").length !== 1)
+          throw Error("Repeated native quit opened multiple dialogs");
+        cancel.click();
+        await wait(() => !document.querySelector("dialog[open]"));
+        await pause(100);
+        if (!(await invoke("busy_terminals", { ids: [id] })).includes(id))
+          throw Error("Cancelling quit stopped the terminal process");
+        if (runningTerminal("notification-terminal")?.sessionId !== id)
+          throw Error("Cancelling quit replaced the PTY");
+      }
+      await invoke("write_terminal", { id, data: "\u0003" });
+      await wait(() => runtime.getSnapshot().agentSignal === null);
+      checkpoint = "native quit with an interactive terminal program";
+      await invoke("write_terminal", {
+        id,
+        data: "/usr/bin/vim -Nu NONE -n -i NONE quit-guard.txt\r",
+      });
+      await wait(() => runtime.terminal.buffer.active.type === "alternate");
+      await invoke("write_terminal", { id, data: "iUNSAVED QUIT GUARD" });
+      const vimText = () =>
+        Array.from({ length: runtime.terminal.buffer.active.length }, (_, i) =>
+          runtime.terminal.buffer.active.getLine(i)?.translateToString(),
+        ).join("\n");
+      await wait(() => vimText().includes("UNSAVED QUIT GUARD"));
+      for (const focus of ["terminal", "settings"]) {
+        checkpoint = `native Cmd+Q with vim and ${focus} focused`;
+        if (focus === "settings") {
+          await invoke("plugin_smoke_result", {
+            stage: "notification-settings",
+            data: null,
+          });
+          await wait(() => !document.hasFocus());
+        } else {
+          runtime.terminal.focus();
+        }
+        await invoke("plugin_smoke_result", {
+          stage: "notification-cmd-q",
+          data: null,
+        });
+        await wait(
+          () =>
+            document.querySelector("dialog[open] h2")?.textContent ===
+            "Quit Lomi?",
+        );
+        const dialog = document.querySelector("dialog[open]");
+        const cancel = [...dialog.querySelectorAll("button")].find(
+          (button) => button.textContent === "Cancel",
+        );
+        if (!dialog.textContent.includes("running processes"))
+          throw Error("Quit did not detect the interactive terminal program");
+        if (document.activeElement !== cancel)
+          throw Error("Cmd+Q did not focus Cancel");
+        cancel.click();
+        await wait(() => !document.querySelector("dialog[open]"));
+        if (
+          runtime.terminal.buffer.active.type !== "alternate" ||
+          !vimText().includes("UNSAVED QUIT GUARD") ||
+          runningTerminal("notification-terminal")?.sessionId !== id ||
+          !(await invoke("busy_terminals", { ids: [id] })).includes(id)
+        )
+          throw Error(
+            "Cancelling Cmd+Q lost the running vim session or its input",
+          );
+      }
+      await invoke("write_terminal", { id, data: "\u001b:q!\r" });
+      await wait(() => runtime.terminal.buffer.active.type === "normal");
     }
-    await invoke("write_terminal", { id, data: "\u001b:q!\r" });
-    await wait(() => runtime.terminal.buffer.active.type === "normal");
     const configuration = await invoke("inspect_agent_notifications");
     if (!configuration.path.includes("lomi-notification-native-"))
       throw Error("Configuration is not isolated");
@@ -164,11 +170,24 @@
       });
     };
     checkpoint = "foreground focus";
+    await invoke("plugin_smoke_result", {
+      stage: "notification-foreground",
+      data: null,
+    });
     await wait(() => document.hasFocus());
     checkpoint = "foreground signal";
     await signal("finished");
     await wait(() => notices.length === 1);
     if (notices[0].requested) throw Error("Focused main window sent an alert");
+    const foregroundInbox = await invoke("load_notifications");
+    if (
+      foregroundInbox.items.length !== 1 ||
+      foregroundInbox.items[0].read ||
+      foregroundInbox.items[0].title !== "Claude Code finished responding"
+    )
+      throw Error("Focused notification was not saved unread in the inbox");
+    if (document.querySelector(".notification-center, [role=alert]"))
+      throw Error("Receipt opened an in-app notification or alert");
 
     // Hide the native window, keeping its PTY and xterm parser alive.
     await invoke("plugin_smoke_result", {
@@ -180,9 +199,13 @@
     await wait(() => notices.length === 2);
     if (!notices[1].requested)
       throw Error("Background alert was not requested");
+    if ((await invoke("load_notifications")).items.length !== 2)
+      throw Error("Background notification was not saved in the inbox");
     await signal("attention");
     await pause(300);
     if (notices.length !== 2) throw Error("Duplicate alert was delivered");
+    if ((await invoke("load_notifications")).items.length !== 2)
+      throw Error("Duplicate notification was stored in the inbox");
 
     await invoke("plugin_smoke_result", {
       stage: "notification-toggle",
@@ -199,6 +222,8 @@
     await pause(300);
     if (notices.some((notice, index) => index >= 2 && notice.requested))
       throw Error("Disabled alerts were delivered");
+    if ((await invoke("load_notifications")).items.length !== 2)
+      throw Error("Disabled notification was stored in the inbox");
     checkpoint = "re-enable";
     const quietCount = notices.length;
     await invoke("plugin_smoke_result", {
@@ -215,6 +240,55 @@
     await wait(() => notices.length > quietCount);
     if (!notices.at(-1).requested)
       throw Error("Re-enabled alert was not requested");
+    checkpoint = "inbox read state and account menu";
+    const incomingInbox = await invoke("load_notifications");
+    if (incomingInbox.items.length !== 3)
+      throw Error("Re-enabled notification was not saved in the inbox");
+    const firstRead = await invoke("mark_notifications_read", {
+      ids: [foregroundInbox.items[0].id],
+    });
+    if (
+      firstRead.items.filter((item) => item.read).length !== 1 ||
+      firstRead.items.filter((item) => !item.read).length !== 2
+    )
+      throw Error("Reading an old notification marked newer arrivals read");
+    if (
+      JSON.stringify(await invoke("load_notifications")) !==
+      JSON.stringify(firstRead)
+    )
+      throw Error("Inbox did not restore saved read state");
+    await invoke("plugin_smoke_result", {
+      stage: "notification-foreground",
+      data: null,
+    });
+    await wait(() => document.hasFocus());
+    document.querySelector('button[aria-label="Open account menu"]').click();
+    await wait(() =>
+      document.querySelector('[role="menuitem"][aria-label="Notifications"]'),
+    );
+    document
+      .querySelector('[role="menuitem"][aria-label="Notifications"]')
+      .click();
+    await wait(() => document.querySelector(".notification-center"));
+    if (
+      !document
+        .querySelector(".notification-center")
+        .textContent.includes("Claude Code finished responding")
+    )
+      throw Error("Account menu inbox did not display native notifications");
+    await invoke("mark_notifications_read", {
+      ids: incomingInbox.items.map((item) => item.id),
+    });
+    const cleared = await invoke("clear_read_notifications");
+    if (cleared.items.length !== 0)
+      throw Error("Read notifications were not removed");
+    await wait(() =>
+      document
+        .querySelector(".notification-center")
+        .textContent.includes("No notifications"),
+    );
+    document.querySelector('button[aria-label="Close notifications"]').click();
+    await wait(() => !document.querySelector(".notification-center"));
     if (runningTerminal("notification-terminal")?.sessionId !== id)
       throw Error("Preferences restarted the PTY");
     await invoke("write_terminal", {
@@ -228,20 +302,58 @@
         .join("\n")
         .includes("NOTIFICATION_NATIVE_OK"),
     );
+    checkpoint = "system alerts survive inbox storage failure";
+    await invoke("plugin_smoke_result", {
+      stage: "notification-background",
+      data: null,
+    });
+    await invoke("plugin_smoke_result", {
+      stage: "notification-inbox-corrupt",
+      data: null,
+    });
+    const beforeFailure = notices.length;
+    let storageError = "";
+    try {
+      await invoke("notify_agent", {
+        kind: "finished",
+        source: "claude",
+        context: "Isolated storage failure test",
+      });
+    } catch (error) {
+      storageError = String(error);
+    }
+    if (!storageError.includes("left intact"))
+      throw Error("Inbox storage failure was not reported");
+    await wait(() => notices.length === beforeFailure + 1);
+    if (!notices.at(-1).requested)
+      throw Error("Inbox storage failure suppressed the system alert request");
+    await invoke("plugin_smoke_result", {
+      stage: "notification-inbox-preserved",
+      data: null,
+    });
     await invoke("plugin_smoke_result", {
       stage: "passed",
       data: {
         checks: [
           "isolated Claude hook installation",
           "real PTY OSC parsing",
-          "single-terminal title and work indicator without maximization",
-          "activity cleared on the native shell prompt",
-          "native quit during renderer startup preserves the main window",
-          "native Cmd+Q, AppKit Quit and window close confirm active terminal work",
-          "Cmd+Q with terminal or Settings focused protects vim and its unsaved input",
-          "repeated quit requests share one dialog with Cancel focused",
-          "cancelling native quit preserves the running process and PTY",
+          ...(!inboxOnly
+            ? [
+                "single-terminal title and work indicator without maximization",
+                "activity cleared on the native shell prompt",
+                "native quit during renderer startup preserves the main window",
+                "native Cmd+Q, AppKit Quit and window close confirm active terminal work",
+                "Cmd+Q with terminal or Settings focused protects vim and its unsaved input",
+                "repeated quit requests share one dialog with Cancel focused",
+                "cancelling native quit preserves the running process and PTY",
+              ]
+            : []),
           "foreground suppression",
+          "focused and background notifications persisted without in-app alerts",
+          "explicit reads preserve newer unread arrivals",
+          "native account menu opens the persisted inbox",
+          "read state reload and clear read notifications",
+          "storage failures preserve inbox and still request system alerts",
           "native notification request in background",
           "duplicate suppression",
           "settings-window toggle applied live",

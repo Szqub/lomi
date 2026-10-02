@@ -120,6 +120,21 @@ agents may already send terminal bells/titles or provide their own desktop
 notifications. Their notification hooks are not installed by Lomi. No agent is
 restarted automatically after configuration changes.
 
+Lomi stores supported terminal notifications in a local inbox, available from
+the titlebar account menu under **Notifications**, including while signed out.
+New entries do not open a panel or show an in-app alert. The signed-in avatar
+shows the unread count, capped at `9+`; while signed out, the count appears only
+in the menu. Open the inbox to read or dismiss individual entries, or clear read
+entries. Opening the inbox alone leaves unread state unchanged. The latest 200
+entries and their read state survive application restarts.
+
+Focused-window events still enter the inbox. Lomi requests system alerts while
+the main window is in the background; OS notification settings determine actual
+delivery. Denied system permission does not discard the inbox entry. The
+**Agent notifications** switch in **Settings → Terminal** disables both new
+inbox entries and system alerts without deleting existing history. OSC 9
+messages use generic agent wording and never expose their raw terminal text.
+
 ## Manual MCP clients
 
 Start Lomi's MCP server in Settings and use **MCP JSON configuration for this

@@ -1,0 +1,169 @@
+.notification-center {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 16px));
+  min-width: min(300px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: min(70vh, calc(100vh - 16px));
+  overflow: hidden;
+  padding: var(--space-5);
+  color: var(--color-surface-text);
+  font-size: var(--font-size-12);
+}
+.notification-center-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: var(--space-8);
+  padding: var(--space-7) var(--space-8);
+}
+.notification-center-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.notification-center-heading strong {
+  font-size: var(--font-size-13);
+  font-weight: 600;
+}
+.notification-center-heading span,
+.notification-item-meta {
+  color: var(--color-surface-variant-text);
+  font-size: var(--font-size-10);
+}
+.notification-center button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: 24px;
+  padding: var(--space-4) var(--space-6);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.notification-center button:hover:not(:disabled) {
+  background: var(--color-surface-container-high);
+}
+.notification-center button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.notification-center button:focus-visible,
+.notification-center-list:focus-visible {
+  outline: 2px solid var(--color-surface-text);
+  outline-offset: -2px;
+}
+.notification-center .notification-icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+}
+.notification-item-actions button,
+.notification-center-footer button {
+  font-size: var(--font-size-11);
+}
+.notification-center-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.notification-item {
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border-top: var(--border-width) solid var(--color-outline);
+}
+.notification-kind {
+  flex: 0 0 auto;
+  padding-top: var(--space-4);
+  color: var(--color-surface-variant-text);
+}
+.notification-item[data-unread] .notification-kind {
+  color: var(--color-surface-text);
+}
+.notification-item-content {
+  min-width: 0;
+  flex: 1;
+}
+.notification-center .notification-item-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  padding: var(--space-4);
+  overflow-wrap: anywhere;
+}
+.notification-item-open strong {
+  font-weight: 500;
+  line-height: 1.4;
+}
+.notification-item[data-unread] .notification-item-open strong {
+  font-weight: 600;
+}
+.notification-item-open > span {
+  color: var(--color-surface-variant-text);
+  font-size: var(--font-size-11);
+  line-height: 1.5;
+}
+.notification-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-4);
+}
+.notification-unread {
+  color: var(--color-surface-text);
+  font-weight: 500;
+}
+.notification-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.notification-center-footer {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-2);
+  border-top: var(--border-width) solid var(--color-outline);
+}
+.notification-center-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 28px var(--space-8);
+  color: var(--color-surface-variant-text);
+}
+.notification-center-empty strong {
+  color: var(--color-surface-text);
+  font-weight: 500;
+}
+.notification-center-empty span {
+  font-size: var(--font-size-11);
+}
+.notification-center-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-8);
+  color: var(--color-error);
+  font-size: var(--font-size-11);
+}
+.notification-center-error > span {
+  flex: 1;
+  min-width: 120px;
+  overflow-wrap: anywhere;
+}

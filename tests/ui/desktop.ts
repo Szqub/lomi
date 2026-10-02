@@ -195,6 +195,15 @@ export async function mockDesktop(
         agentControlStartupStartError: "",
         windowFocused: false,
         agentNotifications: [] as unknown[],
+        notifications: JSON.parse(
+          localStorage.getItem("test-notifications") ??
+            '{"revision":0,"items":[]}',
+        ),
+        failNotificationCommand: null as string | null,
+        holdNotificationLoad: false,
+        holdNotificationMutation: false,
+        resolveNotificationLoad: null as null | (() => void),
+        resolveNotificationMutation: null as null | (() => void),
         emit,
         failSave: false,
         gitHistory,
@@ -444,17 +453,79 @@ export async function mockDesktop(
             return desktop.__nativeTest.agentNotificationPermission
               ? "granted"
               : "denied";
-          if (command === "notify_agent") {
-            const preferences = JSON.parse(
-              localStorage.getItem("test-terminal-preferences") ?? "null",
-            );
+          if (
+            [
+              "load_notifications",
+              "mark_notifications_read",
+              "dismiss_notification",
+              "clear_read_notifications",
+              "notify_agent",
+            ].includes(command)
+          ) {
+            const mock = desktop.__nativeTest;
+            if (mock.failNotificationCommand === command)
+              throw new Error("Notification storage is unavailable");
+            const persist = async () => {
+              mock.notifications.revision++;
+              localStorage.setItem(
+                "test-notifications",
+                JSON.stringify(mock.notifications),
+              );
+              await emitEvent(
+                "notifications-changed",
+                structuredClone(mock.notifications),
+              );
+            };
+            if (command === "notify_agent") {
+              const preferences = JSON.parse(
+                localStorage.getItem("test-terminal-preferences") ?? "null",
+              );
+              if (preferences?.agentNotifications === false) return false;
+              const claude = args.source !== "terminal";
+              mock.notifications.items.unshift({
+                id: `notification-${mock.notifications.revision + 1}`,
+                kind: args.kind,
+                title: `${claude ? "Claude Code" : "Agent"} ${args.kind === "attention" ? "needs your input" : "finished responding"}`,
+                body: args.context,
+                createdAt: Date.now(),
+                read: false,
+              });
+              await persist();
+              if (mock.windowFocused || !mock.agentNotificationPermission)
+                return false;
+              mock.agentNotifications.push(args);
+              return true;
+            }
+            if (command === "mark_notifications_read")
+              mock.notifications.items.forEach((item: any) => {
+                if (args.ids.includes(item.id)) item.read = true;
+              });
+            if (command === "dismiss_notification")
+              mock.notifications.items = mock.notifications.items.filter(
+                (item: any) => item.id !== args.id,
+              );
+            if (command === "clear_read_notifications")
+              mock.notifications.items = mock.notifications.items.filter(
+                (item: any) => !item.read,
+              );
+            if (command !== "load_notifications") await persist();
+            const captured = structuredClone(mock.notifications);
+            if (command === "load_notifications" && mock.holdNotificationLoad) {
+              mock.holdNotificationLoad = false;
+              return new Promise((resolve) => {
+                mock.resolveNotificationLoad = () => resolve(captured);
+              });
+            }
             if (
-              desktop.__nativeTest.windowFocused ||
-              preferences?.agentNotifications === false
-            )
-              return false;
-            desktop.__nativeTest.agentNotifications.push(args);
-            return true;
+              command !== "load_notifications" &&
+              mock.holdNotificationMutation
+            ) {
+              mock.holdNotificationMutation = false;
+              return new Promise((resolve) => {
+                mock.resolveNotificationMutation = () => resolve(captured);
+              });
+            }
+            return captured;
           }
           if (command === "update_environment")
             return { linuxInstruction: desktop.__nativeTest.updateInstruction };

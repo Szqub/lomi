@@ -106,3 +106,32 @@
 .account-context-menu .menu-divider {
   height: calc(2px / var(--app-zoom, 1));
 }
+
+.titlebar-account-avatar {
+  position: relative;
+}
+.notification-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.titlebar-account-badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  border: 1px solid var(--color-background);
+  pointer-events: none;
+}
+.menu-item-badge {
+  margin-inline-start: auto;
+}
