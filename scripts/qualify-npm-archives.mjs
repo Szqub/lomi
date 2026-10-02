@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile, cp } from "node:fs/promises";
 import { resolve, join } from "node:path";
+import { compareNpmArchive } from "./compare-npm-archive.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workspace = resolve(process.argv[2] ?? join(root, ".."));
@@ -21,6 +22,14 @@ const candidates = JSON.parse(
 const env = { ...process.env };
 delete env.NODE_PATH;
 const checks = [];
+const archiveComparisons = [];
+const selectedInstallations = [];
+const saveComparisons = () =>
+  writeFile(
+    join(output, "archive-comparisons.json"),
+    JSON.stringify({ archiveComparisons, selectedInstallations }, null, 2) +
+      "\n",
+  );
 await mkdir(output, { recursive: true });
 await writeFile(
   join(output, "selected-candidates.json"),
@@ -100,27 +109,73 @@ for (const [kind, { source }] of Object.entries(paths)) {
     `${kind}-pack`,
   );
   const packed = join(source, "artifacts", paths[kind].metadata.file);
-  assert.deepEqual(
-    await readFile(packed),
-    await readFile(paths[kind].archive),
-    "Clean-source pack must reproduce selected archive bytes",
-  );
+  archiveComparisons.push({
+    kind,
+    stage: "clean-source-pack",
+    ...compareNpmArchive(
+      await readFile(packed),
+      await readFile(paths[kind].archive),
+    ),
+  });
   const args =
     kind === "cli"
       ? ["test:archives"]
       : kind === "sdk"
         ? ["test:archive", paths.sdk.archive]
         : ["test:archive"];
+  await saveComparisons();
   await run(process.execPath, [cli, ...args], source, `${kind}-archives`);
-  assert.deepEqual(
-    await readFile(packed),
-    await readFile(paths[kind].archive),
-    "Archive suite must test the selected package bytes",
-  );
+  archiveComparisons.push({
+    kind,
+    stage: "installed-archive-suite",
+    ...compareNpmArchive(
+      await readFile(packed),
+      await readFile(paths[kind].archive),
+    ),
+  });
   await cp(
     join(source, "artifacts/archive-validation.json"),
     join(output, `${kind}-archive-validation.json`),
   );
+  const report = JSON.parse(
+    await readFile(join(source, "artifacts/archive-validation.json"), "utf8"),
+  );
+  const installedSelections =
+    kind === "sdk"
+      ? { sdk: report.sourceArchive }
+      : kind === "cli"
+        ? { sdk: report.archives.sdk, generator: report.archives.generator }
+        : Object.fromEntries(
+            report.registryPackages.map(({ name, file }) => [
+              name === "@lomi-dev/plugin-sdk" ? "sdk" : "cli",
+              file,
+            ]),
+          );
+  assert.deepEqual(
+    Object.keys(installedSelections).sort(),
+    kind === "sdk"
+      ? ["sdk"]
+      : kind === "cli"
+        ? ["generator", "sdk"]
+        : ["cli", "sdk"],
+    "Archive report must identify every selected package installation",
+  );
+  for (const [installedKind, archive] of Object.entries(installedSelections)) {
+    const selected = paths[installedKind];
+    assert.ok(
+      (await readFile(archive)).equals(await readFile(selected.archive)),
+      `${kind} suite must install the immutable selected ${installedKind} archive`,
+    );
+    selectedInstallations.push({
+      suite: `${kind}-archives`,
+      package: selected.metadata.name,
+      installedArchive: archive,
+      sha256: selected.metadata.sha256,
+      integrity: selected.metadata.integrity,
+      byteIdenticalToSelected: true,
+    });
+  }
+  await saveComparisons();
   assert.equal(
     run("git", ["status", "--porcelain"], source),
     "",
@@ -163,8 +218,10 @@ await writeFile(
       hostCommit,
       candidates,
       checks,
+      archiveComparisons,
+      selectedInstallations,
       archiveSelection:
-        "Immutable selected archives; clean-source packs compared byte for byte before and after archive suites",
+        "Immutable selected archives retain exact digests; clean-source packs must match every byte except gzip's OS field, with identical uncompressed tar bytes",
       registryTested: false,
       desktopTested: false,
     },

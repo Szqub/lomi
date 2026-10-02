@@ -33,13 +33,19 @@ The required `npm-archives` gate calls `.github/workflows/npm-archives.yml` on
 macOS, Linux and Windows. That read-only workflow can also be dispatched manually
 before npm publication. It checks out the reviewed full SDK, CLI and generator
 commits, verifies the selected archives in `vendor/plugin-sdk` and
-`vendor/plugin-tools`, and requires clean-source packs to match those immutable
-bytes before and after the installed-archive suites. It also runs the SDK's
-consumer harness against a separate clean host checkout at the workflow commit
-and the pinned CLI source. All platform reports and command logs are retained as
-workflow artifacts, including failed command logs. No npm credentials or signing
-secrets are passed to these jobs. Registry installation and native desktop
-qualification remain separate checks.
+`vendor/plugin-tools`. Clean-source packs must match every selected archive byte
+except gzip's OS header field at offset 9, and the full uncompressed tar bytes
+must match exactly. Reports preserve both raw digests and OS fields; the selected
+publication archives retain their original SHA-256 and SHA-512. The suites install
+the selected SDK directly, the selected CLI through the generator suite, and the
+selected generator through the CLI suite, with exact archive-byte assertions.
+They also test platform-produced CLI/generator envelopes and record their
+comparison with the selected archives. The SDK consumer harness runs against a
+separate clean host checkout at the workflow commit and the pinned CLI source.
+All platform reports and command logs are retained as workflow artifacts,
+including failed command logs. No npm credentials or signing secrets are passed
+to these jobs. Registry installation and native desktop qualification remain
+separate checks.
 
 After both gates, the workflow follows the `publish-tauri` matrix:
 
