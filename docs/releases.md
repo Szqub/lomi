@@ -16,8 +16,11 @@ The workflow first runs the required `security-regressions` matrix on macOS
 Apple Silicon, macOS Intel, Linux x64 and Windows x64 against the tag's exact
 commit. It has read-only repository permissions and no signing secrets. Every
 platform installs frozen dependencies, verifies SDK archive/helper digests and
-runs native JSON persistence, IPC authentication, project containment, broker
-revocation and crypto tests. Ubuntu also runs installed-archive build safety
+runs native JSON persistence and crypto tests. macOS and Linux additionally run
+Unix-only IPC authentication, project containment and broker revocation suites;
+those implementations are not compiled on Windows. Unix JSON persistence tests
+include permissions and symlink checks; Windows runs the failure-preservation
+and concurrent atomic-write tests. Ubuntu also runs installed-archive build safety
 tests and frontend checks/tests. All four security jobs must pass before the
 `publish-tauri` matrix starts. Empty Rust test selections fail
 the gate. Run its native suites locally with
