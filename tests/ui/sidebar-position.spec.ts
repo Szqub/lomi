@@ -56,12 +56,14 @@ test("opposite panels stay open together, relocate their controls and preserve t
 }) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await setup(page);
+  expect((await toggle(page, "git").boundingBox())!.x).toBeGreaterThan(1200);
+  await expect(toggle(page, "git")).toHaveAttribute("aria-pressed", "false");
   const host = page.locator("[data-pane-id]");
   const id = (await host.getAttribute("data-pane-id"))!;
   await host.evaluate((element) => {
     (window as any).__sidebarTerminalHost = element;
   });
-  await move(page, "git", "right");
+  await toggle(page, "git").click();
   await waitForLayoutMotion(page);
   await expect(sidebar(page, "files")).toBeVisible();
   await expect(sidebar(page, "git")).toBeVisible();
@@ -102,7 +104,7 @@ test("moving a visible source control panel preserves its draft and same-side pa
   page,
 }) => {
   await setup(page);
-  await toggle(page, "git").click();
+  await move(page, "git", "left");
   const message = page.getByRole("textbox", {
     name: "Commit message",
     exact: true,
@@ -188,17 +190,17 @@ test("sidebar context menus support keyboard selection, Escape and outside dismi
     name: "Source Control panel position",
   });
   await expect(
-    menu.getByRole("menuitemradio", { name: "Panel on the left" }),
+    menu.getByRole("menuitemradio", { name: "Panel on the right" }),
   ).toBeFocused();
   await expect(
-    menu.getByRole("menuitemradio", { name: "Panel on the left" }),
+    menu.getByRole("menuitemradio", { name: "Panel on the right" }),
   ).toHaveAttribute("aria-checked", "true");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
-  await expect(sidebar(page, "git")).toHaveAttribute("data-side", "right");
+  await expect(sidebar(page, "git")).toHaveAttribute("data-side", "left");
   await button.press("Shift+F10");
   await expect(
-    menu.getByRole("menuitemradio", { name: "Panel on the right" }),
+    menu.getByRole("menuitemradio", { name: "Panel on the left" }),
   ).toBeFocused();
   await page.keyboard.press("Control+w");
   await expect(page.locator(".xterm-screen")).toHaveCount(1);

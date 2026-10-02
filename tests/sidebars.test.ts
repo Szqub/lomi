@@ -17,7 +17,7 @@ const info = {
 
 test("opposite sidebar positions can open and toggle independently", () => {
   const initial = newSession();
-  const both = moveSidebar(initial, "git", "right");
+  const both = showSidebar(initial, "git");
   assert.equal(both.sidebar, "files");
   assert.equal(both.rightSidebar, "git");
   assert.deepEqual(both.sidebarSides, {
@@ -38,7 +38,7 @@ test("opposite sidebar positions can open and toggle independently", () => {
 
 test("panels on the same side replace one another without duplicate views", () => {
   const initial = newSession();
-  assert.equal(toggleSidebar(initial, "git").sidebar, "git");
+  assert.equal(moveSidebar(initial, "git", "left").sidebar, "git");
   const both = moveSidebar(initial, "git", "right");
   const moved = moveSidebar(both, "files", "right");
   assert.equal(moved.sidebar, null);
@@ -151,7 +151,7 @@ test("workspace sidebar replaces same-side panels and restores on either side", 
     assert.deepEqual(showSidebar(hidden, "workspaces"), state);
   }
   const both = moveSidebar(newSession(), "workspaces", "right");
-  const replaced = showSidebar(both, "git");
+  const replaced = moveSidebar(both, "git", "left");
   assert.equal(replaced.sidebar, "git");
   assert.equal(replaced.rightSidebar, "workspaces");
 });

@@ -440,7 +440,7 @@ export function newSession(): Session {
     sidebarWidth: 250,
     rightSidebar: null,
     rightSidebarWidth: 250,
-    sidebarSides: { files: "left", git: "left", workspaces: "left" },
+    sidebarSides: { files: "left", git: "right", workspaces: "left" },
     terminalOverviewSide: "left",
   };
 }
