@@ -92,6 +92,7 @@ test("cancel and Escape preserve sharing; confirmation unshares only the current
   await trigger.click();
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
   expect(await unshareCalls(page)).toEqual([]);
   await trigger.click();
   await dialog

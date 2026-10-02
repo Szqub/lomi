@@ -37,7 +37,8 @@ export default function RemoteWorkspaceStatus({
           aria-label="Stop sharing remotely"
           aria-haspopup="dialog"
           disabled={!available || busy}
-          onClick={() => {
+          onClick={(event) => {
+            event.currentTarget.focus();
             setAttempted(false);
             setOpen(true);
           }}
