@@ -1,10 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { mockDesktop } from "./desktop";
+import { mockRemoteAccount } from "./remote-auth";
 
 test("Remote uses workspace sharing and keeps browser revocation without manual setup", async ({
   page,
 }, testInfo) => {
   await mockDesktop(page, false);
+  await mockRemoteAccount(page);
   await page.addInitScript(() => {
     const desktop = window as any;
     const state = {

@@ -48,6 +48,7 @@ export default function Workspaces({
 }: {
   projects: Project[];
   remote?: {
+    available: boolean;
     state?: RemoteState;
     error: string;
     busy?: string;
@@ -389,8 +390,9 @@ export default function Workspaces({
                   )?.shared
                     ? "Stop sharing remotely"
                     : "Share remotely",
-                  disabled: !!remote.busy,
+                  disabled: !remote.available || !!remote.busy,
                   run: () => {
+                    if (!remote.available) return;
                     if (
                       remote.state?.workspaces.find(
                         (w) => w.id === workspace.id,
@@ -429,6 +431,7 @@ export default function Workspaces({
         <StartRemoteSharingDialog
           key={sharingWorkspace.id}
           workspace={sharingWorkspace}
+          available={remote.available}
           busy={!!remote.busy}
           error={remote.error}
           onConfirm={() => remote.share(sharingWorkspace.id, true)}
@@ -441,12 +444,14 @@ export default function Workspaces({
 
 function StartRemoteSharingDialog({
   workspace,
+  available,
   busy,
   error,
   onConfirm,
   onClose,
 }: {
   workspace: Workspace;
+  available: boolean;
   busy: boolean;
   error: string;
   onConfirm: () => Promise<void>;
@@ -457,6 +462,7 @@ function StartRemoteSharingDialog({
   const [attempted, setAttempted] = useState(false);
   return (
     <Modal
+      className="remote-sharing-dialog"
       title="Share workspace remotely?"
       role="alertdialog"
       tone="warning"
@@ -471,6 +477,7 @@ function StartRemoteSharingDialog({
           Share “{workspace.name}” remotely? Browsers signed in to your account
           will be able to view and control all terminals in this workspace,
           including inactive tabs and new splits.
+          {!available && " Sign in to use remote sharing."}
         </p>
         {attempted && error && <p role="alert">{error}</p>}
         <div className="dialog-actions">
@@ -486,8 +493,9 @@ function StartRemoteSharingDialog({
           <button
             type="button"
             className="button button-primary"
-            disabled={busy}
+            disabled={!available || busy}
             onClick={() => {
+              if (!available) return;
               setAttempted(true);
               void onConfirm();
             }}

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "./api";
+import { canShareRemotely } from "./auth/model";
+import { useAuthState } from "./auth/useAuthState";
 import type { Session, ShellProfile } from "./model";
 import {
   runningTerminal,
@@ -19,6 +21,8 @@ export function useRemoteWorkspaces(
   current: { current: Session | undefined },
   profiles: ShellProfile[] | undefined,
 ) {
+  const auth = useAuthState();
+  const available = canShareRemotely(auth.state);
   const [state, setState] = useState<RemoteState>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string>();
@@ -98,6 +102,7 @@ export function useRemoteWorkspaces(
       void publisher.current?.notify().catch((e) => setError(errorMessage(e)));
   }, [session, profiles]);
   const share = async (workspaceId: string, shared: boolean) => {
+    if (!canShareRemotely(auth.current.current)) return;
     if (acting.current) return;
     const engine = publisher.current;
     if (!engine) {
@@ -140,6 +145,8 @@ export function useRemoteWorkspaces(
         blocked.current.add(workspaceId);
         engine.desired.delete(workspaceId);
       }
+      if (!canShareRemotely(auth.current.current))
+        throw new Error("Sign in to use remote sharing.");
       const next = await api<RemoteState>("remote_share_workspace", {
         workspaceId,
         shared,
@@ -164,5 +171,5 @@ export function useRemoteWorkspaces(
       setBusy(undefined);
     }
   };
-  return { state, error, busy, share };
+  return { state, error, busy, share, available };
 }

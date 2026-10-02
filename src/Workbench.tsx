@@ -2763,6 +2763,7 @@ export default function Workbench() {
             {cliIntegrations.bar}
             {remoteWorkspace?.shared && (
               <RemoteWorkspaceStatus
+                available={remoteWorkspaces.available}
                 key={workspace.id}
                 workspace={workspace}
                 connectionMessage={

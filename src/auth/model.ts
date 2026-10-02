@@ -41,6 +41,10 @@ export const unavailableState: AuthState = {
   remoteRevocationConfirmed: null,
 };
 
+export function canShareRemotely(state: AuthState | null): boolean {
+  return Boolean(state?.status === "signed-in" && state.user && state.session);
+}
+
 export function newestAuthState(
   current: AuthState | null,
   incoming: AuthState,

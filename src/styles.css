@@ -723,6 +723,11 @@ svg {
 .button-primary:hover:not(:disabled) {
   background: var(--color-surface-text);
 }
+.remote-sharing-dialog .button-primary:disabled {
+  color: var(--color-surface-variant-text);
+  background: var(--color-surface-container-highest);
+  border-color: var(--color-outline);
+}
 .button-danger {
   color: var(--color-error);
   border-color: color-mix(

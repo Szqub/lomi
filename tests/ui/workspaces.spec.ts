@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { active, addWorkspace, newSession, openFileTab } from "../../src/model";
 import { buffer, mockDesktop } from "./desktop";
+import { mockRemoteAccount } from "./remote-auth";
 
 test("workspace disclosures list and select tabs without activating hidden terminals", async ({
   page,
@@ -655,6 +656,7 @@ test("right-click sharing starts all inactive terminals and stop sharing retains
   session = addWorkspace(session, "/other", "local:bash", "Unshared");
   session.sidebar = "workspaces";
   await mockDesktop(page, false, session);
+  await mockRemoteAccount(page);
   await page.goto("/");
   await expect(page.locator(".xterm-screen")).toBeVisible();
   const starts = () =>

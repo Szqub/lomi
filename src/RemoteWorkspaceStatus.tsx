@@ -4,12 +4,14 @@ import { Modal } from "./ui";
 
 export default function RemoteWorkspaceStatus({
   workspace,
+  available,
   connectionMessage,
   busy,
   error,
   stopSharing,
 }: {
   workspace: { id: string; name: string };
+  available: boolean;
   connectionMessage: string;
   busy: boolean;
   error: string;
@@ -34,7 +36,7 @@ export default function RemoteWorkspaceStatus({
           className="remote-workspace-stop"
           aria-label="Stop sharing remotely"
           aria-haspopup="dialog"
-          disabled={busy}
+          disabled={!available || busy}
           onClick={() => {
             setAttempted(false);
             setOpen(true);
@@ -45,6 +47,7 @@ export default function RemoteWorkspaceStatus({
       </div>
       {open && (
         <Modal
+          className="remote-sharing-dialog"
           title="Stop sharing remotely?"
           role="alertdialog"
           tone="warning"
@@ -58,6 +61,7 @@ export default function RemoteWorkspaceStatus({
             <p id={descriptionId}>
               Stop sharing “{workspace.name}” remotely? Remote access will end.
               Local terminals will keep running.
+              {!available && " Sign in to use remote sharing."}
             </p>
             {attempted && error && <p role="alert">{error}</p>}
             <div className="dialog-actions">
@@ -73,8 +77,9 @@ export default function RemoteWorkspaceStatus({
               <button
                 type="button"
                 className="button button-primary button-danger"
-                disabled={busy}
+                disabled={!available || busy}
                 onClick={() => {
+                  if (!available) return;
                   setAttempted(true);
                   void stopSharing();
                 }}

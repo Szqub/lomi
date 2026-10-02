@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newestAuthState, unavailableState } from "../src/auth/model.ts";
+import {
+  canShareRemotely,
+  newestAuthState,
+  unavailableState,
+} from "../src/auth/model.ts";
+import type { AuthState, AuthStatus } from "../src/auth/model.ts";
+
+test("remote sharing requires a confirmed signed-in account and session", () => {
+  const signedIn: AuthState = {
+    ...unavailableState,
+    status: "signed-in",
+    user: {
+      id: "user",
+      displayName: "Lomi User",
+      email: "user@example.test",
+      githubLogin: null,
+      status: "active",
+    },
+    session: { id: "session", expiresAt: "2030-01-01T00:00:00Z" },
+  };
+  assert.equal(canShareRemotely(signedIn), true);
+  assert.equal(canShareRemotely(null), false);
+  assert.equal(canShareRemotely({ ...signedIn, user: null }), false);
+  assert.equal(canShareRemotely({ ...signedIn, session: null }), false);
+  for (const status of [
+    "unavailable",
+    "signed-out",
+    "authorizing",
+    "checking",
+    "offline",
+    "storage-locked",
+    "error",
+  ] satisfies AuthStatus[]) {
+    assert.equal(canShareRemotely({ ...signedIn, status }), false, status);
+  }
+});
 
 test("a delayed IPC reply cannot restore an account after a newer logout event", () => {
   const signedIn = {

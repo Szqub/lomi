@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { active, addWorkspace, newSession } from "../../src/model";
 import { mockDesktop } from "./desktop";
+import { mockRemoteAccount } from "./remote-auth";
 
 async function setup(page: Page, sidebar = false) {
   let session = addWorkspace(newSession(), "/project", "local:bash", "Other");
@@ -9,6 +10,7 @@ async function setup(page: Page, sidebar = false) {
   const currentId = active(session)!.workspace.id;
   session.sidebar = sidebar ? "workspaces" : null;
   await mockDesktop(page, false, session);
+  await mockRemoteAccount(page);
   await page.addInitScript(
     ({ currentId, otherId }) => {
       const desktop = window as any;

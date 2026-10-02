@@ -8,7 +8,11 @@ import {
   SettingsSection,
 } from "./settings-ui";
 
-export default function RemoteSettingsPage() {
+export default function RemoteSettingsPage({
+  available,
+}: {
+  available: boolean;
+}) {
   const [state, setState] = useState<RemoteState | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -31,7 +35,7 @@ export default function RemoteSettingsPage() {
     };
   }, []);
   const revoke = async (grantId: string) => {
-    if (busy) return;
+    if (!available || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -47,6 +51,9 @@ export default function RemoteSettingsPage() {
       title="Remote"
       status={state?.online ? "Online" : state?.enabled ? "Connecting" : "Off"}
     >
+      {!available && (
+        <SettingsNotice>Sign in to use remote sharing.</SettingsNotice>
+      )}
       {error && (
         <SettingsNotice tone="error" role="alert">
           {error}
@@ -131,7 +138,7 @@ export default function RemoteSettingsPage() {
                 >
                   <button
                     className="button"
-                    disabled={busy}
+                    disabled={!available || busy}
                     onClick={() => void revoke(grant.id)}
                   >
                     Revoke access

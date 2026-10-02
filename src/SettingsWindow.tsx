@@ -30,6 +30,8 @@ import { useKeybindings } from "./KeybindingsProvider";
 import ReadyWindow from "./ReadyWindow";
 import { useWindowZoom } from "./useWindowZoom";
 import { useProtectedTheme } from "./useProtectedTheme";
+import { canShareRemotely } from "./auth/model";
+import { useAuthState } from "./auth/useAuthState";
 import {
   SettingRow,
   SettingsNotice,
@@ -49,6 +51,8 @@ function SettingsLoading({ title }: { title: string }) {
 }
 
 export default function SettingsWindow() {
+  const auth = useAuthState();
+  const remoteAvailable = canShareRemotely(auth.state);
   const [page, setPage] = useState(() => {
     const requested = new URLSearchParams(window.location.search).get("page");
     return requested === "remote" ||
@@ -249,6 +253,10 @@ export default function SettingsWindow() {
           <button
             className="settings-nav-item"
             aria-current={page === "remote" ? "page" : undefined}
+            disabled={!remoteAvailable}
+            title={
+              remoteAvailable ? undefined : "Sign in to use remote sharing"
+            }
             onClick={() => setPage("remote")}
           >
             <Monitor size={16} aria-hidden="true" />
@@ -273,7 +281,7 @@ export default function SettingsWindow() {
         </nav>
         {page === "remote" ? (
           <Suspense fallback={<SettingsLoading title="Remote" />}>
-            <RemoteSettingsPage />
+            <RemoteSettingsPage available={remoteAvailable} />
           </Suspense>
         ) : page === "account" ? (
           <Suspense fallback={<SettingsLoading title="Account" />}>
