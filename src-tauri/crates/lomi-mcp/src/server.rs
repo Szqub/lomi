@@ -82,32 +82,6 @@ pub(crate) fn tool_catalog() -> Vec<Value> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_parser_and_encoder_keep_mcp_result_shape() {
-        let request = parse_tool_request("lomi_status", serde_json::json!({})).unwrap();
-        assert!(matches!(request, Request::Status(_)));
-        assert!(parse_tool_request("not-a-lomi-tool", serde_json::json!({})).is_err());
-
-        let result = encode_tool_result(Reply::ok(Data::Status {
-            connection: "app_unavailable".into(),
-            pairing_request_id: None,
-            instance_id: None,
-            ui_ready: false,
-            platform: "test".into(),
-            capabilities: Vec::new(),
-            limitations: Vec::new(),
-        }))
-        .unwrap();
-        assert!(result["content"].is_array());
-        assert!(result["structuredContent"].is_object());
-        assert_eq!(result["isError"], false);
-    }
-}
-
 fn build_catalog() -> Vec<Tool> {
     [
         ("lomi_android_screenshot", "Capture one PNG from this connection's exact running managed Android generation. Requires explicit android.capture permission. Returns standard MCP image content and an immutable artifact with hardware/image dimensions, rotation, scale, full-display crop and an image-to-hardware touch transform. No desktop capture or continuous MCP streaming. maxEdge is 64..1600 (default 1280), maxBytes up to 3 MiB; total pixels are bounded to 2 million. Screenshot read does not grant input. Artifacts recheck original device generation and permissions on reread."),
@@ -429,4 +403,30 @@ pub async fn serve(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
         let _ = task.await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_parser_and_encoder_keep_mcp_result_shape() {
+        let request = parse_tool_request("lomi_status", serde_json::json!({})).unwrap();
+        assert!(matches!(request, Request::Status(_)));
+        assert!(parse_tool_request("not-a-lomi-tool", serde_json::json!({})).is_err());
+
+        let result = encode_tool_result(Reply::ok(Data::Status {
+            connection: "app_unavailable".into(),
+            pairing_request_id: None,
+            instance_id: None,
+            ui_ready: false,
+            platform: "test".into(),
+            capabilities: Vec::new(),
+            limitations: Vec::new(),
+        }))
+        .unwrap();
+        assert!(result["content"].is_array());
+        assert!(result["structuredContent"].is_object());
+        assert_eq!(result["isError"], false);
+    }
 }
