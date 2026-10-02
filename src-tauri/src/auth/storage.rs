@@ -363,6 +363,52 @@ mod tests {
     }
 
     #[test]
+    fn distinct_storage_namespaces_open_concurrently_with_distinct_keyring_services() {
+        let temp = tempfile::tempdir().unwrap();
+        let release_namespace = "auth-lomi-dev";
+        let debug_namespace = "auth-lomi-dev-debug";
+        let release =
+            CredentialStore::open(&temp.path().join(release_namespace), release_namespace).unwrap();
+        let debug =
+            CredentialStore::open(&temp.path().join(debug_namespace), debug_namespace).unwrap();
+
+        assert_ne!(release.metadata_path.parent(), debug.metadata_path.parent());
+        assert_eq!(
+            release.service,
+            format!("{SERVICE_PREFIX}.{release_namespace}")
+        );
+        assert_eq!(debug.service, format!("{SERVICE_PREFIX}.{debug_namespace}"));
+        assert_ne!(release.service, debug.service);
+    }
+
+    #[test]
+    fn same_storage_directory_still_blocks_another_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = CredentialStore::open(temp.path(), "test-owner").unwrap();
+
+        assert_eq!(
+            CredentialStore::open(temp.path(), "test-another-namespace").err(),
+            Some("Another Lomi process owns account storage.".into())
+        );
+        drop(owner);
+        assert!(CredentialStore::open(temp.path(), "test-owner").is_ok());
+    }
+
+    #[test]
+    fn opening_corrupt_metadata_preserves_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(METADATA_FILE);
+        let corrupt = b"{invalid account metadata";
+        fs::write(&path, corrupt).unwrap();
+
+        assert_eq!(
+            CredentialStore::open(temp.path(), "test-corrupt-metadata").err(),
+            Some("Account credential metadata is invalid and was preserved.".into())
+        );
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+    }
+
+    #[test]
     fn denied_read_preserves_the_active_reference() {
         let temp = tempfile::tempdir().unwrap();
         let mut store = CredentialStore::open(temp.path(), "test-denied-read").unwrap();

@@ -207,8 +207,9 @@ impl AuthController {
                 self.publish();
                 return;
             };
-            let environment_root = root.join(&config.environment);
-            match CredentialStore::open(&environment_root, &config.environment) {
+            let storage_namespace = config.storage_namespace();
+            let environment_root = root.join(&storage_namespace);
+            match CredentialStore::open(&environment_root, &storage_namespace) {
                 Ok(mut store) => match store.load_active() {
                     Ok(token) => {
                         core.token_persisted = token.is_some();
@@ -361,9 +362,9 @@ impl AuthController {
                 return core.state.clone();
             }
             if core.store.is_none() && core.state.status == AuthStatus::StorageLocked {
-                core.state.message = Some(
-                    "Account storage must be unlocked and recovered before starting another sign-in.".into(),
-                );
+                core.state.message.get_or_insert_with(|| {
+                    "Account storage could not be opened. Resolve its ownership or metadata error and restart Lomi before signing in.".into()
+                });
                 drop(core);
                 self.publish();
                 return self.snapshot();
@@ -1670,6 +1671,38 @@ mod tests {
                 core: Mutex::new(Core::new(status, None)),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn sign_in_preserves_unopened_storage_diagnosis_for_both_storage_choices() {
+        for storage in [AuthStorage::Persistent, AuthStorage::Session] {
+            for diagnosis in [
+                "Another Lomi process owns account storage.",
+                "Account credential metadata is invalid and was preserved.",
+            ] {
+                let controller = controller_for_origin(
+                    "https://auth.lomi.dev".into(),
+                    AuthStatus::StorageLocked,
+                );
+                controller.inner.core.lock().unwrap().state.message = Some(diagnosis.into());
+
+                let state = controller.begin_login(storage).await;
+                assert_eq!(state.status, AuthStatus::StorageLocked);
+                assert_eq!(state.message.as_deref(), Some(diagnosis));
+                assert!(state.attempt.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_in_explains_unopened_storage_when_diagnosis_is_missing() {
+        let controller =
+            controller_for_origin("https://auth.lomi.dev".into(), AuthStatus::StorageLocked);
+
+        let state = controller.begin_login(AuthStorage::Persistent).await;
+        assert_eq!(state.status, AuthStatus::StorageLocked);
+        assert!(state.message.unwrap().contains("could not be opened"));
+        assert!(state.attempt.is_none());
     }
 
     #[tokio::test]

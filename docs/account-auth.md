@@ -56,7 +56,13 @@ and open the account portal. Cancelling a sign-in attempt remains restricted to
 Settings. Browser children are not authorized app views.
 
 Persistent sessions use a separate OS keyring service namespace and private
-metadata below `account-auth/<environment>` in the application data directory.
+metadata below `account-auth/<storage-namespace>` in the application data directory.
+Release builds retain the environment namespace, such as `auth-lomi-dev`.
+Debug builds append `-debug`, using `auth-lomi-dev-debug` for production or
+`development-debug` for the local portal. Debug and release builds therefore have
+separate account sessions and can own their account storage concurrently. Sign in
+separately in each build; existing sessions are not copied or migrated. This
+storage suffix does not change the account service or Remote environment.
 Metadata contains credential references and a cleanup journal, never the token.
 A process lock protects ownership. A durable logout tombstone is written before
 keyring deletion. A failed deletion remains journaled and cannot silently restore

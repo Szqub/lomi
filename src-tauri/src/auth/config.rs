@@ -69,6 +69,18 @@ impl AuthConfig {
             .map_err(|_| "The account service address is invalid.".to_string())
     }
 
+    pub fn storage_namespace(&self) -> String {
+        self.storage_namespace_for_build(cfg!(debug_assertions))
+    }
+
+    fn storage_namespace_for_build(&self, is_debug: bool) -> String {
+        if is_debug {
+            format!("{}-debug", self.environment)
+        } else {
+            self.environment.clone()
+        }
+    }
+
     pub fn remote_origin(&self) -> Result<String, String> {
         let auth = Url::parse(&self.origin).map_err(|_| "Invalid account origin.")?;
         let expected = match auth.host_str() {
@@ -203,6 +215,33 @@ mod tests {
         assert_eq!(config.origin, DEFAULT_ORIGIN);
         assert_eq!(config.client_id, DEFAULT_CLIENT_ID);
         assert_eq!(config.environment, "auth-lomi-dev");
+    }
+
+    #[test]
+    fn storage_namespaces_isolate_debug_without_changing_remote_environment() {
+        let production = AuthConfig::for_build(false, None, None).unwrap();
+        assert_eq!(
+            production.storage_namespace_for_build(false),
+            "auth-lomi-dev"
+        );
+        assert_eq!(
+            production.storage_namespace_for_build(true),
+            "auth-lomi-dev-debug"
+        );
+        assert_eq!(production.environment, "auth-lomi-dev");
+        assert_eq!(
+            production.remote_origin().unwrap(),
+            "https://remote.lomi.dev"
+        );
+
+        let local = AuthConfig::for_build(true, Some("http://localhost:4321"), None).unwrap();
+        assert_eq!(local.storage_namespace_for_build(false), "development");
+        assert_eq!(local.storage_namespace_for_build(true), "development-debug");
+        assert_eq!(local.environment, "development");
+        assert_eq!(
+            production.storage_namespace(),
+            production.storage_namespace_for_build(cfg!(debug_assertions))
+        );
     }
 
     #[test]
