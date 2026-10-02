@@ -60,9 +60,20 @@ fn main() {
             )
             .expect("failed to compile the pinned Android emulator protocol");
     }
-    tauri_build::try_build(tauri_build::Attributes::new().plugin(
+    let mut attributes = tauri_build::Attributes::new().plugin(
         "browser",
         tauri_build::InlinedPlugin::new().commands(&["signal"]),
-    ))
-    .expect("failed to build Tauri permissions");
+    );
+    if target.ends_with("-windows-msvc") {
+        // Native test executables do not receive Tauri's resource manifest.
+        // Embed the same manifest for tests and the application through the linker.
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        let manifest =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-app-manifest.xml");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    }
+    tauri_build::try_build(attributes).expect("failed to build Tauri permissions");
 }
