@@ -9,9 +9,11 @@ did not exist when this workflow was prepared on 2026-09-11.
 ## Release workflow
 
 `.github/workflows/release.yml` is the only release workflow. It is
-named **publish** and starts when a version tag matching `v*` is pushed.
-Branch pushes and pull requests do not start a workflow, and **publish** has no
-manual dispatch trigger. Create release tags using the `vX.Y.Z` format below.
+named **publish** and publishes when a version tag matching `v*` is pushed.
+Branch pushes and pull requests do not start a workflow. A manual dispatch runs
+only the security and npm qualification gates, even when dispatched against a
+tag; building, signing and publishing require a tag push. Run a manual dispatch
+against `main` before creating the final `vX.Y.Z` release tag.
 The workflow first runs the required `security-regressions` matrix on macOS
 Apple Silicon, macOS Intel, Linux x64 and Windows x64 against the tag's exact
 commit. It has read-only repository permissions and no signing secrets. Every

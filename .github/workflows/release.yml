@@ -1,6 +1,7 @@
 name: "publish"
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -52,6 +53,7 @@ jobs:
 
   publish-tauri:
     needs: [security-regressions, npm-archives]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     strategy:
