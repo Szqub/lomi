@@ -2,7 +2,16 @@ name: Qualify selected npm archives
 
 on:
   workflow_dispatch:
+    inputs:
+      qualify_registry:
+        description: Verify published registry versions and fresh consumers
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      qualify_registry:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,6 +37,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: consumer-host
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4
+        if: inputs.qualify_registry
+        with:
+          ref: ${{ github.sha }}
+          path: registry-host
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4
         with:
@@ -59,6 +74,12 @@ jobs:
         env:
           LOMI_HOST_COMMIT: ${{ github.sha }}
         run: pnpm test:npm-archives
+      - name: Verify registry archives and fresh registry consumers
+        if: inputs.qualify_registry
+        working-directory: host
+        env:
+          LOMI_HOST_COMMIT: ${{ github.sha }}
+        run: pnpm test:npm-registry
       - name: Retain qualification reports and logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4

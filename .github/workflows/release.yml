@@ -48,6 +48,8 @@ jobs:
 
   npm-archives:
     uses: ./.github/workflows/npm-archives.yml
+    with:
+      qualify_registry: ${{ github.event_name == 'push' }}
     permissions:
       contents: read
 

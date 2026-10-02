@@ -47,6 +47,23 @@ including failed command logs. No npm credentials or signing secrets are passed
 to these jobs. Registry installation and native desktop qualification remain
 separate checks.
 
+After all three packages are published, dispatch the npm workflow with
+`qualify_registry: true`. It anonymously verifies each exact registry version and
+downloaded archive against the retained size, SHA-256, SHA-512 and original raw
+bytes before any registry consumer install. Then it runs the existing CLI and
+generator registry suites with archive overrides cleared and checks the npm
+lockfile integrities for all generated projects. A third clean host checkout at
+the workflow commit installs the exact SDK version from npm in both the app and
+its fixture using a fresh store, performs a frozen reinstall, and runs SDK
+verification, frontend checks/tests/build and the independent author test. The
+An inherited pnpm setting exempts only the three exact reviewed release versions
+in bare runners and the independent author project, preserving the host's existing
+exceptions and the dependency-age threshold. Each suite, the host and the
+independent author use isolated stores. Registry reports
+and lockfiles are retained alongside the archive reports. Registry mode defaults
+to false for manual qualification; release tag pushes require it to pass before
+desktop publication.
+
 After both gates, the workflow follows the `publish-tauri` matrix:
 
 1. Start four parallel jobs on `macos-latest` (Apple Silicon), `macos-15-intel`,
