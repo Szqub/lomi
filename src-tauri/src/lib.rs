@@ -33,6 +33,7 @@ mod cli_mcp;
 mod cli_notifications;
 mod cli_titles;
 mod cli_usage;
+mod credential_store;
 #[cfg(all(feature = "mcp-probe", target_os = "macos"))]
 #[path = "../../tests/native/mcp-browser-support.rs"]
 mod mcp_browser_probe;

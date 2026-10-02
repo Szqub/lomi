@@ -105,6 +105,8 @@ pub(super) struct CredentialStore {
     persist_count: usize,
     #[cfg(test)]
     fail_persist_on: Option<usize>,
+    #[cfg(test)]
+    fail_key_store_access: bool,
 }
 
 impl CredentialStore {
@@ -149,6 +151,8 @@ impl CredentialStore {
             persist_count: 0,
             #[cfg(test)]
             fail_persist_on: None,
+            #[cfg(test)]
+            fail_key_store_access: false,
         })
     }
 
@@ -236,7 +240,11 @@ impl CredentialStore {
         if !valid_credential_id(id) {
             return Err("Invalid account credential identifier.".into());
         }
-        keyring::Entry::new(&self.service, id)
+        #[cfg(test)]
+        if self.fail_key_store_access {
+            return Err("Injected system key store access denial.".into());
+        }
+        crate::credential_store::entry(&self.service, id)
             .map_err(|_| "The system key store is unavailable.".to_string())
     }
 
@@ -341,6 +349,52 @@ mod tests {
         assert!(valid_credential_id("gTz_123-abc"));
     }
 
+    #[test]
+    fn fresh_storage_does_not_access_an_unavailable_key_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = CredentialStore::open(temp.path(), "test-fresh-storage").unwrap();
+        store.fail_key_store_access = true;
+
+        assert_eq!(store.load_active().unwrap(), None);
+        assert!(!store.has_active_reference());
+        assert!(store.metadata.active_id.is_none());
+        assert!(store.metadata.journal_ids.is_empty());
+        assert!(!store.metadata_path.exists());
+    }
+
+    #[test]
+    fn denied_read_preserves_the_active_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = CredentialStore::open(temp.path(), "test-denied-read").unwrap();
+        store.metadata.commit("credential-1");
+        store.persist().unwrap();
+        let before = fs::read(&store.metadata_path).unwrap();
+        store.fail_key_store_access = true;
+
+        assert!(store.load_active().is_err());
+        assert!(store.has_active_reference());
+        assert_eq!(store.metadata.restorable_id(), Some("credential-1"));
+        assert_eq!(fs::read(&store.metadata_path).unwrap(), before);
+    }
+
+    #[test]
+    fn denied_deletion_preserves_the_tombstone_and_cleanup_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = CredentialStore::open(temp.path(), "test-denied-deletion").unwrap();
+        store.metadata.commit("credential-1");
+        store.tombstone().unwrap();
+        let before = fs::read(&store.metadata_path).unwrap();
+        store.fail_key_store_access = true;
+
+        assert!(!store.cleanup_journal());
+        assert_eq!(store.load_active().unwrap(), None);
+        assert!(!store.has_active_reference());
+        assert_eq!(store.metadata.active_id.as_deref(), Some("credential-1"));
+        assert_eq!(store.metadata.cleanup_ids(), vec!["credential-1"]);
+        assert!(store.metadata.logout_tombstone);
+        assert_eq!(fs::read(&store.metadata_path).unwrap(), before);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "touches only a randomized, isolated Lomi test entry in macOS Keychain"]
@@ -348,7 +402,7 @@ mod tests {
         let environment = unique_test_environment();
         let service = format!("{SERVICE_PREFIX}.{environment}");
         let id = new_credential_id().unwrap();
-        let entry = keyring::Entry::new(&service, &id).unwrap();
+        let entry = crate::credential_store::entry(&service, &id).unwrap();
         let secret = format!("isolated-test-{}", new_credential_id().unwrap());
 
         entry.set_password(&secret).unwrap();
@@ -371,7 +425,7 @@ mod tests {
         assert_eq!(store.metadata.restorable_id(), None);
         assert_eq!(store.metadata.journal_ids.len(), 1);
         let orphan_id = store.metadata.journal_ids[0].clone();
-        let orphan = keyring::Entry::new(&service, &orphan_id).unwrap();
+        let orphan = crate::credential_store::entry(&service, &orphan_id).unwrap();
         assert_eq!(orphan.get_password().unwrap(), "isolated-test-session");
 
         store.fail_persist_on = None;

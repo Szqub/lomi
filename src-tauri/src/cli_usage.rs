@@ -14,9 +14,7 @@ use std::{
     future::Future,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Arc, OnceLock, Weak},
-    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{State, Window};
@@ -33,8 +31,6 @@ const SUCCESS_TTL: Duration = Duration::from_secs(5);
 const FORCE_COOLDOWN: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_KEYCHAIN_DIAGNOSTIC_BYTES: usize = 4096;
 
 pub struct CliUsage {
     cache: Mutex<UsageCache>,
@@ -1175,100 +1171,24 @@ fn read_codex_keyring(directory: &Path) -> Result<Option<Value>, AuthReadError> 
 }
 
 fn read_native_keychain(service: &str, account: &str) -> Result<Option<String>, AuthReadError> {
-    #[cfg(target_os = "macos")]
-    {
-        read_macos_keychain(service, account)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|_| AuthReadError::Error("The system credential store is unavailable."))?;
-        match entry.get_password() {
-            Ok(secret) if secret.len() <= MAX_CREDENTIAL_BYTES => Ok(Some(secret)),
-            Ok(_) => Err(AuthReadError::Error(
-                "CLI credentials exceed the safe size limit.",
-            )),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(AuthReadError::Error(
-                "The system credential store is locked or unavailable.",
-            )),
+    match crate::credential_store::get_password(service, account, MAX_CREDENTIAL_BYTES) {
+        Ok(secret) if secret.len() <= MAX_CREDENTIAL_BYTES => {
+            #[cfg(target_os = "macos")]
+            {
+                let secret = secret.trim_end_matches(['\r', '\n']).to_owned();
+                Ok((!secret.is_empty()).then_some(secret))
+            }
+            #[cfg(not(target_os = "macos"))]
+            Ok(Some(secret))
         }
+        Ok(_) | Err(keyring::Error::TooLong(_, _)) => Err(AuthReadError::Error(
+            "CLI credentials exceed the safe size limit.",
+        )),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(AuthReadError::Error(
+            "The system credential store is locked or unavailable.",
+        )),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn read_macos_keychain(service: &str, account: &str) -> Result<Option<String>, AuthReadError> {
-    let mut child = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-a", account, "-w", "-s", service])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| AuthReadError::Error("The system credential store is unavailable."))?;
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < KEYCHAIN_TIMEOUT => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AuthReadError::Error(
-                    "The system credential store did not respond in time.",
-                ));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AuthReadError::Error(
-                    "The system credential store could not be read safely.",
-                ));
-            }
-        }
-    };
-    let mut output = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        stdout
-            .take((MAX_CREDENTIAL_BYTES + 1) as u64)
-            .read_to_end(&mut output)
-            .map_err(|_| {
-                AuthReadError::Error("The system credential store could not be read safely.")
-            })?;
-    }
-    let mut diagnostic = Vec::new();
-    if let Some(stderr) = child.stderr.take() {
-        stderr
-            .take((MAX_KEYCHAIN_DIAGNOSTIC_BYTES + 1) as u64)
-            .read_to_end(&mut diagnostic)
-            .map_err(|_| {
-                AuthReadError::Error("The system credential store could not be read safely.")
-            })?;
-    }
-    if output.len() > MAX_CREDENTIAL_BYTES || diagnostic.len() > MAX_KEYCHAIN_DIAGNOSTIC_BYTES {
-        return Err(AuthReadError::Error(
-            "The system credential store response exceeded the safe size limit.",
-        ));
-    }
-    if !status.success() {
-        let diagnostic = String::from_utf8_lossy(&diagnostic).to_ascii_lowercase();
-        return if diagnostic.contains("could not be found") || diagnostic.contains("item not found")
-        {
-            Ok(None)
-        } else {
-            Err(AuthReadError::Error(
-                "The system credential store is locked or unavailable.",
-            ))
-        };
-    }
-    let secret = String::from_utf8(output)
-        .map_err(|_| AuthReadError::Error("The system credential store response is invalid."))?;
-    let secret = secret.trim_end_matches(['\r', '\n']).to_owned();
-    if secret.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(secret))
 }
 
 fn resolve_claude(

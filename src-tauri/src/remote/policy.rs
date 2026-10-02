@@ -61,7 +61,7 @@ impl Policy {
         // Both identifiers are hashes. No credential enumeration or plaintext file.
         use sha2::{Digest, Sha256};
         let subject = format!("{account}-{:x}", Sha256::digest(parent.as_bytes()));
-        keyring::Entry::new(SERVICE, &subject)
+        crate::credential_store::entry(SERVICE, &subject)
             .map_err(|_| "Remote secure storage is unavailable.".into())
     }
 

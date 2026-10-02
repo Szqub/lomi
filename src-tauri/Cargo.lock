@@ -3380,6 +3380,7 @@ dependencies = [
  "ring",
  "rusqlite",
  "rustls",
+ "security-framework 3.7.0",
  "serde",
  "serde-saphyr",
  "serde_json",

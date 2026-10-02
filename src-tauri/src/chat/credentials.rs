@@ -20,5 +20,6 @@ fn entry(id: &str) -> Result<keyring::Entry, String> {
     if !super::process::valid_id(id) {
         return Err("Invalid credential ID.".into());
     }
-    keyring::Entry::new(SERVICE, id).map_err(|_| "The system key store is unavailable.".into())
+    crate::credential_store::entry(SERVICE, id)
+        .map_err(|_| "The system key store is unavailable.".into())
 }

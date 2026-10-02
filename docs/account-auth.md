@@ -62,6 +62,12 @@ A process lock protects ownership. A durable logout tombstone is written before
 keyring deletion. A failed deletion remains journaled and cannot silently restore
 the signed-out account. Unreadable metadata is preserved for recovery.
 
+On macOS, Lomi disables Keychain password and access dialogs for its process.
+Credentials that require interaction remain unavailable, and their references and
+pending cleanup are preserved. Use Sign out (this device) before a new browser
+sign-in, or turn off Remember me to explicitly use a session for this process.
+Lomi never automatically falls back to memory when persistent storage fails.
+
 The Remember me switch explicitly selects persistent storage or memory for the
 current process. There is no plaintext fallback. Replacing an unresolved persistent
 reference requires a durable tombstone; unreadable or unowned metadata blocks
