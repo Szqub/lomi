@@ -845,7 +845,7 @@ pub(crate) fn usage_process_paths(process: TitleProcess) -> Result<UsageProcessP
     Ok(paths)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn is_legacy_kimi_python(executable: &Path, argv: &[&[u8]]) -> bool {
     executable
         .file_name()
@@ -1653,6 +1653,7 @@ mod tests {
         assert!(temporary_model.has_kimi_model_name_override);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn legacy_python_kimi_is_distinguished_from_native_kimi() {
         assert!(is_legacy_kimi_python(

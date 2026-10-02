@@ -17,7 +17,7 @@ export function securitySuites(platform = process.platform) {
   ];
 }
 
-export function runSecurityRegressions(
+export async function runSecurityRegressions(
   platform = process.platform,
   run = spawnSync,
 ) {
@@ -41,14 +41,27 @@ export function runSecurityRegressions(
         maxBuffer: 16 * 1024 * 1024,
       },
     );
-    process.stdout.write(result.stdout ?? "");
-    process.stderr.write(result.stderr ?? "");
+    // Flush captured Cargo logs before a failure exits the gate.
+    await new Promise((resolve, reject) => {
+      process.stdout.write(result.stdout ?? "", (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
+    await new Promise((resolve, reject) => {
+      process.stderr.write(result.stderr ?? "", (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
     if (
       result.status !== 0 ||
       !/test result: ok\. [1-9]\d* passed; 0 failed/.test(result.stdout ?? "")
     ) {
       throw new Error(
-        `Security suite failed or selected no tests: ${crate} ${filter}\n${result.error ?? ""}`,
+        `Security suite failed or selected no tests: ${crate} ${filter}\n` +
+          `Exit status: ${result.status}; signal: ${result.signal ?? "none"}\n` +
+          `${result.error ?? ""}\n` +
+          `Final stdout:\n${(result.stdout ?? "").slice(-8192)}\n` +
+          `Final stderr:\n${(result.stderr ?? "").slice(-8192)}`,
       );
     }
   }
@@ -58,5 +71,5 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  runSecurityRegressions();
+  await runSecurityRegressions();
 }

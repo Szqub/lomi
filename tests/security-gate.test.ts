@@ -92,11 +92,11 @@ test("Windows gates JSON persistence and crypto without selecting Unix-only cont
   }
 });
 
-test("Windows rejects a failed or empty security suite and never advances past it", () => {
+test("Windows rejects a failed or empty security suite and never advances past it", async () => {
   for (const failure of ["failed", "empty"]) {
     for (const failureIndex of [0, 1]) {
       const crates: string[] = [];
-      assert.throws(
+      await assert.rejects(
         () =>
           runSecurityRegressions("win32", (command: string, args: string[]) => {
             assert.equal(command, "cargo");
@@ -117,7 +117,7 @@ test("Windows rejects a failed or empty security suite and never advances past i
     }
   }
   const crates: string[] = [];
-  runSecurityRegressions("win32", (_command: string, args: string[]) => {
+  await runSecurityRegressions("win32", (_command: string, args: string[]) => {
     crates.push(args[args.indexOf("-p") + 1]);
     return {
       status: 0,
@@ -126,4 +126,31 @@ test("Windows rejects a failed or empty security suite and never advances past i
     };
   });
   assert.deepEqual(crates, ["lomi", "lomi-remote-crypto"]);
+});
+
+test("failed native builds retain terminal diagnostics even with a large compiler log", async () => {
+  const stderr =
+    "compiler warning\n".repeat(10000) +
+    "error: could not compile dependency (signal: 9, SIGKILL)\n";
+  await assert.rejects(
+    () =>
+      runSecurityRegressions("win32", () => ({
+        status: 101,
+        signal: null,
+        stdout: "",
+        stderr,
+      })),
+    (error: Error) => {
+      assert.match(error.message, /Exit status: 101; signal: none/);
+      assert.match(
+        error.message,
+        /error: could not compile dependency \(signal: 9, SIGKILL\)/,
+      );
+      assert.ok(
+        error.message.length < 9000,
+        "The failure retains a bounded diagnostic tail.",
+      );
+      return true;
+    },
+  );
 });
