@@ -45,8 +45,13 @@ jobs:
       - name: run native security regressions
         run: node scripts/security-regressions.mjs
 
+  npm-archives:
+    uses: ./.github/workflows/npm-archives.yml
+    permissions:
+      contents: read
+
   publish-tauri:
-    needs: security-regressions
+    needs: [security-regressions, npm-archives]
     permissions:
       contents: write
     strategy:

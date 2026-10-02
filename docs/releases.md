@@ -27,7 +27,19 @@ the gate. Run its native suites locally with
 `node scripts/security-regressions.mjs`, and SDK checks with
 `pnpm sdk:verify && pnpm sdk:test:consumer`.
 
-After the security gate, the workflow follows the `publish-tauri` matrix:
+The required `npm-archives` gate calls `.github/workflows/npm-archives.yml` on
+macOS, Linux and Windows. That read-only workflow can also be dispatched manually
+before npm publication. It checks out the reviewed full SDK, CLI and generator
+commits, verifies the selected archives in `vendor/plugin-sdk` and
+`vendor/plugin-tools`, and requires clean-source packs to match those immutable
+bytes before and after the installed-archive suites. It also runs the SDK's
+consumer harness against a separate clean host checkout at the workflow commit
+and the pinned CLI source. All platform reports and command logs are retained as
+workflow artifacts, including failed command logs. No npm credentials or signing
+secrets are passed to these jobs. Registry installation and native desktop
+qualification remain separate checks.
+
+After both gates, the workflow follows the `publish-tauri` matrix:
 
 1. Start four parallel jobs on `macos-latest` (Apple Silicon), `macos-15-intel`,
    `ubuntu-22.04`, and `windows-latest`.

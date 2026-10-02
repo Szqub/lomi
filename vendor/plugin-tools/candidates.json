@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "schemaVersion": 1,
+      "name": "@lomi-dev/plugin-sdk",
+      "version": "1.1.0-alpha.2",
+      "file": "lomi-dev-plugin-sdk-1.1.0-alpha.2.tgz",
+      "sha256": "2b58fc2b68f0a6ee342f2e2573a6f3004fc7b5b35f5a250a79955d8403811714",
+      "integrity": "sha512-qjGEqUQdlqiUyUrOplshdgaVavBhiFi6faJ0+5FY7M+l83Qpwrsx4C0A8g4VgcZuRgUcv1uhnb3wHECBtLfM8g==",
+      "bytes": 20444,
+      "sourceCommit": "bf7bb28fd9e9940b799f2e89791dfea869891f9d",
+      "sourceDirty": false,
+      "buildHelperSHA256": "3e3f9ac742cc064fa7326d57201474144ff2e59d0d0e4053a73cf8303249c908",
+      "archive": "vendor/plugin-sdk/lomi-dev-plugin-sdk-1.1.0-alpha.2.tgz",
+      "repository": "lomi-dev/plugin-sdk",
+      "kind": "sdk"
+    },
+    {
+      "kind": "cli",
+      "file": "lomi-dev-plugin-cli-0.1.0-alpha.3.tgz",
+      "bytes": 12613,
+      "sha256": "a6aedb35acf16493dce923e3f9527300a415ffb9f7395ec34980f6f5279d4dd6",
+      "integrity": "sha512-pihmYZ+4cDmgbabG+hZtYpfrWcy3+StegRKZjTsyJ9iy7if/N1t5IMf4myW2vtcz5ftpSq1erUJM5vLaUT0OYg==",
+      "sourceCommit": "00619154bcef985e14e072714be213fc099a50dd",
+      "name": "@lomi-dev/plugin-cli",
+      "version": "0.1.0-alpha.3",
+      "archive": "vendor/plugin-tools/lomi-dev-plugin-cli-0.1.0-alpha.3.tgz",
+      "repository": "lomi-dev/plugin-tools"
+    },
+    {
+      "schemaVersion": 1,
+      "sourceCommit": "ee12d7967fc09472968c7cec725916ead5d41282",
+      "name": "create-lomi-plugin",
+      "version": "0.1.0-alpha.4",
+      "file": "create-lomi-plugin-0.1.0-alpha.4.tgz",
+      "bytes": 13182,
+      "sha256": "08b98c7f2457114d07322bae4d4e86de2036e798a07063b6756faaa3cadf40f1",
+      "integrity": "sha512-35Qvr8JlPM0I+gvVtsWoOLTF2FruEOWHNuyKFIYk1ZzU4HFvXEEDkqSqEylrqEVTuA1FLlT+uVSXnz4ZxigyCA==",
+      "archive": "vendor/plugin-tools/create-lomi-plugin-0.1.0-alpha.4.tgz",
+      "repository": "lomi-dev/create-lomi-plugin",
+      "kind": "generator"
+    }
+  ]
+}
