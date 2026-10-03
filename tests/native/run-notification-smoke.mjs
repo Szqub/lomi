@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { newSession, newProject } from "../../src/model.ts";
 
 if (process.platform !== "darwin")
@@ -16,6 +16,24 @@ const claude = join(directory, "claude");
 await mkdir(folder);
 await mkdir(claude);
 await mkdir(appData, { recursive: true });
+const agentSource = join(directory, "notification-agent.c");
+await writeFile(
+  agentSource,
+  '#include <stdio.h>\n#include <unistd.h>\nint main(void) { sleep(1); fputs("\\033]9;PRIVATE_NATIVE_AGENT_MESSAGE\\007", stdout); fflush(stdout); sleep(30); return 0; }\n',
+);
+const sdkPath = execFileSync(
+  "/usr/bin/xcrun",
+  ["--sdk", "macosx", "--show-sdk-path"],
+  { encoding: "utf8" },
+).trim();
+execFileSync("/usr/bin/xcrun", [
+  "clang",
+  "-isysroot",
+  sdkPath,
+  agentSource,
+  "-o",
+  join(folder, "codex"),
+]);
 await writeFile(join(claude, "settings.json"), '{"env":{"PRESERVE":"yes"}}\n');
 const project = newProject(folder, "local:zsh");
 const tab = project.workspaces[0].tabs[0];
@@ -60,6 +78,7 @@ const child = spawn(
     env: {
       ...process.env,
       CLAUDE_CONFIG_DIR: claude,
+      CODEX_HOME: join(directory, "codex-home"),
       LOMI_NOTIFICATION_SMOKE_DIRECTORY: directory,
     },
     detached: true,

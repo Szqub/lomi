@@ -48,6 +48,7 @@ test("hidden terminals notify once and preferences disable and re-enable alerts 
         kind: "finished",
         context: "project · Default · Terminal",
         source: "claude",
+        sessionId: first.sessionId,
       },
     ]);
   await emit(page, first.sessionId);
@@ -235,6 +236,60 @@ test("denied system permission keeps inbox notifications and receives no in-app 
     .toBe(2);
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(await notices(page)).toHaveLength(0);
+  expect(
+    await page.evaluate(async () => {
+      const inbox = await (window as any).__TAURI_INTERNALS__.invoke(
+        "load_notifications",
+      );
+      return inbox.items.map((item: any) => item.agent);
+    }),
+  ).toEqual(["claude", "claude"]);
+});
+
+test("notification attribution survives process changes and unknown senders stay generic", async ({
+  page,
+}) => {
+  await mockDesktop(page, false);
+  await page.goto("/");
+  const first = await terminal(page);
+  await page.evaluate((id) => {
+    const native = (window as any).__nativeTest;
+    native.terminalContexts[id] = {
+      cwd: "/project",
+      foregroundProgram: "codex",
+      titleCli: { cli: "codex", pid: 42 },
+    };
+    native.emit(id, "\x1b]9;PRIVATE_SOURCE_TEXT\x07");
+  }, first.sessionId);
+  const agents = () =>
+    page.evaluate(async () => {
+      const inbox = await (window as any).__TAURI_INTERNALS__.invoke(
+        "load_notifications",
+      );
+      return inbox.items.map((item: any) => item.agent ?? null);
+    });
+  await expect.poll(agents).toEqual(["codex"]);
+  await page.evaluate((id) => {
+    (window as any).__nativeTest.terminalContexts[id].titleCli = {
+      cli: "claude",
+      pid: 43,
+    };
+  }, first.sessionId);
+  expect(await agents()).toEqual(["codex"]);
+  await page.reload();
+  const second = await terminal(page);
+  expect(await agents()).toEqual(["codex"]);
+  await page.evaluate((id) => {
+    (window as any).__nativeTest.emit(id, "\x1b]9;Notification from Codex\x07");
+  }, second.sessionId);
+  await expect.poll(agents).toEqual([null, "codex"]);
+  expect(
+    await page.evaluate(async () =>
+      JSON.stringify(
+        await (window as any).__TAURI_INTERNALS__.invoke("load_notifications"),
+      ),
+    ),
+  ).not.toContain("PRIVATE_SOURCE_TEXT");
 });
 
 test("hidden OSC 9 alerts expose no terminal text and ignore duplicate and progress reports", async ({
@@ -259,6 +314,7 @@ test("hidden OSC 9 alerts expose no terminal text and ignore duplicate and progr
         kind: "attention",
         context: "project · Default · Terminal",
         source: "terminal",
+        sessionId: first.sessionId,
       },
     ]);
   expect(
@@ -274,6 +330,7 @@ test("hidden OSC 9 alerts expose no terminal text and ignore duplicate and progr
         kind: "attention",
         context: "project · Default · Terminal",
         source: "terminal",
+        sessionId: first.sessionId,
       },
     },
   ]);

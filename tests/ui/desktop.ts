@@ -482,6 +482,9 @@ export async function mockDesktop(
               );
               if (preferences?.agentNotifications === false) return false;
               const claude = args.source !== "terminal";
+              const agent = claude
+                ? "claude"
+                : mock.terminalContexts[args.sessionId]?.titleCli?.cli;
               mock.notifications.items.unshift({
                 id: `notification-${mock.notifications.revision + 1}`,
                 kind: args.kind,
@@ -489,6 +492,7 @@ export async function mockDesktop(
                 body: args.context,
                 createdAt: Date.now(),
                 read: false,
+                ...(agent ? { agent } : {}),
               });
               await persist();
               if (mock.windowFocused || !mock.agentNotificationPermission)

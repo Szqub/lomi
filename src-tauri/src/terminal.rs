@@ -582,6 +582,16 @@ impl Terminals {
             .collect())
     }
 
+    pub(crate) fn notification_agent(
+        &self,
+        session_id: Option<&str>,
+    ) -> Option<crate::cli_catalog::TitleCli> {
+        self.get(session_id?)
+            .ok()?
+            .title_process()
+            .map(|process| process.cli)
+    }
+
     pub fn check_title_process(
         &self,
         id: &str,

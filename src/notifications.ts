@@ -1,3 +1,6 @@
+import { cliNames } from "./cli-agents.ts";
+import type { CliAgent } from "./cli-agents.ts";
+
 export interface InboxNotification {
   id: string;
   kind: "attention" | "finished";
@@ -5,6 +8,33 @@ export interface InboxNotification {
   body: string;
   createdAt: number;
   read: boolean;
+  agent?: CliAgent | null;
+}
+
+export function notificationAgent(item: InboxNotification): CliAgent | null {
+  if (item.agent != null)
+    return Object.hasOwn(cliNames, item.agent) ? item.agent : null;
+  if (
+    item.title === "Claude Code needs your input" ||
+    item.title === "Claude Code finished responding"
+  )
+    return "claude";
+  return null;
+}
+
+export function notificationSource(item: InboxNotification) {
+  const agent = notificationAgent(item);
+  return `Notification from ${agent ? cliNames[agent] : "terminal"}`;
+}
+
+export function notificationRelativeTime(createdAt: number, now = Date.now()) {
+  if (!Number.isFinite(createdAt) || !Number.isFinite(now))
+    return "Unknown time";
+  const seconds = Math.max(0, Math.floor((now - createdAt) / 1000));
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 export interface NotificationSnapshot {

@@ -128,6 +128,16 @@ in the menu. Open the inbox to read or dismiss individual entries, or clear read
 entries. Opening the inbox alone leaves unread state unchanged. The latest 200
 entries and their read state survive application restarts.
 
+Inbox rows show the agent icon, notification title, source, context and relative time.
+Clicking a row marks it read; the dismiss control appears on hover or keyboard
+focus, and remains visible on touch screens. Project/workspace/tab context wraps
+beside the source and is also available in the row tooltip.
+Explicit Claude hooks identify Claude Code. Other terminal notifications use
+the natively recognized foreground CLI when available, otherwise a generic
+terminal icon. Agent identity is saved with the entry, so later process changes
+do not change old notifications. Existing history without source metadata keeps
+its generic icon, except for the two known historical Claude Code titles.
+
 Focused-window events still enter the inbox. Lomi requests system alerts while
 the main window is in the background; OS notification settings determine actual
 delivery. Denied system permission does not discard the inbox entry. The

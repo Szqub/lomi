@@ -183,6 +183,7 @@
     if (
       foregroundInbox.items.length !== 1 ||
       foregroundInbox.items[0].read ||
+      foregroundInbox.items[0].agent !== "claude" ||
       foregroundInbox.items[0].title !== "Claude Code finished responding"
     )
       throw Error("Focused notification was not saved unread in the inbox");
@@ -276,6 +277,12 @@
         .textContent.includes("Claude Code finished responding")
     )
       throw Error("Account menu inbox did not display native notifications");
+    if (
+      !document
+        .querySelector(".notification-center")
+        .textContent.includes("Notification from Claude Code")
+    )
+      throw Error("Native inbox did not display persisted agent attribution");
     await invoke("mark_notifications_read", {
       ids: incomingInbox.items.map((item) => item.id),
     });
@@ -289,6 +296,40 @@
     );
     document.querySelector('button[aria-label="Close notifications"]').click();
     await wait(() => !document.querySelector(".notification-center"));
+    checkpoint = "verified foreground CLI attribution";
+    const beforeAgent = notices.length;
+    await invoke("write_terminal", { id, data: "./codex\r" });
+    await wait(() => notices.length === beforeAgent + 1);
+    const attributedInbox = await invoke("load_notifications");
+    if (
+      attributedInbox.items.length !== 1 ||
+      attributedInbox.items[0].agent !== "codex" ||
+      attributedInbox.items[0].title !== "Agent needs your input" ||
+      JSON.stringify(attributedInbox).includes("PRIVATE_NATIVE_AGENT_MESSAGE")
+    )
+      throw Error("Foreground CLI OSC 9 attribution was not saved privately");
+    await invoke("write_terminal", { id, data: "\u0003" });
+    await wait(async () => !(await invoke("terminal_contexts"))[id]?.titleCli);
+    if ((await invoke("load_notifications")).items[0].agent !== "codex")
+      throw Error("Process exit changed persisted notification attribution");
+    await invoke("dismiss_notification", { id: attributedInbox.items[0].id });
+    checkpoint = "unknown terminal attribution";
+    await invoke("notify_agent", {
+      kind: "attention",
+      source: "terminal",
+      sessionId: "nonexistent-terminal-session",
+      context: "Unknown terminal source",
+    });
+    const unknownInbox = await invoke("load_notifications");
+    if (
+      unknownInbox.items.length !== 1 ||
+      unknownInbox.items[0].agent != null ||
+      unknownInbox.items[0].title !== "Agent needs your input"
+    )
+      throw Error(
+        "An unknown terminal notification received agent attribution",
+      );
+    await invoke("dismiss_notification", { id: unknownInbox.items[0].id });
     if (runningTerminal("notification-terminal")?.sessionId !== id)
       throw Error("Preferences restarted the PTY");
     await invoke("write_terminal", {
@@ -352,6 +393,8 @@
           "focused and background notifications persisted without in-app alerts",
           "explicit reads preserve newer unread arrivals",
           "native account menu opens the persisted inbox",
+          "persisted Claude attribution and generic fallback for unknown sessions",
+          "real PTY OSC 9 preserves verified foreground CLI identity after process exit",
           "read state reload and clear read notifications",
           "storage failures preserve inbox and still request system alerts",
           "native notification request in background",

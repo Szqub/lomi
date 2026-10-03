@@ -3,6 +3,9 @@ import { test } from "node:test";
 import {
   newestNotificationSnapshot,
   notificationBadge,
+  notificationAgent,
+  notificationSource,
+  notificationRelativeTime,
   unreadNotificationCount,
   reportNotificationError,
   subscribeNotificationErrors,
@@ -55,4 +58,74 @@ test("save errors reach an existing or subsequently mounted inbox only", () => {
   assert.deepEqual(errors, ["Disk is full", "Storage unavailable"]);
   stop();
   clearNotificationError();
+});
+
+test("notification sources use saved CLI identity and only exact legacy Claude titles", () => {
+  const item = {
+    id: "1",
+    kind: "finished" as const,
+    title: "Agent finished",
+    body: "Workspace",
+    createdAt: 0,
+    read: false,
+  };
+  assert.equal(
+    notificationSource({ ...item, agent: "codex" }),
+    "Notification from Codex",
+  );
+  assert.equal(
+    notificationSource({ ...item, agent: "claude" }),
+    "Notification from Claude Code",
+  );
+  assert.equal(notificationSource(item), "Notification from terminal");
+  assert.equal(
+    notificationAgent({ ...item, title: "Claude Code needs your input" }),
+    "claude",
+  );
+  assert.equal(
+    notificationAgent({
+      ...item,
+      title: "Claude Code finished responding",
+      agent: null,
+    }),
+    "claude",
+  );
+  assert.equal(
+    notificationAgent({
+      ...item,
+      title: "Claude Code finished responding",
+      agent: "codex",
+    }),
+    "codex",
+  );
+  assert.equal(
+    notificationAgent({
+      ...item,
+      title: "Claude Code finished responding elsewhere",
+    }),
+    null,
+  );
+  assert.equal(notificationAgent({ ...item, agent: "unknown" as never }), null);
+  assert.equal(
+    notificationSource({ ...item, agent: "toString" as never }),
+    "Notification from terminal",
+  );
+});
+
+test("relative notification times cross minute, hour and day boundaries and tolerate clock skew", () => {
+  const now = 200_000_000;
+  for (const [age, expected] of [
+    [-1, "Just now"],
+    [0, "Just now"],
+    [59_999, "Just now"],
+    [60_000, "1m ago"],
+    [3_599_999, "59m ago"],
+    [3_600_000, "1h ago"],
+    [86_399_999, "23h ago"],
+    [86_400_000, "1d ago"],
+    [259_200_000, "3d ago"],
+  ] as const)
+    assert.equal(notificationRelativeTime(now - age, now), expected);
+  assert.equal(notificationRelativeTime(NaN, now), "Unknown time");
+  assert.equal(notificationRelativeTime(0, Infinity), "Unknown time");
 });

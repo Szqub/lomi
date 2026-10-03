@@ -3,7 +3,7 @@
   z-index: 30;
   display: flex;
   flex-direction: column;
-  width: min(360px, calc(100vw - 16px));
+  width: min(420px, calc(100vw - 16px));
   min-width: min(300px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   max-height: min(70vh, calc(100vh - 16px));
@@ -29,8 +29,7 @@
   font-size: var(--font-size-13);
   font-weight: 600;
 }
-.notification-center-heading span,
-.notification-item-meta {
+.notification-center-heading span {
   color: var(--color-surface-variant-text);
   font-size: var(--font-size-10);
 }
@@ -65,7 +64,6 @@
   height: 28px;
   flex: 0 0 auto;
 }
-.notification-item-actions button,
 .notification-center-footer button {
   font-size: var(--font-size-11);
 }
@@ -75,59 +73,110 @@
   overscroll-behavior: contain;
 }
 .notification-item {
-  display: flex;
-  gap: var(--space-8);
-  padding: var(--space-8);
+  position: relative;
   border-top: var(--border-width) solid var(--color-outline);
-}
-.notification-kind {
-  flex: 0 0 auto;
-  padding-top: var(--space-4);
-  color: var(--color-surface-variant-text);
-}
-.notification-item[data-unread] .notification-kind {
-  color: var(--color-surface-text);
-}
-.notification-item-content {
-  min-width: 0;
-  flex: 1;
+  border-radius: var(--radius-xs);
 }
 .notification-center .notification-item-open {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: var(--space-4);
+  align-items: start;
   text-align: left;
   width: 100%;
-  padding: var(--space-4);
-  overflow-wrap: anywhere;
+  padding: 14px var(--space-8);
+}
+.notification-agent {
+  position: relative;
+  display: flex;
+  grid-row: 1 / span 2;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-surface-container-highest);
+  color: var(--color-surface-text);
+}
+.notification-kind {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--color-surface-container);
+  border-radius: 50%;
+  background: var(--color-surface-container);
+  color: var(--color-accent-text);
+}
+.notification-kind[data-kind="attention"] {
+  color: var(--color-warning);
 }
 .notification-item-open strong {
-  font-weight: 500;
-  line-height: 1.4;
-}
-.notification-item[data-unread] .notification-item-open strong {
+  grid-column: 2;
   font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
-.notification-item-open > span {
+.notification-item-open time {
+  grid-column: 3;
+  color: var(--color-surface-variant-text);
+  font-size: var(--font-size-10);
+  line-height: 1.7;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.notification-source {
+  grid-column: 2 / -1;
+  padding-right: 30px;
   color: var(--color-surface-variant-text);
   font-size: var(--font-size-11);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
-.notification-item-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
-  padding: var(--space-4);
+.notification-item[data-unread] .notification-agent::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-primary);
 }
-.notification-unread {
-  color: var(--color-surface-text);
-  font-weight: 500;
+.notification-item:not([data-unread]) .notification-item-open strong {
+  color: var(--color-surface-variant-text);
 }
-.notification-item-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  margin-top: var(--space-4);
+.notification-center .notification-item-dismiss {
+  position: absolute;
+  right: var(--space-6);
+  bottom: var(--space-8);
+  opacity: 0;
+  transition: opacity 100ms;
+}
+.notification-item:hover .notification-item-dismiss,
+.notification-item:focus-within .notification-item-dismiss {
+  opacity: 1;
+}
+@media (hover: none), (pointer: coarse) {
+  .notification-center .notification-item-dismiss {
+    opacity: 1;
+    width: 32px;
+    height: 32px;
+    bottom: var(--space-6);
+  }
+  .notification-source {
+    padding-right: 34px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notification-center .notification-item-dismiss {
+    transition: none;
+  }
 }
 .notification-center-footer {
   display: flex;

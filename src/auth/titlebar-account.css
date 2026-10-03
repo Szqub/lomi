@@ -135,3 +135,10 @@
 .menu-item-badge {
   margin-inline-start: auto;
 }
+.account-context-menu .menu-item > span {
+  flex: 0 1 auto;
+}
+.account-context-menu .menu-item > .menu-item-badge {
+  flex: 0 0 auto;
+  margin-inline-start: 0;
+}

@@ -7,16 +7,27 @@ import {
 } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Bell, Check, CircleAlert, CircleCheck, Trash2, X } from "lucide-react";
+import {
+  Bell,
+  CircleAlert,
+  CircleCheck,
+  Terminal,
+  Trash2,
+  X,
+} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "./api";
 import {
   clearNotificationError,
   newestNotificationSnapshot,
+  notificationAgent,
+  notificationRelativeTime,
+  notificationSource,
   subscribeNotificationErrors,
   unreadNotificationCount,
 } from "./notifications";
 import type { NotificationSnapshot } from "./notifications";
+import { CliAgentIcon } from "./CliAgentIcon";
 import "./notification-center.css";
 
 export function useNotifications() {
@@ -126,6 +137,11 @@ export default function NotificationCenter({
   const panel = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const { snapshot, error, busy, unread, retry, markRead, dismiss, clearRead } =
     notifications;
   const items = snapshot?.items ?? [];
@@ -261,77 +277,74 @@ export default function NotificationCenter({
             <span>Agent updates will appear here.</span>
           </div>
         )}
-        {items.map((item) => (
-          <article
-            className="notification-item"
-            key={item.id}
-            data-unread={!item.read || undefined}
-          >
-            <span
-              className="notification-kind"
-              aria-label={
-                item.kind === "attention" ? "Needs attention" : "Finished"
-              }
+        {items.map((item) => {
+          const agent = notificationAgent(item);
+          const date = new Date(item.createdAt);
+          const validDate = Number.isFinite(date.getTime());
+          return (
+            <article
+              className="notification-item"
+              key={item.id}
+              data-unread={!item.read || undefined}
             >
-              {item.kind === "attention" ? (
-                <CircleAlert size={16} aria-hidden="true" />
-              ) : (
-                <CircleCheck size={16} aria-hidden="true" />
-              )}
-            </span>
-            <div className="notification-item-content">
               <button
                 type="button"
                 className="notification-item-open"
                 disabled={busy}
                 aria-label={`${item.title}${item.read ? "" : ", unread"}`}
+                aria-description={`${notificationSource(item)}. ${item.kind === "attention" ? "Needs attention" : "Finished"}. ${notificationRelativeTime(item.createdAt, now)}. ${item.body}`}
+                title={item.body}
                 onClick={() => {
                   if (!item.read) markRead([item.id]);
                 }}
               >
-                <strong>{item.title}</strong>
-                <span>{item.body}</span>
-              </button>
-              <div className="notification-item-meta">
-                <time
-                  dateTime={new Date(item.createdAt).toISOString()}
-                  title={new Date(item.createdAt).toLocaleString()}
-                >
-                  {new Date(item.createdAt).toLocaleString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </time>
-                {!item.read && (
-                  <span className="notification-unread">Unread</span>
-                )}
-              </div>
-              <div className="notification-item-actions">
-                {!item.read && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => markRead([item.id])}
+                <span className="notification-agent">
+                  {agent ? (
+                    <CliAgentIcon cli={agent} />
+                  ) : (
+                    <Terminal size={23} aria-hidden="true" />
+                  )}
+                  <span
+                    className="notification-kind"
+                    data-kind={item.kind}
+                    aria-label={
+                      item.kind === "attention" ? "Needs attention" : "Finished"
+                    }
                   >
-                    <Check size={13} aria-hidden="true" />
-                    Mark as read
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  aria-label={`Dismiss ${item.title}`}
-                  onClick={() => dismiss(item.id)}
+                    {item.kind === "attention" ? (
+                      <CircleAlert size={13} aria-hidden="true" />
+                    ) : (
+                      <CircleCheck size={13} aria-hidden="true" />
+                    )}
+                  </span>
+                </span>
+                <strong>{item.title}</strong>
+                <time
+                  dateTime={validDate ? date.toISOString() : undefined}
+                  title={validDate ? date.toLocaleString() : "Unknown time"}
                 >
-                  <X size={13} aria-hidden="true" />
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          </article>
-        ))}
+                  {notificationRelativeTime(item.createdAt, now)}
+                </time>
+                <span className="notification-source">
+                  {notificationSource(item)}
+                  {item.body && (
+                    <span className="notification-context"> · {item.body}</span>
+                  )}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="notification-item-dismiss notification-icon-button"
+                disabled={busy}
+                aria-label={`Dismiss ${item.title}`}
+                title="Dismiss notification"
+                onClick={() => dismiss(item.id)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </article>
+          );
+        })}
       </div>
       <div className="notification-center-footer">
         <button

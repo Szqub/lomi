@@ -191,14 +191,29 @@ pub enum NotificationSource {
     Terminal,
 }
 
+impl NotificationSource {
+    fn agent(
+        self,
+        terminals: &crate::terminal::Terminals,
+        session_id: Option<&str>,
+    ) -> Option<crate::cli_catalog::TitleCli> {
+        match self {
+            Self::Claude => Some(crate::cli_catalog::TitleCli::Claude),
+            Self::Terminal => terminals.notification_agent(session_id),
+        }
+    }
+}
+
 #[tauri::command]
 pub fn notify_agent(
     window: Window,
     app: tauri::AppHandle,
     preferences: State<'_, crate::terminal_preferences::TerminalPreferencesFile>,
+    terminals: State<'_, crate::terminal::Terminals>,
     kind: NotificationKind,
     context: String,
     source: Option<NotificationSource>,
+    session_id: Option<String>,
 ) -> Result<bool, String> {
     main_window(&window)?;
     let enabled = crate::terminal_preferences::load_terminal_preferences(
@@ -211,7 +226,8 @@ pub fn notify_agent(
     if context.chars().count() > 300 || context.chars().any(char::is_control) {
         return Err("Invalid notification context.".into());
     }
-    let title = match (source.unwrap_or_default(), kind) {
+    let source = source.unwrap_or_default();
+    let title = match (&source, kind) {
         (NotificationSource::Claude, NotificationKind::Attention) => "Claude Code needs your input",
         (NotificationSource::Claude, NotificationKind::Finished) => {
             "Claude Code finished responding"
@@ -220,7 +236,8 @@ pub fn notify_agent(
         (NotificationSource::Terminal, NotificationKind::Finished) => "Agent finished responding",
     };
     let recorded = if enabled {
-        crate::notifications::record(&app, kind, title, &context)
+        let agent = source.agent(&terminals, session_id.as_deref());
+        crate::notifications::record(&app, kind, agent, title, &context)
     } else {
         Ok(())
     };
@@ -249,6 +266,24 @@ pub fn notify_agent(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn attributes_known_claude_sources_and_leaves_missing_terminals_unknown() {
+        let terminals = crate::terminal::Terminals::default();
+        assert_eq!(
+            NotificationSource::default().agent(&terminals, None),
+            Some(crate::cli_catalog::TitleCli::Claude)
+        );
+        assert_eq!(
+            NotificationSource::Claude.agent(&terminals, Some("missing")),
+            Some(crate::cli_catalog::TitleCli::Claude)
+        );
+        assert_eq!(NotificationSource::Terminal.agent(&terminals, None), None);
+        assert_eq!(
+            NotificationSource::Terminal.agent(&terminals, Some("missing")),
+            None
+        );
+    }
 
     #[test]
     fn merges_hooks_idempotently_without_removing_user_configuration() {

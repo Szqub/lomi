@@ -1,3 +1,4 @@
+use crate::cli_catalog::TitleCli;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, io::Read, path::Path, sync::Mutex, time::SystemTime};
 use tauri::{Emitter, Manager, State, Window};
@@ -22,6 +23,8 @@ pub enum NotificationKind {
 pub struct Notification {
     id: String,
     kind: NotificationKind,
+    #[serde(default)]
+    agent: Option<TitleCli>,
     title: String,
     body: String,
     created_at: u64,
@@ -104,7 +107,7 @@ fn read(path: &Path) -> Result<Snapshot, String> {
             return Err("The notification inbox exceeds 512 KiB.".into());
         }
         let data: Stored = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        if data.version != 1 {
+        if !matches!(data.version, 1 | 2) {
             return Err("Unsupported notification inbox version.".into());
         }
         let mut snapshot = Snapshot {
@@ -140,7 +143,7 @@ fn update(path: &Path, change: impl FnOnce(&mut Snapshot) -> bool) -> Result<Sna
         crate::files::write_json(
             path,
             &Stored {
-                version: 1,
+                version: 2,
                 revision: snapshot.revision,
                 items: snapshot.items.clone(),
             },
@@ -167,6 +170,7 @@ fn publish(app: &tauri::AppHandle, snapshot: Snapshot) -> Result<Snapshot, Strin
 fn append(
     path: &Path,
     kind: NotificationKind,
+    agent: Option<TitleCli>,
     title: &str,
     body: &str,
     now: u64,
@@ -178,6 +182,7 @@ fn append(
             Notification {
                 id: format!("notification-{}", snapshot.revision + 1),
                 kind,
+                agent,
                 title: title.into(),
                 body: body.into(),
                 created_at,
@@ -192,6 +197,7 @@ fn append(
 pub(crate) fn record(
     app: &tauri::AppHandle,
     kind: NotificationKind,
+    agent: Option<TitleCli>,
     title: &str,
     body: &str,
 ) -> Result<(), String> {
@@ -202,7 +208,7 @@ pub(crate) fn record(
         .map_err(|error| error.to_string())?
         .as_millis();
     let now = u64::try_from(now).map_err(|_| "Invalid notification timestamp.")?;
-    publish(app, append(&path(app)?, kind, title, body, now)?)?;
+    publish(app, append(&path(app)?, kind, agent, title, body, now)?)?;
     Ok(())
 }
 
@@ -291,6 +297,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn roundtrips_agent_metadata_in_version_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        for agent in [Some(TitleCli::Claude), Some(TitleCli::Codex), None] {
+            append(&path, NotificationKind::Finished, agent, "Finished", "", 1).unwrap();
+            assert_eq!(read(&path).unwrap().items[0].agent, agent);
+        }
+        let data: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(data["version"], 2);
+        assert_eq!(data["items"][1]["agent"], "codex");
+        assert_eq!(data["items"][2]["agent"], "claude");
+    }
+
+    #[test]
+    fn loads_legacy_agent_without_rewriting_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        let legacy = r#"{"version":1,"revision":1,"items":[{"id":"notification-1","kind":"finished","title":"Finished","body":"","createdAt":1,"read":false}]}"#;
+        fs::write(&path, legacy).unwrap();
+        let snapshot = read(&path).unwrap();
+        assert_eq!(snapshot.items[0].agent, None);
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+        append(
+            &path,
+            NotificationKind::Attention,
+            Some(TitleCli::Claude),
+            "Input",
+            "",
+            2,
+        )
+        .unwrap();
+        let snapshot = read(&path).unwrap();
+        assert_eq!(snapshot.items[1].agent, None);
+        let data: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(data["version"], 2);
+    }
+
+    #[test]
+    fn rejects_invalid_agent_without_replacing_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        append(
+            &path,
+            NotificationKind::Finished,
+            Some(TitleCli::Codex),
+            "Finished",
+            "",
+            1,
+        )
+        .unwrap();
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        data["items"][0]["agent"] = serde_json::json!("unknown-agent");
+        let before = serde_json::to_vec(&data).unwrap();
+        fs::write(&path, &before).unwrap();
+        assert!(read(&path).is_err());
+        assert!(append(&path, NotificationKind::Attention, None, "Input", "", 2).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn persists_restart_and_explicit_reads_preserve_concurrent_arrivals() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notifications.json");
@@ -298,13 +365,22 @@ mod tests {
         let first = append(
             &path,
             NotificationKind::Attention,
+            None,
             "Needs input",
             "Project",
             10,
         )
         .unwrap();
         let ids = vec![first.items[0].id.clone()];
-        append(&path, NotificationKind::Finished, "Finished", "Project", 9).unwrap();
+        append(
+            &path,
+            NotificationKind::Finished,
+            None,
+            "Finished",
+            "Project",
+            9,
+        )
+        .unwrap();
         let result = update(&path, |snapshot| mark_read(snapshot, &ids)).unwrap();
         assert_eq!(result.revision, 3);
         assert!(!result.items[0].read);
@@ -335,7 +411,15 @@ mod tests {
                 let path = path.clone();
                 std::thread::spawn(move || {
                     let _guard = state.0.lock().unwrap();
-                    append(&path, NotificationKind::Finished, "Finished", "", time).unwrap();
+                    append(
+                        &path,
+                        NotificationKind::Finished,
+                        None,
+                        "Finished",
+                        "",
+                        time,
+                    )
+                    .unwrap();
                 })
             })
             .collect();
@@ -351,8 +435,8 @@ mod tests {
     fn clears_only_read_items_and_retains_revision_after_emptying() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notifications.json");
-        let first = append(&path, NotificationKind::Attention, "Input", "", 1).unwrap();
-        append(&path, NotificationKind::Finished, "Finished", "", 2).unwrap();
+        let first = append(&path, NotificationKind::Attention, None, "Input", "", 1).unwrap();
+        append(&path, NotificationKind::Finished, None, "Finished", "", 2).unwrap();
         update(&path, |snapshot| {
             mark_read(snapshot, &[first.items[0].id.clone()])
         })
@@ -371,7 +455,7 @@ mod tests {
             true
         })
         .unwrap();
-        let restarted = append(&path, NotificationKind::Finished, "Finished", "", 3).unwrap();
+        let restarted = append(&path, NotificationKind::Finished, None, "Finished", "", 3).unwrap();
         assert_eq!(restarted.revision, 6);
         assert_ne!(restarted.items[0].id, last_id);
     }
@@ -380,7 +464,7 @@ mod tests {
     fn rejects_invalid_items_without_replacing_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notifications.json");
-        let snapshot = append(&path, NotificationKind::Attention, "Input", "", 1).unwrap();
+        let snapshot = append(&path, NotificationKind::Attention, None, "Input", "", 1).unwrap();
         for case in 0..5 {
             let mut data = Stored {
                 version: 1,
@@ -407,10 +491,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target.json");
         let path = dir.path().join("notifications.json");
-        append(&target, NotificationKind::Attention, "Input", "", 1).unwrap();
+        append(&target, NotificationKind::Attention, None, "Input", "", 1).unwrap();
         let before = fs::read(&target).unwrap();
         std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(append(&path, NotificationKind::Finished, "Finished", "", 2).is_err());
+        assert!(append(&path, NotificationKind::Finished, None, "Finished", "", 2).is_err());
         assert!(path.is_symlink());
         assert_eq!(fs::read(&target).unwrap(), before);
     }
@@ -420,7 +504,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notifications.json");
         for time in 0..205 {
-            append(&path, NotificationKind::Finished, "Finished", "", time).unwrap();
+            append(
+                &path,
+                NotificationKind::Finished,
+                None,
+                "Finished",
+                "",
+                time,
+            )
+            .unwrap();
         }
         let snapshot = read(&path).unwrap();
         assert_eq!(snapshot.revision, 205);
@@ -444,21 +536,22 @@ mod tests {
         let path = dir.path().join("notifications.json");
         for data in [
             "broken".into(),
-            r#"{"version":2,"revision":0,"items":[]}"#.into(),
+            r#"{"version":3,"revision":0,"items":[]}"#.into(),
             " ".repeat(LIMIT + 1),
             r#"{"version":1,"revision":9007199254740992,"items":[]}"#.into(),
             r#"{"version":1,"revision":9007199254740991,"items":[]}"#.into(),
         ] {
             fs::write(&path, &data).unwrap();
-            assert!(append(&path, NotificationKind::Attention, "Input", "", 0).is_err());
+            assert!(append(&path, NotificationKind::Attention, None, "Input", "", 0).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), data);
         }
         fs::remove_file(&path).unwrap();
-        append(&path, NotificationKind::Attention, "Input", "", 0).unwrap();
+        append(&path, NotificationKind::Attention, None, "Input", "", 0).unwrap();
         let before = fs::read(&path).unwrap();
         assert!(append(
             &path,
             NotificationKind::Attention,
+            None,
             "Input",
             &"a".repeat(301),
             0

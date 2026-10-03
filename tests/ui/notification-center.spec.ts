@@ -105,7 +105,7 @@ for (const count of [1, 9, 10])
 
 test("signed-out welcome keeps receipts silent and reveals count only in the menu", async ({
   page,
-}) => {
+}, testInfo) => {
   await setup(page, 1, false, true);
   await expect(page.locator(".titlebar-account-badge")).toHaveCount(0);
   await incoming(page);
@@ -117,6 +117,9 @@ test("signed-out welcome keeps receipts silent and reveals count only in the men
       .getByRole("menuitem", { name: "Notifications", exact: true })
       .locator(".notification-badge"),
   ).toHaveText("2");
+  await page.screenshot({
+    path: testInfo.outputPath("signed-out-notifications-menu.png"),
+  });
   await page
     .getByRole("menuitem", { name: "Notifications", exact: true })
     .click();
@@ -392,4 +395,140 @@ test("an older retry cannot clear a newer mutation failure", async ({
     "Could not update notifications",
   );
   await expect(inbox(page).locator(".notification-item")).toHaveCount(1);
+});
+
+for (const theme of ["dark", "light"] as const)
+  for (const width of [1440, 380])
+    test(`agent row fixture ${theme} at ${width}px keeps context and reveals dismiss actions`, async ({
+      page,
+    }, testInfo) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width, height: width === 380 ? 560 : 900 });
+      await setup(page, 0, true);
+      await page.evaluate(async () => {
+        const mock = (window as any).__nativeTest;
+        mock.notifications = {
+          revision: 10,
+          items: [
+            {
+              id: "codex",
+              agent: "codex",
+              kind: "finished",
+              title: "Codex finished responding",
+              body: "Lomi · Main workspace · Build task",
+              createdAt: Date.now(),
+              read: false,
+            },
+            {
+              id: "claude",
+              agent: "claude",
+              kind: "attention",
+              title: "Claude Code needs your input",
+              body: "Example project · Review workspace",
+              createdAt: Date.now() - 60000,
+              read: false,
+            },
+            {
+              id: "long",
+              kind: "attention",
+              title:
+                "A very long agent notification title with aLongUnbrokenTaskIdentifierThatMustWrapWithoutOverflowingTheCompactNotificationPanel",
+              body: "Stored workspace context stays discoverable",
+              createdAt: Date.now() - 7200000,
+              read: true,
+            },
+          ],
+        };
+        await mock.emitEvent(
+          "notifications-changed",
+          structuredClone(mock.notifications),
+        );
+      });
+      await open(page);
+      const rows = inbox(page).locator(".notification-item");
+      await expect(rows.nth(0)).toContainText("Notification from Codex");
+      await expect(rows.nth(1)).toContainText("Notification from Claude Code");
+      await expect(rows.nth(2)).toContainText("Notification from terminal");
+      await expect(rows.nth(0).locator("time")).toHaveText("Just now");
+      await expect(rows.nth(1).locator("time")).toHaveText("1m ago");
+      await expect(rows.nth(0).getByRole("button").first()).toHaveAttribute(
+        "title",
+        "Lomi · Main workspace · Build task",
+      );
+      await expect(
+        rows.nth(0).getByRole("button").first(),
+      ).toHaveAccessibleDescription(
+        "Notification from Codex. Finished. Just now. Lomi · Main workspace · Build task",
+      );
+      await expect(
+        inbox(page).getByRole("button", { name: "Mark as read", exact: true }),
+      ).toHaveCount(0);
+      expect(
+        await inbox(page).evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
+      const dismiss = rows.nth(0).getByRole("button", {
+        name: "Dismiss Codex finished responding",
+        exact: true,
+      });
+      await page.mouse.move(0, 0);
+      await expect(dismiss).toHaveCSS("opacity", "0");
+      await rows.nth(0).hover();
+      await expect(dismiss).toHaveCSS("opacity", "1");
+      await page.mouse.move(0, 0);
+      await inbox(page)
+        .getByRole("button", { name: "Close notifications" })
+        .focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Tab");
+      await expect(rows.nth(0).getByRole("button").first()).toBeFocused();
+      await expect(rows.nth(0).locator(".notification-context")).toBeVisible();
+      await expect(rows.nth(0).locator(".notification-context")).toContainText(
+        "Lomi · Main workspace · Build task",
+      );
+      await expect(dismiss).toHaveCSS("opacity", "1");
+      await page.keyboard.press("Tab");
+      await expect(dismiss).toBeFocused();
+      await page.screenshot({
+        path: testInfo.outputPath(`agent-rows-${theme}-${width}.png`),
+      });
+      await page.keyboard.press("Enter");
+      await expect(rows).toHaveCount(2);
+      await expect(
+        inbox(page).getByRole("button", { name: "Close notifications" }),
+      ).toBeFocused();
+    });
+
+test("relative time updates while the inbox is open without reading the entry", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, 1, true);
+  await open(page);
+  await expect(inbox(page).locator("time")).toHaveText("Just now");
+  await page.clock.fastForward(60_000);
+  await expect(inbox(page).locator("time")).toHaveText("1m ago");
+  await expect(inbox(page)).toContainText("1 unread");
+});
+
+test.describe("touch notification actions", () => {
+  test.use({ hasTouch: true });
+  test("dismiss stays visible and reachable without hover", async ({
+    page,
+  }) => {
+    await setup(page, 1, true);
+    await open(page);
+    await expect(inbox(page).locator(".notification-context")).toBeVisible();
+    await expect(inbox(page).locator(".notification-context")).toContainText(
+      "Example project · Main workspace · Build task",
+    );
+    const dismiss = inbox(page).getByRole("button", {
+      name: "Dismiss Agent update 1",
+      exact: true,
+    });
+    await expect(dismiss).toHaveCSS("opacity", "1");
+    await dismiss.tap();
+    await expect(inbox(page)).toContainText("No notifications yet");
+  });
 });

@@ -60,6 +60,7 @@ export function useAgentNotifications(
           kind: event.kind,
           context,
           source: event.source,
+          sessionId: event.sessionId,
         });
       })()
         .catch((error) => {
