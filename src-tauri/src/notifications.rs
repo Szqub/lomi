@@ -292,6 +292,23 @@ pub fn clear_read_notifications(
     )
 }
 
+fn clear_all(snapshot: &mut Snapshot) -> bool {
+    let changed = !snapshot.items.is_empty();
+    snapshot.items.clear();
+    changed
+}
+
+#[tauri::command]
+pub fn clear_notifications(
+    window: Window,
+    app: tauri::AppHandle,
+    state: State<'_, Notifications>,
+) -> Result<Snapshot, String> {
+    crate::files::main_window(&window)?;
+    let _guard = state.0.lock().map_err(|error| error.to_string())?;
+    publish(&app, update(&path(&app)?, clear_all)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +475,57 @@ mod tests {
         let restarted = append(&path, NotificationKind::Finished, None, "Finished", "", 3).unwrap();
         assert_eq!(restarted.revision, 6);
         assert_ne!(restarted.items[0].id, last_id);
+    }
+
+    #[test]
+    fn clears_read_and_unread_items_and_preserves_subsequent_arrivals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        let state = Notifications::default();
+        let first = append(&path, NotificationKind::Attention, None, "Input", "", 1).unwrap();
+        let second = append(&path, NotificationKind::Finished, None, "Finished", "", 2).unwrap();
+        update(&path, |snapshot| {
+            mark_read(snapshot, &[first.items[0].id.clone()])
+        })
+        .unwrap();
+        let before = read(&path).unwrap();
+        assert!(before.items.iter().any(|item| item.read));
+        assert!(before.items.iter().any(|item| !item.read));
+        let cleared = {
+            let _guard = state.0.lock().unwrap();
+            update(&path, clear_all).unwrap()
+        };
+        assert_eq!(cleared.revision, 4);
+        assert!(cleared.items.is_empty());
+        let restarted = read(&path).unwrap();
+        assert_eq!(restarted.revision, 4);
+        assert!(restarted.items.is_empty());
+        let saved = fs::read(&path).unwrap();
+        {
+            let _guard = state.0.lock().unwrap();
+            assert_eq!(update(&path, clear_all).unwrap().revision, 4);
+        }
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        let arrival = {
+            let _guard = state.0.lock().unwrap();
+            append(&path, NotificationKind::Finished, None, "Finished", "", 3).unwrap()
+        };
+        assert_eq!(arrival.revision, 5);
+        assert_eq!(arrival.items.len(), 1);
+        assert_eq!(arrival.items[0].id, "notification-5");
+        assert_ne!(arrival.items[0].id, first.items[0].id);
+        assert_ne!(arrival.items[0].id, second.items[0].id);
+        assert!(!read(&path).unwrap().items[0].read);
+    }
+
+    #[test]
+    fn clear_all_preserves_corrupt_inboxes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        let corrupt = "broken";
+        fs::write(&path, corrupt).unwrap();
+        assert!(update(&path, clear_all).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
     }
 
     #[test]

@@ -509,6 +509,7 @@ pub fn run() {
                 notifications::mark_notifications_read,
                 notifications::dismiss_notification,
                 notifications::clear_read_notifications,
+                notifications::clear_notifications,
                 cli_titles::enable_cli_titles
             ];
             handler(invoke)

@@ -155,7 +155,8 @@ or acronym.
   titlebar account menu for signed-in and signed-out users. Arrivals stay quiet
   in the interface; only the signed-in avatar shows an unread count capped at
   `9+`. Signed-out counts appear inside the menu. Reading and dismissing entries
-  are explicit actions. `src-tauri/src/notifications.rs` persists a bounded,
+  are explicit actions. The inbox footer clears all entries, including unread
+  ones, only when clicked. `src-tauri/src/notifications.rs` persists a bounded,
   versioned inbox independently of the workspace session and OS alert delivery.
   Subscribe before loading and accept only current revisioned snapshots. Agent
   notification preferences gate recording and delivery; focused-window events

@@ -459,6 +459,7 @@ export async function mockDesktop(
               "mark_notifications_read",
               "dismiss_notification",
               "clear_read_notifications",
+              "clear_notifications",
               "notify_agent",
             ].includes(command)
           ) {
@@ -512,6 +513,8 @@ export async function mockDesktop(
               mock.notifications.items = mock.notifications.items.filter(
                 (item: any) => !item.read,
               );
+            if (command === "clear_notifications")
+              mock.notifications.items = [];
             if (command !== "load_notifications") await persist();
             const captured = structuredClone(mock.notifications);
             if (command === "load_notifications" && mock.holdNotificationLoad) {

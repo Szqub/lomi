@@ -124,8 +124,9 @@ Lomi stores supported terminal notifications in a local inbox, available from
 the titlebar account menu under **Notifications**, including while signed out.
 New entries do not open a panel or show an in-app alert. The signed-in avatar
 shows the unread count, capped at `9+`; while signed out, the count appears only
-in the menu. Open the inbox to read or dismiss individual entries, or clear read
-entries. Opening the inbox alone leaves unread state unchanged. The latest 200
+in the menu. Open the inbox to read or dismiss individual entries, or use
+**Clear all notifications** to remove every entry, including unread ones.
+Opening the inbox alone leaves unread state unchanged. The latest 200
 entries and their read state survive application restarts.
 
 Inbox rows show the agent icon, notification title, source, context and relative time.

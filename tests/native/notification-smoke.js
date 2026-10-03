@@ -283,17 +283,24 @@
         .textContent.includes("Notification from Claude Code")
     )
       throw Error("Native inbox did not display persisted agent attribution");
-    await invoke("mark_notifications_read", {
-      ids: incomingInbox.items.map((item) => item.id),
-    });
-    const cleared = await invoke("clear_read_notifications");
-    if (cleared.items.length !== 0)
-      throw Error("Read notifications were not removed");
+    const clearButton = [
+      ...document.querySelectorAll(".notification-center button"),
+    ].find((button) => button.textContent.trim() === "Clear all notifications");
+    if (!clearButton || clearButton.disabled)
+      throw Error(
+        "Clear all notifications was not available for a mixed inbox",
+      );
+    clearButton.click();
     await wait(() =>
       document
         .querySelector(".notification-center")
         .textContent.includes("No notifications"),
     );
+    const cleared = await invoke("load_notifications");
+    if (cleared.items.length !== 0 || !clearButton.disabled)
+      throw Error(
+        "Clearing the mixed inbox did not persist or disable the empty action",
+      );
     document.querySelector('button[aria-label="Close notifications"]').click();
     await wait(() => !document.querySelector(".notification-center"));
     checkpoint = "verified foreground CLI attribution";
@@ -312,7 +319,27 @@
     await wait(async () => !(await invoke("terminal_contexts"))[id]?.titleCli);
     if ((await invoke("load_notifications")).items[0].agent !== "codex")
       throw Error("Process exit changed persisted notification attribution");
-    await invoke("dismiss_notification", { id: attributedInbox.items[0].id });
+    document.querySelector('button[aria-label="Open account menu"]').click();
+    await wait(() =>
+      document.querySelector('[role="menuitem"][aria-label="Notifications"]'),
+    );
+    document
+      .querySelector('[role="menuitem"][aria-label="Notifications"]')
+      .click();
+    await wait(() => document.querySelector(".notification-center"));
+    const unreadClear = [
+      ...document.querySelectorAll(".notification-center button"),
+    ].find((button) => button.textContent.trim() === "Clear all notifications");
+    if (!unreadClear || unreadClear.disabled)
+      throw Error(
+        "Clear all notifications was disabled for an unread-only inbox",
+      );
+    unreadClear.click();
+    await wait(
+      async () => (await invoke("load_notifications")).items.length === 0,
+    );
+    document.querySelector('button[aria-label="Close notifications"]').click();
+    await wait(() => !document.querySelector(".notification-center"));
     checkpoint = "unknown terminal attribution";
     await invoke("notify_agent", {
       kind: "attention",
@@ -395,7 +422,7 @@
           "native account menu opens the persisted inbox",
           "persisted Claude attribution and generic fallback for unknown sessions",
           "real PTY OSC 9 preserves verified foreground CLI identity after process exit",
-          "read state reload and clear read notifications",
+          "read state reload and native clear-all button for mixed and unread-only inboxes",
           "storage failures preserve inbox and still request system alerts",
           "native notification request in background",
           "duplicate suppression",

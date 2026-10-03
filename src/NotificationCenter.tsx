@@ -120,7 +120,7 @@ export function useNotifications() {
     markRead: (ids: string[]) =>
       void mutate("mark_notifications_read", { ids }),
     dismiss: (id: string) => void mutate("dismiss_notification", { id }),
-    clearRead: () => void mutate("clear_read_notifications"),
+    clearAll: () => void mutate("clear_notifications"),
   };
 }
 
@@ -142,7 +142,7 @@ export default function NotificationCenter({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  const { snapshot, error, busy, unread, retry, markRead, dismiss, clearRead } =
+  const { snapshot, error, busy, unread, retry, markRead, dismiss, clearAll } =
     notifications;
   const items = snapshot?.items ?? [];
   const close = useCallback(
@@ -349,11 +349,11 @@ export default function NotificationCenter({
       <div className="notification-center-footer">
         <button
           type="button"
-          disabled={busy || !items.some((item) => item.read)}
-          onClick={clearRead}
+          disabled={busy || !items.length}
+          onClick={clearAll}
         >
           <Trash2 size={14} aria-hidden="true" />
-          Clear read notifications
+          Clear all notifications
         </button>
       </div>
     </div>,

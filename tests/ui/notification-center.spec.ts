@@ -134,7 +134,7 @@ test("signed-out welcome keeps receipts silent and reveals count only in the men
   await expect(account(page)).toBeFocused();
 });
 
-test("explicit reads, dismissal and clear read persist across reload", async ({
+test("explicit reads, dismissal and clearing all entries persist across reload", async ({
   page,
 }) => {
   await setup(page, 3, true);
@@ -148,18 +148,120 @@ test("explicit reads, dismissal and clear read persist across reload", async ({
     .getByRole("button", { name: "Dismiss Agent update 2", exact: true })
     .click();
   await expect(inbox(page).locator(".notification-item")).toHaveCount(2);
-  await inbox(page)
-    .getByRole("button", { name: "Clear read notifications", exact: true })
-    .click();
-  await expect(inbox(page).locator(".notification-item")).toHaveCount(1);
   await page.reload();
   await open(page);
-  await expect(inbox(page).locator(".notification-item")).toHaveCount(1);
+  await expect(inbox(page).locator(".notification-item")).toHaveCount(2);
+  await expect(inbox(page)).toContainText("1 unread");
+  await expect(
+    inbox(page).getByRole("button", { name: "Agent update 1", exact: true }),
+  ).toBeVisible();
   await inbox(page)
-    .getByRole("button", { name: "Agent update 3, unread", exact: true })
+    .getByRole("button", { name: "Clear all notifications", exact: true })
     .click();
+  await expect(inbox(page)).toContainText("No notifications yet");
   await expect(page.locator(".titlebar-account-badge")).toHaveCount(0);
   await expect(inbox(page)).toContainText("All caught up");
+  await page.reload();
+  await open(page);
+  await expect(inbox(page)).toContainText("No notifications yet");
+  await expect(
+    inbox(page).getByRole("button", {
+      name: "Clear all notifications",
+      exact: true,
+    }),
+  ).toBeDisabled();
+});
+
+test("clearing all unread notifications empties the inbox and avatar count", async ({
+  page,
+}, testInfo) => {
+  await setup(page, 6, true);
+  await open(page);
+  const clear = inbox(page).getByRole("button", {
+    name: "Clear all notifications",
+    exact: true,
+  });
+  await expect(clear).toBeEnabled();
+  await inbox(page).screenshot({
+    path: testInfo.outputPath("clear-all-enabled.png"),
+  });
+  await clear.click();
+  await expect(inbox(page).locator(".notification-item")).toHaveCount(0);
+  await expect(inbox(page)).toContainText("No notifications yet");
+  await expect(page.locator(".titlebar-account-badge")).toHaveCount(0);
+  await expect(clear).toBeDisabled();
+  await inbox(page).screenshot({
+    path: testInfo.outputPath("clear-all-empty.png"),
+  });
+  await page.reload();
+  await open(page);
+  await expect(inbox(page)).toContainText("No notifications yet");
+});
+
+test("failed clear keeps unread notifications and can be retried", async ({
+  page,
+}) => {
+  await setup(page, 2, true);
+  await open(page);
+  await page.evaluate(() => {
+    (window as any).__nativeTest.failNotificationCommand =
+      "clear_notifications";
+  });
+  const clear = inbox(page).getByRole("button", {
+    name: "Clear all notifications",
+    exact: true,
+  });
+  await clear.click();
+  await expect(inbox(page).getByRole("status")).toContainText(
+    "Notification storage is unavailable",
+  );
+  await expect(inbox(page).locator(".notification-item")).toHaveCount(2);
+  await expect(page.locator(".titlebar-account-badge")).toHaveText("2");
+  await expect(clear).toBeEnabled();
+  await page.evaluate(() => {
+    (window as any).__nativeTest.failNotificationCommand = null;
+  });
+  await clear.click();
+  await expect(inbox(page)).toContainText("No notifications yet");
+  await expect(inbox(page).getByRole("status")).toHaveCount(0);
+});
+
+test("a delayed clear response preserves a newer notification", async ({
+  page,
+}) => {
+  await setup(page, 2, true);
+  await open(page);
+  await page.evaluate(() => {
+    (window as any).__nativeTest.holdNotificationMutation = true;
+  });
+  const clear = inbox(page).getByRole("button", {
+    name: "Clear all notifications",
+    exact: true,
+  });
+  await clear.click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean((window as any).__nativeTest.resolveNotificationMutation),
+      ),
+    )
+    .toBe(true);
+  await expect(clear).toBeDisabled();
+  await incoming(page);
+  await page.evaluate(() =>
+    (window as any).__nativeTest.resolveNotificationMutation(),
+  );
+  await expect(
+    inbox(page).getByRole("button", {
+      name: "New arrival, unread",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await expect(inbox(page).locator(".notification-item")).toHaveCount(1);
+  await expect(page.locator(".titlebar-account-badge")).toHaveText("1");
+  await page.reload();
+  await open(page);
+  await expect(inbox(page)).toContainText("New arrival");
 });
 
 test("a stale initial load cannot overwrite a newer event", async ({
@@ -259,13 +361,7 @@ for (const theme of ["dark", "light"])
     await page.keyboard.press("Shift+Tab");
     await expect(
       inbox(page).getByRole("button", {
-        name: "Clear read notifications",
-        exact: true,
-      }),
-    ).not.toBeFocused();
-    await expect(
-      inbox(page).getByRole("button", {
-        name: "Dismiss Agent update 25",
+        name: "Clear all notifications",
         exact: true,
       }),
     ).toBeFocused();
