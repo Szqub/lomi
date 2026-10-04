@@ -8,6 +8,29 @@ did not exist when this workflow was prepared on 2026-09-11.
 
 ## Release workflow
 
+### Installer qualification without publishing
+
+`.github/workflows/installers.yml` builds production-feature packages on Linux
+x64, Windows x64, macOS ARM64 and macOS Intel. Its temporary configuration
+disables updater artifacts and uses ad-hoc macOS signing. It does not read
+release signing secrets or publish releases. Test installers and reports are
+retained as Actions artifacts for seven days.
+
+The qualification installs and removes DEB, NSIS and MSI packages, and copies
+the app from a verified DMG. Each installed app must show a native window.
+RPM and AppImage payloads are extracted and checked; this does not test an RPM
+package-manager transaction or the AppImage FUSE launcher. Every payload must
+include the verified AI and remote-terminal bundles, notices and pinned Node.
+The packaged Node runs without system PATH and streams all three Custom API
+formats through a loopback fixture, with and without a test key. No paid API is
+used. The scripts never enable native probe features in production builds.
+
+These checks do not qualify Developer ID, notarization, Gatekeeper,
+Authenticode, updater replacement or installation over an existing user profile.
+Run the separate signed-release qualification before publishing.
+
+### Publishing
+
 `.github/workflows/release.yml` is the only release workflow. It is
 named **publish** and publishes when a version tag matching `v*` is pushed.
 Branch pushes and pull requests do not start a workflow. A manual dispatch runs

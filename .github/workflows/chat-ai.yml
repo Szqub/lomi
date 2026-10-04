@@ -5,6 +5,14 @@ on:
   push:
     branches:
       - "codex/custom-api-*"
+    paths:
+      - ".github/workflows/chat-ai.yml"
+      - "src/**"
+      - "src-tauri/**"
+      - "packages/**"
+      - "tests/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
   pull_request:
     paths:
       - ".github/workflows/chat-ai.yml"

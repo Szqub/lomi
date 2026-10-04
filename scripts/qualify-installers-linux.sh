@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p installer-results
+root="$PWD"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+deb=(src-tauri/target/release/bundle/deb/*.deb)
+rpm=(src-tauri/target/release/bundle/rpm/*.rpm)
+appimage=(src-tauri/target/release/bundle/appimage/*.AppImage)
+test "${#deb[@]}" = 1 && test "${#rpm[@]}" = 1 && test "${#appimage[@]}" = 1
+dpkg-deb --info "${deb[0]}" > installer-results/deb-metadata.txt
+sudo apt-get install -y "$PWD/${deb[0]}"
+dpkg-query -L lomi > installer-results/deb-files.txt
+resource=$(sed -n 's@/ai-runtime/index.cjs$@@p' installer-results/deb-files.txt)
+node scripts/qualify-installers-runtime.mjs /usr/bin/lomi "$resource" deb
+xvfb-run -a dbus-run-session -- bash -c '
+  set -euo pipefail
+  /usr/bin/lomi > installer-results/deb-gui.log 2>&1 &
+  app_pid=$!
+  trap "kill $app_pid 2>/dev/null || true" EXIT
+  for attempt in {1..90}; do
+    kill -0 "$app_pid"
+    if xdotool search --onlyvisible --pid "$app_pid" --name Lomi > installer-results/deb-window.txt; then exit 0; fi
+    sleep 1
+  done
+  exit 1
+'
+sudo apt-get remove -y lomi
+test ! -e /usr/bin/lomi
+rpm -qip "${rpm[0]}" > installer-results/rpm-metadata.txt
+rpm -qpR "${rpm[0]}" > installer-results/rpm-dependencies.txt
+mkdir "$scratch/rpm"
+rpm2cpio "${rpm[0]}" | (cd "$scratch/rpm" && cpio -idm --quiet)
+resource=$(find "$scratch/rpm" -path '*/ai-runtime/index.cjs' -printf '%h\n')
+node scripts/qualify-installers-runtime.mjs "$scratch/rpm/usr/bin/lomi" "$(dirname "$resource")" rpm-extracted
+image="$PWD/${appimage[0]}"
+chmod +x "$image"
+mkdir "$scratch/appimage"
+(cd "$scratch/appimage" && "$image" --appimage-extract > "$root/installer-results/appimage-files.txt")
+resource=$(find "$scratch/appimage/squashfs-root" -path '*/ai-runtime/index.cjs' -printf '%h\n')
+node scripts/qualify-installers-runtime.mjs "$scratch/appimage/squashfs-root/usr/bin/lomi" "$(dirname "$resource")" appimage-extracted
+printf '%s\n' 'DEB install, visible GUI and uninstall passed; RPM and AppImage extracted payloads passed.' > installer-results/linux.txt
