@@ -153,11 +153,7 @@ impl TransportState {
     /// Will result in `Error::State` if not in transport mode.
     #[must_use]
     pub fn receiving_nonce(&self) -> u64 {
-        if self.initiator {
-            self.cipherstates.1.nonce()
-        } else {
-            self.cipherstates.0.nonce()
-        }
+        if self.initiator { self.cipherstates.1.nonce() } else { self.cipherstates.0.nonce() }
     }
 
     /// Get the forthcoming outbound nonce value.
@@ -167,11 +163,7 @@ impl TransportState {
     /// Will result in `Error::State` if not in transport mode.
     #[must_use]
     pub fn sending_nonce(&self) -> u64 {
-        if self.initiator {
-            self.cipherstates.0.nonce()
-        } else {
-            self.cipherstates.1.nonce()
-        }
+        if self.initiator { self.cipherstates.0.nonce() } else { self.cipherstates.1.nonce() }
     }
 
     /// Check if this session was started with the "initiator" role.

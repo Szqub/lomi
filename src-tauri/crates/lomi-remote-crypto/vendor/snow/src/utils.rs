@@ -26,11 +26,7 @@ impl<T> Toggle<T> {
     }
 
     pub fn get(&self) -> Option<&T> {
-        if self.on {
-            Some(&self.inner)
-        } else {
-            None
-        }
+        if self.on { Some(&self.inner) } else { None }
     }
 }
 

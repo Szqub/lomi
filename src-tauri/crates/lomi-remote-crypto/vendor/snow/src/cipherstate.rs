@@ -188,11 +188,7 @@ fn validate_nonce(current: u64) -> Result<(), Error> {
     // 2^64-1 is reserved and may not be used in the state machine (5.1).
     //
     // It is used by the default cipher rekey function (4.2).
-    if current == u64::MAX {
-        Err(Error::State(StateProblem::Exhausted))
-    } else {
-        Ok(())
-    }
+    if current == u64::MAX { Err(Error::State(StateProblem::Exhausted)) } else { Ok(()) }
 }
 
 impl From<CipherState> for StatelessCipherState {

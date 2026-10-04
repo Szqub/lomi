@@ -6,11 +6,11 @@
 
 use hex::FromHex;
 use snow::{
-    resolvers::{CryptoResolver, DefaultResolver},
     Builder, Error,
+    resolvers::{CryptoResolver, DefaultResolver},
 };
 
-use rand_core::{impls, RngCore};
+use rand_core::{RngCore, impls};
 use snow::{params::*, types::*};
 use x25519_dalek as x25519;
 
@@ -252,7 +252,9 @@ fn test_Xpsk0_expected_value() -> TestResult {
     let len = h_i.write_message(&[], &mut buf)?;
     assert_eq!(len, 96);
 
-    let expected = Vec::<u8>::from_hex("79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51ad51eef529db0dd9127d4aa59a9183e118337d75a4e55e7e00f85c3d20ede536dd0112eec8c3b2a514018a90ab685b027dd24aa0c70b0c0f00524cc23785028b9")?;
+    let expected = Vec::<u8>::from_hex(
+        "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51ad51eef529db0dd9127d4aa59a9183e118337d75a4e55e7e00f85c3d20ede536dd0112eec8c3b2a514018a90ab685b027dd24aa0c70b0c0f00524cc23785028b9",
+    )?;
 
     println!("\nreality:  {}", hex::encode(&buf[..len]));
     println!("expected: {}", hex::encode(&expected));
@@ -323,7 +325,9 @@ fn test_XXpsk0_expected_value() -> TestResult {
     let len = h_r.read_message(&buf[..len], &mut buf2)?;
     assert_eq!(len, 0);
 
-    let expected = Vec::<u8>::from_hex("072b7bbd237ac602c4aa938db36998f31ca4750752d1758d59850c627d0bdbc51205592c3baa101b4a31f062695b7c1dbee99d5123fbd2ad03052078c570e028")?;
+    let expected = Vec::<u8>::from_hex(
+        "072b7bbd237ac602c4aa938db36998f31ca4750752d1758d59850c627d0bdbc51205592c3baa101b4a31f062695b7c1dbee99d5123fbd2ad03052078c570e028",
+    )?;
     println!("\nreality:  {}", hex::encode(&buf[..64]));
     println!("expected: {}", hex::encode(&expected));
     assert_eq!(&buf[..64], &expected[..]);

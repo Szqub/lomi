@@ -69,7 +69,10 @@ pub struct NavigationObservation {
 }
 
 impl BrowserControl {
-    #[allow(clippy::too_many_arguments, reason = "Keep isolated authority and revocation inputs explicit at the construction boundary.")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep isolated authority and revocation inputs explicit at the construction boundary."
+    )]
     pub fn new(
         generation: String,
         panel_id: String,

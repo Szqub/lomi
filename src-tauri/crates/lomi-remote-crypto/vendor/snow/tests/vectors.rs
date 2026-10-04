@@ -8,7 +8,7 @@ use serde::{
     de::{self, Deserialize, Deserializer, Unexpected, Visitor},
     ser::{Serialize, Serializer},
 };
-use snow::{params::*, Builder, HandshakeState};
+use snow::{Builder, HandshakeState, params::*};
 use std::{
     fmt,
     fmt::Write as _,
