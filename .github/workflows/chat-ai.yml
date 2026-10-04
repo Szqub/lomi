@@ -67,10 +67,10 @@ jobs:
         run: pnpm build
       - name: Test all API formats and runtime transport
         run: pnpm ai:test
-      - name: Test native Chat AI storage and dispatch
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib chat:: -- --test-threads=1
       - name: Install browser engine
         run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
       - name: Test provider settings and Custom API
         run: pnpm exec playwright test tests/ui/chat-settings.spec.ts --config=${{ matrix.config }} --workers=2
+      - name: Test native Chat AI storage and dispatch
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib chat:: -- --test-threads=1
