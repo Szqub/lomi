@@ -67,10 +67,10 @@ test("Android descriptors survive docking, file changes and all supported sessio
       },
     ],
   };
-  for (const version of [1, 2, 3]) {
+  for (const version of [1, 2, 3, 4]) {
     const restored = restoreSession({ ...session, version }, info);
     assert.deepEqual(androidTabs(restored), [android]);
-    assert.equal(restored.version, 3);
+    assert.equal(restored.version, 4);
   }
   assert.throws(
     () =>

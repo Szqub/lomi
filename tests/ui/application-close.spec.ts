@@ -21,6 +21,8 @@ async function actions(page: Page) {
           [
             "android_exit",
             "agent_control_closing",
+            "cli_router_closing",
+            "cli_router_drain",
             "save_session",
             "restart_plugins",
             "plugin:window|destroy",
@@ -31,7 +33,9 @@ async function actions(page: Page) {
             ? call.args.action.type
             : call.command === "agent_control_closing"
               ? `agent-control:${call.args.closing ? "freeze" : "resume"}`
-              : call.command,
+              : call.command === "cli_router_closing"
+                ? `router:${call.args.closing ? "freeze" : "resume"}`
+                : call.command,
         ) as string[],
   );
 }
@@ -80,6 +84,9 @@ for (const event of ["lomi-quit-requested", "plugin-restart-request"]) {
     page,
   }) => {
     await prepare(page);
+    await page.evaluate(() => {
+      (window as any).__nativeTest.androidExitHold = true;
+    });
     await page.evaluate(
       (event) => void (window as any).__nativeTest.emitEvent(event),
       event,
@@ -95,13 +102,35 @@ for (const event of ["lomi-quit-requested", "plugin-restart-request"]) {
       progress.getByRole("button", { name: "Cancelling…" }),
     ).toBeDisabled();
     await expect(progress).toContainText("Stopped phones will stay stopped");
+    expect(await actions(page)).not.toContain("router:resume");
+    await page.evaluate(() => {
+      const mock = (window as any).__nativeTest;
+      mock.androidExitHold = false;
+      mock.finishAndroidExit();
+    });
     await expect(progress).toHaveCount(0);
     const order = await actions(page);
+    expect(order.indexOf("router:freeze")).toBeLessThan(
+      order.indexOf("agent-control:freeze"),
+    );
+    expect(order.lastIndexOf("save_session")).toBeLessThan(
+      order.indexOf("cli_router_drain"),
+    );
+    expect(order.indexOf("cli_router_drain")).toBeLessThan(
+      order.indexOf("finish"),
+    );
+    expect(order.indexOf("finish")).toBeLessThan(
+      order.indexOf("router:resume"),
+    );
     expect(order.indexOf("agent-control:freeze")).toBeLessThan(
       order.indexOf("begin"),
     );
-    expect(order.indexOf("begin")).toBeLessThan(order.indexOf("save_session"));
-    expect(order.indexOf("save_session")).toBeLessThan(order.indexOf("finish"));
+    expect(order.indexOf("begin")).toBeLessThan(
+      order.lastIndexOf("save_session"),
+    );
+    expect(order.lastIndexOf("save_session")).toBeLessThan(
+      order.indexOf("finish"),
+    );
     expect(order.indexOf("finish")).toBeLessThan(order.indexOf("resume"));
     expect(order.indexOf("resume")).toBeLessThan(
       order.indexOf("agent-control:resume"),
@@ -197,6 +226,8 @@ for (const trigger of ["Quit command", "native Quit request"]) {
       dialog.getByRole("button", { name: "Cancel", exact: true }),
     ).toBeFocused();
     expect(await page.evaluate(() => (window as any).__chatTest.stops)).toBe(0);
+    expect(await actions(page)).toContain("router:freeze");
+    expect(await actions(page)).not.toContain("cli_router_drain");
     expect(await actions(page)).not.toContain("plugin:window|destroy");
     await page.keyboard.press("Enter");
     await expect(dialog).toHaveCount(0);
@@ -206,6 +237,8 @@ for (const trigger of ["Quit command", "native Quit request"]) {
       )
       .toBeNull();
     expect(await page.evaluate(() => (window as any).__chatTest.stops)).toBe(0);
+    expect(await actions(page)).toContain("router:resume");
+    expect(await actions(page)).not.toContain("cli_router_drain");
     await close();
     await expect(dialog).toBeVisible();
     await page.evaluate(() => {
@@ -274,4 +307,30 @@ test("closing the workspace hides its window and retains terminal runtimes", asy
   expect(calls).not.toContain("plugin:window|destroy");
   expect(calls).not.toContain("agent-control:freeze");
   expect(calls).not.toContain("finish");
+});
+
+test("a failed final session save releases router admission without draining runs", async ({
+  page,
+}) => {
+  await prepare(page);
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.failSave = true;
+    void mock.emitEvent("lomi-quit-requested");
+  });
+  await expect(
+    page.getByText("Could not close the window: Disk is full", { exact: true }),
+  ).toBeVisible();
+  const failed = await actions(page);
+  expect(failed).toContain("router:freeze");
+  expect(failed).toContain("router:resume");
+  expect(failed).not.toContain("cli_router_drain");
+  expect(failed).not.toContain("finish");
+  expect(failed).not.toContain("plugin:window|destroy");
+  await page.evaluate(() => {
+    const mock = (window as any).__nativeTest;
+    mock.failSave = false;
+    void mock.emitEvent("lomi-quit-requested");
+  });
+  await expect.poll(() => actions(page)).toContain("plugin:window|destroy");
 });

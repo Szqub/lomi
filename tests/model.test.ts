@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   active,
+  newCliAgentTab,
+  cliAgentTabs,
+  layoutPanes,
   addWorkspace,
   newBrowserTab,
   newPane,
@@ -611,5 +614,46 @@ test("removing a workspace preserves other selections and permits an empty resto
   assert.deepEqual(
     restoreSession(JSON.parse(JSON.stringify(empty)), info),
     empty,
+  );
+});
+
+test("CLI Agent descriptors restore as saved views in standalone and mixed tabs", () => {
+  const session = projectSession();
+  const workspace = active(session)!.workspace;
+  const standalone = newCliAgentTab("saved-run", "Saved task");
+  const embedded = {
+    ...newCliAgentTab("saved-run", "Other view"),
+    customTitle: "Retained task",
+  };
+  const mixed = newTab("/project", "local:bash");
+  mixed.layout = {
+    type: "split",
+    id: "mixed",
+    axis: "horizontal",
+    ratio: 0.5,
+    first: mixed.layout,
+    second: embedded,
+  };
+  mixed.activePaneId = embedded.id;
+  workspace.tabs.push(standalone, mixed);
+  workspace.activeTabId = mixed.id;
+  const restored = restoreSession(JSON.parse(JSON.stringify(session)), info);
+  assert.equal(restored.version, 4);
+  assert.deepEqual(cliAgentTabs(restored), [standalone, embedded]);
+  const selected = active(restored)!.tab;
+  assert.equal(selected.type, "terminal");
+  if (selected.type === "terminal") {
+    assert.equal(selected.activePaneId, embedded.id);
+    assert.equal(
+      layoutPanes(selected.layout).find((p) => p.id === embedded.id)?.type,
+      "cli-agent",
+    );
+  }
+  for (const version of [1, 2, 3, 4])
+    assert.equal(restoreSession({ ...session, version }, info).version, 4);
+  standalone.runId = "../../invalid";
+  assert.throws(
+    () => restoreSession(session, info),
+    /Invalid saved CLI Agent descriptor/,
   );
 });

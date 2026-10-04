@@ -6,11 +6,27 @@ import {
 import { terminalsWithProcesses } from "./terminal-runtime";
 import { errorMessage } from "./api";
 import { closeChatViews, hasActiveChatRequests } from "./chat/chat-service";
+import {
+  closeCliAgentViews,
+  hasActiveCliRuns,
+  type CliCloseLease,
+} from "./router/run-runtime";
 import { Modal } from "./ui";
 
 export function useCloseGuard() {
   const editor = useEditorCloseGuard();
   const checking = useRef(false);
+  const cliCloses = useRef(new WeakMap<ReadonlySet<string>, CliCloseLease>());
+  const release = useCallback(async (fileIds: ReadonlySet<string>) => {
+    const lease = cliCloses.current.get(fileIds);
+    if (!lease) return;
+    try {
+      await lease.release();
+      cliCloses.current.delete(fileIds);
+    } catch (error) {
+      setChatError(errorMessage(error));
+    }
+  }, []);
   const resolve = useRef<(close: boolean) => void>(undefined);
   const [request, setRequest] = useState<{
     message: string;
@@ -29,6 +45,7 @@ export function useCloseGuard() {
     ) => {
       if (checking.current) return false;
       checking.current = true;
+      let cliClose: CliCloseLease | undefined;
       try {
         const application = fileIds === undefined && terminalIds === undefined;
         let message = "";
@@ -41,10 +58,12 @@ export function useCloseGuard() {
         }
         if (application && hasActiveChatRequests())
           message += `${message ? " " : ""}Chat AI is still generating a response.`;
+        if (hasActiveCliRuns(fileIds))
+          message += `${message ? " " : ""}CLI Agent work is still running.`;
         if (message) {
           message += application
             ? " Quitting will stop active agents, terminal processes and AI responses. Are you sure you want to quit?"
-            : " Closing will end these terminal sessions and may interrupt their work. Close anyway?";
+            : " Closing will stop work in the final views of these runs and end any terminal sessions. Close anyway?";
           const approved = await new Promise<boolean>((finish) => {
             resolve.current = finish;
             setRequest({ message, application });
@@ -52,10 +71,18 @@ export function useCloseGuard() {
           if (!approved) return false;
         }
         if (!(await editor.confirm(fileIds, decision))) return false;
+        if (!application && fileIds)
+          cliClose = await closeCliAgentViews(fileIds);
         if (!deferChats) await closeChatViews(fileIds);
+        if (fileIds && cliClose) cliCloses.current.set(fileIds, cliClose);
         return true;
       } catch (error) {
-        setChatError(errorMessage(error));
+        try {
+          await cliClose?.release();
+          setChatError(errorMessage(error));
+        } catch (releaseError) {
+          setChatError(errorMessage(releaseError));
+        }
         return false;
       } finally {
         checking.current = false;
@@ -70,6 +97,7 @@ export function useCloseGuard() {
   };
   return {
     confirm,
+    release,
     dialog: (
       <>
         {request && (
@@ -110,15 +138,12 @@ export function useCloseGuard() {
           <Modal
             protectTheme
             tone="danger"
-            title="Conversation could not be saved"
+            title="Views could not be closed"
             onClose={() => setChatError("")}
           >
             <div className="dialog-form">
               <p>{chatError}</p>
-              <p>
-                The views remain open. Retry saving or export the available
-                conversation before closing.
-              </p>
+              <p>The views remain open. Resolve the error and retry closing.</p>
               <button className="button" onClick={() => setChatError("")}>
                 Keep open
               </button>

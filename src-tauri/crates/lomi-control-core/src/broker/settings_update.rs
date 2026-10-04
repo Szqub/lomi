@@ -278,6 +278,11 @@ impl Broker {
             .collect()
     }
     pub fn decide_settings_update(&self, operation: &str, approve: bool) -> Result<(), ErrorCode> {
+        let _project_write = if approve {
+            self.project_write_admission()?
+        } else {
+            None
+        };
         let (plan, permit, command, owner) = {
             let mut state = self.lock_state().map_err(|_| ErrorCode::ControlRevoked)?;
             let work = self.settings_update_work(&state, operation, None)?;

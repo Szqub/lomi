@@ -9,6 +9,7 @@ export const builtinViews = {
   file: lazy(() => import("../FileEditor")),
   browser: BrowserPane,
   android: lazy(() => import("../android/AndroidPane")),
+  cliAgent: lazy(() => import("../router/CliAgentPane")),
   chat: lazy(() => import("../chat/ChatPane")),
   diff: FileDiff,
   commit: CommitDetails,

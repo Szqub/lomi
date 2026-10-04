@@ -380,6 +380,7 @@ impl Broker {
         hash: &str,
         lock: impl FnOnce(&str) -> Result<G, ErrorCode>,
     ) -> Result<GitMutated, ErrorCode> {
+        let _project_write = self.project_write_admission()?;
         let (command, owner, directory, permit, alive, policy, plan) = {
             let mut state = self.lock_state().map_err(|_| ErrorCode::ControlRevoked)?;
             let work = self.git_mutation_work(&state, operation, nonce)?;

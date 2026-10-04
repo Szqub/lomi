@@ -73,6 +73,7 @@ impl Broker {
         }
         for panel in command.panels.iter().filter(|p| p.tab_id == *tab_id) {
             match panel.kind.as_str() {
+                "cli-agent" => return Err(ErrorCode::UnsupportedCapability),
                 "chat" => Self::chat_panel_scope(state, owner, &panel.panel_id, "chat.open")?,
                 "file" => {}
                 "android" => Self::android_panel_access(state, owner, &panel.panel_id, true)?,

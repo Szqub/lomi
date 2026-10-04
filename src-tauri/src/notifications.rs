@@ -117,7 +117,7 @@ fn read(path: &Path) -> Result<Snapshot, String> {
         snapshot.validate()?;
         snapshot
             .items
-            .sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            .sort_by_key(|item| std::cmp::Reverse(item.created_at));
         Ok(snapshot)
     })();
     result.map_err(|error: String| {

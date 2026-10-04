@@ -37,6 +37,14 @@ impl Broker {
         owner: &str,
         command: &ProjectCloseCommand,
     ) -> Result<(), ErrorCode> {
+        if command.workspaces.iter().any(|workspace| {
+            workspace
+                .panels
+                .iter()
+                .any(|panel| panel.kind == "cli-agent")
+        }) {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         let session = state
             .sessions
             .get(owner)

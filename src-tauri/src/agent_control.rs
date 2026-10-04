@@ -582,7 +582,18 @@ async fn set_enabled_locked(
                     .app_data_dir()
                     .map_err(|_| unavailable())?
                     .join("agent-control");
-                let broker = Broker::start(&root).map_err(|_| unavailable())?;
+                let broker = Broker::start_with_project_write_admission(
+                    &root,
+                    Arc::new(|| {
+                        crate::cli_router::project_lease::admit_unscoped()
+                            .map(|guard| {
+                                Box::new(guard)
+                                    as Box<dyn lomi_control_core::broker::ProjectWritePermit>
+                            })
+                            .map_err(|_| lomi_control_protocol::ErrorCode::TargetBusy)
+                    }),
+                )
+                .map_err(|_| unavailable())?;
                 let yolo_mode = state.startup.lock().map_err(|_| unavailable())?.yolo_mode();
                 if let Err(error) = broker.set_yolo_mode(yolo_mode) {
                     broker.shutdown().await;

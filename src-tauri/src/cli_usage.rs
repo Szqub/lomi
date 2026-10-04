@@ -63,6 +63,165 @@ impl CliUsage {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProfileQuotaError {
+    Unsupported,
+    Unauthenticated,
+    Throttled { retry_after_ms: Option<u64> },
+    UnknownScope,
+    InvalidReport,
+    Unavailable,
+}
+
+pub(crate) struct CodexProfileAuth {
+    pub(crate) access_token: zeroize::Zeroizing<String>,
+    pub(crate) account_id: String,
+    pub(crate) quota_group_key: String,
+}
+
+fn codex_profile_auth(directory: &Path) -> Result<ProviderAuth, ProfileQuotaError> {
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
+    {
+        let metadata =
+            std::fs::symlink_metadata(directory).map_err(|_| ProfileQuotaError::Unavailable)?;
+        if !metadata.is_dir() {
+            return Err(ProfileQuotaError::Unavailable);
+        }
+        let directory = directory
+            .canonicalize()
+            .map_err(|_| ProfileQuotaError::Unavailable)?;
+        let mut paths = UsageProcessPaths::from_entries(&[]);
+        paths.codex_home = Some(directory.clone());
+        let namespace = UsageNamespace {
+            cli: TitleCli::Codex,
+            directory,
+            store: "codex-native".into(),
+        };
+        let convert = |failure: AuthReadError| match failure {
+            AuthReadError::Missing => ProfileQuotaError::Unauthenticated,
+            AuthReadError::Unsupported(_) => ProfileQuotaError::Unsupported,
+            AuthReadError::Error(_) => ProfileQuotaError::Unavailable,
+        };
+        // No Auto fallback or ephemeral-store ambiguity in router-owned profiles.
+        match codex_storage_mode(&namespace.directory.join("config.toml")).map_err(convert)? {
+            CodexStorageMode::File | CodexStorageMode::Keyring => {}
+            CodexStorageMode::Auto | CodexStorageMode::Ephemeral => {
+                return Err(ProfileQuotaError::Unsupported)
+            }
+        }
+        resolve_codex(&paths, &namespace)
+            .map_err(convert)?
+            .ok_or(ProfileQuotaError::Unauthenticated)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", test)))]
+    {
+        let _ = directory;
+        Err(ProfileQuotaError::Unsupported)
+    }
+}
+
+/// Native-only ephemeral dispatch binding. The caller must compare the returned
+/// group against the profile's previously authenticated quota identity before
+/// sending this token to the private pinned app-server. Never export to a view.
+pub(crate) fn read_codex_profile_auth(
+    directory: &Path,
+) -> Result<CodexProfileAuth, ProfileQuotaError> {
+    let (token, account_id, team_id, usage_endpoint) = codex_profile_auth(directory)?;
+    let mut token = zeroize::Zeroizing::new(token);
+    let account_id = account_id
+        .filter(|id| !id.trim().is_empty())
+        .ok_or(ProfileQuotaError::UnknownScope)?;
+    let mut credential = make_credential(
+        TitleCli::Codex,
+        UsageNamespace {
+            cli: TitleCli::Codex,
+            directory: directory.to_path_buf(),
+            store: "codex-native".into(),
+        },
+        std::mem::take(&mut *token),
+        Some(account_id.clone()),
+        team_id,
+        usage_endpoint,
+    );
+    let group = codex_profile_quota_group(&credential);
+    let access_token = zeroize::Zeroizing::new(std::mem::take(&mut credential.token));
+    Ok(CodexProfileAuth {
+        access_token,
+        account_id,
+        quota_group_key: group?,
+    })
+}
+
+/// Native-only profile access: directory must come from the router's owned
+/// namespace registry. No process impersonation, credential export or refresh.
+pub(crate) async fn fetch_codex_profile_quota(
+    state: &CliUsage,
+    directory: &Path,
+) -> Result<(Value, String), ProfileQuotaError> {
+    let namespace_directory = directory.to_path_buf();
+    let directory = namespace_directory.clone();
+    let auth = tauri::async_runtime::spawn_blocking(move || codex_profile_auth(&directory))
+        .await
+        .map_err(|_| ProfileQuotaError::Unavailable)??;
+    let (token, account_id, team_id, usage_endpoint) = auth;
+    let mut token = zeroize::Zeroizing::new(token);
+    let account_id = account_id
+        .filter(|id| !id.trim().is_empty())
+        .ok_or(ProfileQuotaError::UnknownScope)?;
+    let _permit = state
+        .network_slots
+        .acquire()
+        .await
+        .map_err(|_| ProfileQuotaError::Unavailable)?;
+    let mut request = state
+        .client()
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .timeout(Duration::from_secs(5))
+        .header(reqwest::header::USER_AGENT, "codex-cli")
+        .bearer_auth(token.as_str());
+    // Keep the native token in its zeroizing guard until the authenticated
+    // response permits qualifying its account-plus-principal grouping.
+    request = request.header("ChatGPT-Account-Id", &account_id);
+    let response = request
+        .send()
+        .await
+        .map_err(|_| ProfileQuotaError::Unavailable)?;
+    match response.status().as_u16() {
+        401 | 403 => return Err(ProfileQuotaError::Unauthenticated),
+        429 => {
+            return Err(ProfileQuotaError::Throttled {
+                retry_after_ms: parse_retry_after(
+                    response.headers().get(reqwest::header::RETRY_AFTER),
+                )
+                .map(|delay| delay.as_millis().min(u64::MAX as u128) as u64),
+            })
+        }
+        200..=299 => {}
+        _ => return Err(ProfileQuotaError::Unavailable),
+    }
+    let body = bounded_response_body(response)
+        .await
+        .map_err(|_| ProfileQuotaError::InvalidReport)?;
+    let report = serde_json::from_slice(&body).map_err(|_| ProfileQuotaError::InvalidReport)?;
+    // Only a successful token-sensitive account request permits grouping.
+    // A workspace alone cannot identify an individual subscription quota pool.
+    let mut credential = make_credential(
+        TitleCli::Codex,
+        UsageNamespace {
+            cli: TitleCli::Codex,
+            directory: namespace_directory,
+            store: "codex-native".into(),
+        },
+        std::mem::take(&mut *token),
+        Some(account_id),
+        team_id,
+        usage_endpoint,
+    );
+    let group = codex_profile_quota_group(&credential);
+    zeroize::Zeroize::zeroize(&mut credential.token);
+    Ok((report, group?))
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum UsageStatus {
@@ -854,6 +1013,16 @@ fn codex_account_identity(credential: &NativeCredential) -> Option<String> {
         .map(|id| ("user", id))
         .or_else(|| claim("chatgpt_account_user_id").map(|id| ("membership", id)))?;
     serde_json::to_string(&(account_id, principal)).ok()
+}
+
+/// Call only after a successful token-sensitive usage response; this helper
+/// qualifies scope using the same account/principal rules as native usage.
+fn codex_profile_quota_group(credential: &NativeCredential) -> Result<String, ProfileQuotaError> {
+    let identity = codex_account_identity(credential).ok_or(ProfileQuotaError::UnknownScope)?;
+    let mut group = Sha256::new();
+    group.update(b"lomi-codex-quota-group-v2\0");
+    group.update(identity.as_bytes());
+    Ok(hex_digest(&group.finalize()))
 }
 
 fn opaque_account_key(
@@ -2713,6 +2882,56 @@ mod tests {
             credential_account_key(&missing_user_a),
             credential_account_key(&missing_user_b)
         );
+    }
+
+    #[test]
+    fn codex_profile_quota_groups_separate_workspace_users_and_survive_token_rotation() {
+        let first = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("workspace", "user-a", "first"),
+            Some("workspace"),
+            None,
+            None,
+        );
+        let rotated = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("workspace", "user-a", "second"),
+            Some("workspace"),
+            None,
+            None,
+        );
+        let other_user = test_credential(
+            TitleCli::Codex,
+            &codex_test_token("workspace", "user-b", "first"),
+            Some("workspace"),
+            None,
+            None,
+        );
+        assert_eq!(
+            codex_profile_quota_group(&first),
+            codex_profile_quota_group(&rotated)
+        );
+        assert_ne!(
+            codex_profile_quota_group(&first),
+            codex_profile_quota_group(&other_user)
+        );
+        assert_ne!(first.identity, rotated.identity);
+    }
+
+    #[test]
+    fn codex_profile_quota_groups_require_qualified_matching_principals() {
+        for token in [
+            "opaque-token".into(),
+            codex_test_token("other-workspace", "user", "first"),
+            codex_test_token("workspace", "", "first"),
+        ] {
+            let credential =
+                test_credential(TitleCli::Codex, &token, Some("workspace"), None, None);
+            assert_eq!(
+                codex_profile_quota_group(&credential),
+                Err(ProfileQuotaError::UnknownScope)
+            );
+        }
     }
 
     #[test]

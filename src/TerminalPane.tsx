@@ -127,7 +127,12 @@ function LiveTerminal({
   };
   const title =
     snapshot.status === "running"
-      ? snapshot.title || snapshot.foregroundProgram
+      ? [
+          snapshot.title || snapshot.foregroundProgram,
+          snapshot.routerProfileLabel,
+        ]
+          .filter(Boolean)
+          .join(" · ")
       : "";
   const activity =
     snapshot.status === "running"

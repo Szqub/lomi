@@ -120,6 +120,7 @@ export function Modal({
       data-tone={tone}
       onCancel={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         if (!closeDisabled) onClose();
       }}
       onClick={(event) => {

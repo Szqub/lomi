@@ -9,6 +9,8 @@ import {
 import {
   fileTabs,
   filesInTab,
+  layoutPanes,
+  newCliAgentTab,
   newProject,
   newSession,
   newWorkspace,
@@ -169,6 +171,52 @@ test("folder renames preserve file IDs and positions in every workspace and spli
   assert.equal(fileTabs(deleted).length, 0);
   const kept = deleted.projects[0].workspaces[0].tabs[0];
   if (kept.type === "terminal") assert.equal(kept.activePaneId, terminalId);
+});
+
+test("file changes preserve routed CLI tabs and split panes", () => {
+  const project = newProject("/project", "bash");
+  let state = {
+    ...newSession(),
+    projects: [project],
+    activeProjectId: project.id,
+  };
+  const workspace = project.workspaces[0];
+  state = openFileTab(state, workspace.id, "/project", "src/main.ts");
+  const current = state.projects[0].workspaces[0];
+  const terminal = current.tabs[0];
+  if (terminal.type !== "terminal") throw new Error("Expected a terminal tab");
+  const standalone = newCliAgentTab("standalone-run", "Standalone agent");
+  const split = newCliAgentTab("split-run", "Split agent");
+  terminal.layout = splitPane(
+    terminal.layout,
+    panes(terminal.layout)[0].id,
+    "horizontal",
+    split,
+  );
+  terminal.activePaneId = split.id;
+  current.tabs.push(standalone);
+  current.activeTabId = standalone.id;
+
+  for (const change of [
+    { oldPath: "/project/src", newPath: "/project/code" },
+    { oldPath: "/project/code", newPath: null },
+  ]) {
+    state = applyFileChange(state, change, "bash");
+    const updated = state.projects[0].workspaces[0];
+    assert.equal(
+      updated.tabs.find((tab) => tab.id === standalone.id),
+      standalone,
+    );
+    assert.equal(updated.activeTabId, standalone.id);
+    const kept = updated.tabs.find((tab) => tab.id === terminal.id);
+    if (kept?.type !== "terminal") throw new Error("Expected a terminal tab");
+    assert.equal(
+      layoutPanes(kept.layout).find((pane) => pane.id === split.id),
+      split,
+    );
+    assert.equal(kept.activePaneId, split.id);
+  }
+  assert.equal(fileTabs(state).length, 0);
 });
 
 test("project renames and cross-project moves retarget open files, while root deletion removes its project", () => {

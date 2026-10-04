@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender},
         Arc, Condvar, Mutex,
     },
@@ -17,15 +17,87 @@ use std::{
 };
 use tauri::{
     ipc::{Channel, Response},
-    State, Window,
+    Manager, State, Window,
 };
 
 #[cfg(unix)]
 use lomi_control_core::{terminal::TerminalControl, terminal_io};
 #[cfg(unix)]
-use std::{os::fd::BorrowedFd, time::Duration};
+use std::{
+    os::fd::BorrowedFd,
+    time::{Duration, Instant},
+};
 
 const HIGH_WATER: usize = 128 * 1024;
+
+struct PreparedTerminal {
+    command: (portable_pty::CommandBuilder, String),
+    completion: Arc<AtomicBool>,
+    drain_healthy: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(unix)]
+struct GatewayTerminal {
+    command: (portable_pty::CommandBuilder, String),
+    completion: Arc<AtomicBool>,
+    drain_healthy: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "macos")]
+fn gateway_group_contains_only_zombies(group: u32) -> bool {
+    // Darwin killpg returns EPERM if a retained group has no signalable live
+    // member. Admit that case only with two complete, stable native snapshots
+    // and an exact zombie status for every member, never for an unknown PID.
+    // proc_pidinfo's arg=1 includes zombies (XNU proc_info.c).
+    fn members(group: u32) -> Option<Vec<i32>> {
+        let mut pids = [0i32; 1024];
+        let capacity = std::mem::size_of_val(&pids) as i32;
+        let count = unsafe {
+            libc::proc_listpids(
+                2, /* PROC_PGRP_ONLY */
+                group,
+                pids.as_mut_ptr().cast(),
+                capacity,
+            )
+        };
+        if count <= 0 || count >= capacity || count % 4 != 0 {
+            return None;
+        }
+        let mut result = pids[..count as usize / 4].to_vec();
+        if result.iter().any(|pid| *pid <= 0) {
+            return None;
+        }
+        result.sort_unstable();
+        Some(result)
+    }
+    let Some(pids) = members(group) else {
+        return false;
+    };
+    for pid in &pids {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as i32;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                *pid,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                1,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if read != size {
+            return false;
+        }
+        let info = unsafe { info.assume_init() };
+        if info.pbsi_pid != *pid as u32
+            || info.pbsi_pgid != group
+            || info.pbsi_status != libc::SZOMB
+        {
+            return false;
+        }
+    }
+    members(group).is_some_and(|current| current == pids)
+}
 
 pub mod clipboard;
 
@@ -42,6 +114,10 @@ struct Flow {
 }
 
 struct Session {
+    owned_gateway: bool,
+    gateway_reap_started: Mutex<bool>,
+    gateway_kill_sent: AtomicBool,
+    gateway_signal_failed: AtomicBool,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -241,7 +317,45 @@ impl Session {
         Some(executable.file_name()?.to_string_lossy().into_owned())
     }
 
+    #[cfg(unix)]
+    fn kill_gateway_group(&self, reap_started: bool) {
+        // Once a group-wide SIGKILL succeeds, its members cannot create new
+        // descendants. Do not signal again after reaping begins or after a
+        // successful kill: Darwin can retain an exiting child until the PTY
+        // descriptors close, and PID ownership ends when wait reaps it.
+        if reap_started || self.gateway_kill_sent.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(pid) = self.pid else {
+            self.gateway_signal_failed.store(true, Ordering::SeqCst);
+            return;
+        };
+        let killed = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        let error = if killed != 0 {
+            std::io::Error::last_os_error().raw_os_error()
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let only_zombies = error == Some(libc::EPERM) && gateway_group_contains_only_zombies(pid);
+        #[cfg(not(target_os = "macos"))]
+        let only_zombies = false;
+        if killed == 0 || error == Some(libc::ESRCH) || only_zombies {
+            self.gateway_kill_sent.store(true, Ordering::SeqCst);
+        } else {
+            self.gateway_signal_failed.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn stop(&self) {
+        #[cfg(unix)]
+        if self.owned_gateway {
+            // portable-pty creates an owned session/process group. Fence its
+            // descendants before the leader can be reaped and its PID reused.
+            if let Ok(reap_started) = self.gateway_reap_started.lock() {
+                self.kill_gateway_group(*reap_started);
+            }
+        }
         #[cfg(unix)]
         if let Some(control) = self.control() {
             if let Ok(mut control) = control.lock() {
@@ -252,8 +366,10 @@ impl Session {
             flow.closed = true;
         }
         self.ready.notify_all();
-        if let Ok(mut killer) = self.killer.lock() {
-            let _ = killer.kill();
+        if !self.owned_gateway {
+            if let Ok(mut killer) = self.killer.lock() {
+                let _ = killer.kill();
+            }
         }
         if let Ok(mut writer) = self.writer.lock() {
             writer.take();
@@ -458,6 +574,23 @@ pub struct StartRequest {
     agent_ticket: Option<AgentTicket>,
     #[serde(default)]
     cli_launch: Option<crate::cli_catalog::TitleCli>,
+    #[serde(default)]
+    router_profile_id: Option<String>,
+    #[serde(default)]
+    router_id: Option<String>,
+    #[serde(default)]
+    gateway_run_id: Option<String>,
+    #[serde(default)]
+    gateway_run_revision: Option<u64>,
+    #[serde(default)]
+    native_recovery: Option<NativeRecovery>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeRecovery {
+    run_id: String,
+    revision: u64,
 }
 
 #[derive(Deserialize)]
@@ -468,6 +601,31 @@ struct AgentTicket {
 }
 
 fn validate_start_request(request: &StartRequest) -> Result<(), String> {
+    if request.native_recovery.is_some()
+        && (request.router_profile_id.is_none()
+            || request.cli_launch.is_none()
+            || request.gateway_run_id.is_some()
+            || request.agent_ticket.is_some()
+            || request.router_id.is_some())
+    {
+        return Err("Native recovery requires its exact original account and a separate explicit CLI launch.".into());
+    }
+    if request.gateway_run_id.is_some() != request.gateway_run_revision.is_some()
+        || request.gateway_run_id.is_some()
+            && (request.cli_launch.is_none()
+                || request.agent_ticket.is_some()
+                || request.router_id.is_some()
+                || request.router_profile_id.is_some())
+    {
+        return Err(
+            "A gateway run requires its reviewed revision and a separate native CLI launch.".into(),
+        );
+    }
+    if (request.router_id.is_some() || request.router_profile_id.is_some())
+        && (request.cli_launch.is_none() || request.agent_ticket.is_some())
+    {
+        return Err("A CLI account or router requires its own explicit CLI launch.".into());
+    }
     if request.agent_ticket.is_some() && request.cli_launch.is_some() {
         return Err("Agent control terminals cannot launch a separate CLI.".into());
     }
@@ -479,6 +637,10 @@ fn validate_start_request(request: &StartRequest) -> Result<(), String> {
 pub struct Started {
     cwd: String,
     profile_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    router_profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    router_profile_label: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -861,6 +1023,81 @@ impl Terminals {
         exited: Channel<Exit>,
         #[cfg(unix)] control: Option<Arc<Mutex<TerminalControl>>>,
     ) -> Result<Started, String> {
+        self.start_prepared(
+            shells,
+            request,
+            output,
+            exited,
+            #[cfg(unix)]
+            control,
+            None,
+        )
+    }
+
+    fn start_router(
+        &self,
+        shells: &Shells,
+        request: StartRequest,
+        output: Channel<Response>,
+        exited: Channel<Exit>,
+        command: (portable_pty::CommandBuilder, String),
+        completion: Arc<AtomicBool>,
+    ) -> Result<Started, String> {
+        self.start_prepared(
+            shells,
+            request,
+            output,
+            exited,
+            #[cfg(unix)]
+            None,
+            Some(PreparedTerminal {
+                command,
+                completion,
+                drain_healthy: None,
+            }),
+        )
+    }
+
+    #[cfg(unix)]
+    fn start_gateway(
+        &self,
+        shells: &Shells,
+        request: StartRequest,
+        output: Channel<Response>,
+        exited: Channel<Exit>,
+        launch: GatewayTerminal,
+    ) -> Result<Started, String> {
+        self.start_prepared(
+            shells,
+            request,
+            output,
+            exited,
+            None,
+            Some(PreparedTerminal {
+                command: launch.command,
+                completion: launch.completion,
+                drain_healthy: Some(launch.drain_healthy),
+            }),
+        )
+    }
+
+    fn start_prepared(
+        &self,
+        shells: &Shells,
+        request: StartRequest,
+        output: Channel<Response>,
+        exited: Channel<Exit>,
+        #[cfg(unix)] control: Option<Arc<Mutex<TerminalControl>>>,
+        prepared: Option<PreparedTerminal>,
+    ) -> Result<Started, String> {
+        let (prepared, completion, drain_healthy) = match prepared {
+            Some(PreparedTerminal {
+                command,
+                completion,
+                drain_healthy,
+            }) => (Some(command), Some(completion), drain_healthy),
+            None => (None, None, None),
+        };
         validate_start_request(&request)?;
         if request.id.is_empty() || request.id.len() > 128 {
             return Err("Invalid terminal identifier.".into());
@@ -871,7 +1108,9 @@ impl Terminals {
             .find(|profile| profile.id == request.profile_id)
             .cloned()
             .ok_or("The selected shell is no longer installed. Choose another shell.")?;
-        let (command, cwd) = if let Some(cli) = request.cli_launch {
+        let (command, cwd) = if let Some(prepared) = prepared {
+            prepared
+        } else if let Some(cli) = request.cli_launch {
             let resolved =
                 crate::cli_launch::resolve_cli(&profile, &request.cwd, &shells.integration, cli)?;
             shell::build_with_cli(
@@ -888,7 +1127,7 @@ impl Terminals {
             .openpty(size(request.cols, request.rows)?)
             .map_err(|error| error.to_string())?;
         #[cfg(unix)]
-        if control.is_some() {
+        if control.is_some() || request.gateway_run_id.is_some() {
             let fd = pair
                 .master
                 .as_raw_fd()
@@ -921,6 +1160,10 @@ impl Terminals {
             .map_err(|error| format!("Cannot start {}: {error}", profile.name))?;
         drop(pair.slave);
         let session = Arc::new(Session {
+            owned_gateway: request.gateway_run_id.is_some(),
+            gateway_reap_started: Mutex::new(false),
+            gateway_kill_sent: AtomicBool::new(false),
+            gateway_signal_failed: AtomicBool::new(false),
             pid: child.process_id(),
             profile: profile.clone(),
             master: Mutex::new(pair.master),
@@ -928,7 +1171,7 @@ impl Terminals {
             killer: Mutex::new(child.clone_killer()),
             flow: Mutex::new(Flow {
                 #[cfg(unix)]
-                nonblocking: control.is_some(),
+                nonblocking: control.is_some() || request.gateway_run_id.is_some(),
                 #[cfg(unix)]
                 control,
                 ..Flow::default()
@@ -948,6 +1191,14 @@ impl Terminals {
             if sessions.contains_key(&request.id) {
                 drop(sessions);
                 session.stop();
+                if session.owned_gateway {
+                    *session
+                        .gateway_reap_started
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = true;
+                }
+                drop(reader);
+                drop(session);
                 let _ = child.wait();
                 return Err("A terminal with this identifier already exists.".into());
             }
@@ -965,19 +1216,75 @@ impl Terminals {
         let sessions = Arc::downgrade(&self.sessions);
         thread::spawn(move || {
             let mut buffer = [0_u8; 16 * 1024];
-            loop {
+            let mut clean_drain = true;
+            #[cfg(unix)]
+            let mut gateway_tail: Option<(Instant, usize)> = None;
+            'read: loop {
+                #[cfg(unix)]
+                if session.owned_gateway {
+                    if let Some(pid) = session.pid {
+                        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                        let observed = unsafe {
+                            libc::waitid(
+                                libc::P_PID,
+                                pid,
+                                info.as_mut_ptr(),
+                                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                            )
+                        };
+                        if observed != 0 {
+                            clean_drain = false;
+                        }
+                        if (observed != 0 || unsafe { info.assume_init().si_pid() } != 0)
+                            && gateway_tail.is_none()
+                        {
+                            let reap_started = session
+                                .gateway_reap_started
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            session.kill_gateway_group(*reap_started);
+                            gateway_tail = Some((Instant::now() + Duration::from_secs(5), 0));
+                        }
+                    }
+                    if gateway_tail.is_some_and(|(deadline, bytes)| {
+                        Instant::now() >= deadline || bytes > 1024 * 1024
+                    }) {
+                        clean_drain = false;
+                        break;
+                    }
+                }
                 let mut flow = session
                     .flow
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                while !flow.closed && flow.pending >= HIGH_WATER {
+                #[cfg(unix)]
+                let draining_tail = gateway_tail.is_some();
+                #[cfg(not(unix))]
+                let draining_tail = false;
+                while !flow.closed && flow.pending >= HIGH_WATER && !draining_tail {
+                    #[cfg(unix)]
+                    if session.owned_gateway {
+                        let (next, timeout) = session
+                            .ready
+                            .wait_timeout(flow, Duration::from_millis(50))
+                            .unwrap_or_else(|error| error.into_inner());
+                        flow = next;
+                        if timeout.timed_out() {
+                            continue 'read;
+                        }
+                        continue;
+                    }
                     flow = session
                         .ready
                         .wait(flow)
                         .unwrap_or_else(|error| error.into_inner());
                 }
-                if flow.closed {
+                if flow.closed && !session.owned_gateway {
                     break;
+                }
+                #[cfg(unix)]
+                if flow.closed && session.owned_gateway && gateway_tail.is_none() {
+                    gateway_tail = Some((Instant::now() + Duration::from_secs(5), 0));
                 }
                 drop(flow);
                 let length = match reader.read(&mut buffer) {
@@ -987,17 +1294,33 @@ impl Terminals {
                             && session.nonblocking() =>
                     {
                         let Ok(fd) = session.control_fd() else {
+                            clean_drain = false;
                             break;
                         };
                         if terminal_io::wait_readable(fd).is_err() {
+                            clean_drain = false;
                             break;
                         }
                         continue;
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    #[cfg(unix)]
+                    Err(error)
+                        if session.owned_gateway && error.raw_os_error() == Some(libc::EIO) =>
+                    {
+                        break
+                    }
+                    Err(_) => {
+                        clean_drain = false;
+                        break;
+                    }
                     Ok(length) => length,
                 };
+                #[cfg(unix)]
+                if let Some((_, bytes)) = &mut gateway_tail {
+                    *bytes = bytes.saturating_add(length);
+                }
                 let remote_order = remote_events
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
@@ -1029,11 +1352,53 @@ impl Terminals {
                     .is_err()
                 {
                     session.stop();
+                    clean_drain = false;
                     break;
                 }
             }
             drop(reader);
+            #[cfg(unix)]
+            let exit_control = session.control();
+            let owned_gateway = session.owned_gateway;
+            let mut retained_session = Some(session);
+            if owned_gateway {
+                let session = retained_session.as_ref().unwrap();
+                {
+                    let mut reap_started = session
+                        .gateway_reap_started
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    #[cfg(unix)]
+                    session.kill_gateway_group(*reap_started);
+                    // Disarm stale Session holders before wait can reuse PID.
+                    // Never hold this mutex across a blocking process wait.
+                    *reap_started = true;
+                }
+                clean_drain &= !session.gateway_signal_failed.load(Ordering::SeqCst);
+                session.stop();
+                if let Some(sessions) = sessions.upgrade() {
+                    if let Ok(mut sessions) = sessions.lock() {
+                        if sessions
+                            .get(&request.id)
+                            .is_some_and(|current| Arc::ptr_eq(current, session))
+                        {
+                            sessions.remove(&request.id);
+                        }
+                    }
+                }
+                // Closing our writer and master after the output tail is
+                // drained also lets Darwin finish an exiting PTY child.
+                drop(retained_session.take());
+            }
             let code = child.wait().ok().map(|status| status.exit_code());
+            if let Some(healthy) = drain_healthy {
+                healthy.store(clean_drain && code.is_some(), Ordering::SeqCst);
+            }
+            if code.is_some() {
+                if let Some(completion) = completion {
+                    completion.store(true, Ordering::SeqCst);
+                }
+            }
             let mut remote_closed = remote_events
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -1046,18 +1411,20 @@ impl Terminals {
             }
             drop(remote_closed);
             #[cfg(unix)]
-            if let Some(control) = session.control() {
+            if let Some(control) = exit_control {
                 if let Ok(mut control) = control.lock() {
                     control.exit(code);
                 }
             }
-            if let Some(sessions) = sessions.upgrade() {
-                if let Ok(mut sessions) = sessions.lock() {
-                    if sessions
-                        .get(&request.id)
-                        .is_some_and(|current| Arc::ptr_eq(current, &session))
-                    {
-                        sessions.remove(&request.id);
+            if let Some(session) = retained_session {
+                if let Some(sessions) = sessions.upgrade() {
+                    if let Ok(mut sessions) = sessions.lock() {
+                        if sessions
+                            .get(&request.id)
+                            .is_some_and(|current| Arc::ptr_eq(current, &session))
+                        {
+                            sessions.remove(&request.id);
+                        }
                     }
                 }
             }
@@ -1068,6 +1435,8 @@ impl Terminals {
         Ok(Started {
             cwd,
             profile_id: profile.id,
+            router_profile_id: None,
+            router_profile_label: None,
         })
     }
 
@@ -1500,7 +1869,7 @@ pub async fn busy_terminals(
 #[tauri::command]
 pub async fn start_terminal(
     window: Window,
-    control: State<'_, crate::agent_control::Control>,
+    app: tauri::AppHandle,
     state: State<'_, Terminals>,
     shells: State<'_, Shells>,
     request: StartRequest,
@@ -1511,9 +1880,96 @@ pub async fn start_terminal(
     validate_start_request(&request)?;
     let state = state.inner().clone();
     let shells = shells.inner().clone();
+    let router = app
+        .state::<crate::cli_router::CliRouterService>()
+        .inner()
+        .clone();
     #[cfg(unix)]
-    let broker = control.current()?;
+    let broker = app.state::<crate::agent_control::Control>().current()?;
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(run_id) = request.gateway_run_id.clone() {
+            #[cfg(not(unix))]
+            return Err("Native gateway terminals are unavailable on this platform.".into());
+            #[cfg(unix)]
+            {
+                let cli = request.cli_launch.ok_or("Choose the saved gateway CLI.")?;
+                let shell = shells
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == request.profile_id)
+                    .ok_or("Choose the saved installed gateway shell.")?
+                    .clone();
+                let cwd = request.cwd.clone();
+                let terminal_id = request.id.clone();
+                let terminals = state.clone();
+                return crate::cli_router::gateway_terminal_command(
+                    &router,
+                    &app,
+                    crate::cli_router::GatewayTerminalRequest {
+                        run_id: &run_id,
+                        expected_revision: request
+                            .gateway_run_revision
+                            .ok_or("Review the gateway run revision.")?,
+                        terminal_id: &terminal_id,
+                        shells: &shells,
+                        shell: &shell,
+                        cwd: &cwd,
+                        cli,
+                    },
+                    |command, completion, healthy| {
+                        state.start_gateway(
+                            &shells,
+                            request,
+                            output,
+                            exited,
+                            GatewayTerminal {
+                                command,
+                                completion,
+                                drain_healthy: healthy,
+                            },
+                        )
+                    },
+                    move |id| terminals.close(id),
+                );
+            }
+        }
+        if request.router_profile_id.is_some() || request.router_id.is_some() {
+            let cli = request
+                .cli_launch
+                .ok_or("A CLI account requires its own CLI launch.")?;
+            let shell = shells
+                .profiles
+                .iter()
+                .find(|p| p.id == request.profile_id)
+                .ok_or("Choose an installed shell for this account.")?;
+            let shell = shell.clone();
+            let cwd = request.cwd.clone();
+            let profile_id = request.router_profile_id.clone();
+            let router_id = request.router_id.clone();
+            let native_recovery = request.native_recovery.clone();
+            return crate::cli_router::terminal_command(
+                &router,
+                &app,
+                crate::cli_router::TerminalProfile {
+                    shells: &shells,
+                    shell: &shell,
+                    cwd: &cwd,
+                    id: profile_id.as_deref(),
+                    cli,
+                    router_id: router_id.as_deref(),
+                    recovery: native_recovery
+                        .as_ref()
+                        .map(|recovery| (recovery.run_id.as_str(), recovery.revision)),
+                },
+                |command, completion, (chosen_id, chosen_label)| {
+                    let mut started = state
+                        .start_router(&shells, request, output, exited, command, completion)?;
+                    started.router_profile_id = Some(chosen_id);
+                    started.router_profile_label = Some(chosen_label);
+                    Ok(started)
+                },
+            );
+        }
         #[cfg(unix)]
         {
             if let Some(ticket) = &request.agent_ticket {
@@ -1738,6 +2194,186 @@ pub fn terminal_contexts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    fn gateway_shell_fixture(directory: &std::path::Path) -> Shells {
+        Shells {
+            profiles: vec![Profile {
+                id: "gateway-fixture-shell".into(),
+                name: "Fixture sh".into(),
+                kind: "sh".into(),
+                program: "/bin/sh".into(),
+                distro: None,
+                home: directory.to_string_lossy().into_owned(),
+            }],
+            integration: directory.to_owned(),
+        }
+    }
+    #[cfg(unix)]
+    fn gateway_request(directory: &std::path::Path, id: &str) -> StartRequest {
+        StartRequest {
+            id: id.into(),
+            profile_id: "gateway-fixture-shell".into(),
+            cwd: directory.to_string_lossy().into_owned(),
+            cols: 80,
+            rows: 24,
+            agent_ticket: None,
+            router_profile_id: None,
+            router_id: None,
+            gateway_run_id: Some("gateway-fixture-run".into()),
+            gateway_run_revision: Some(1),
+            native_recovery: None,
+            cli_launch: Some(crate::cli_catalog::TitleCli::Claude),
+        }
+    }
+    #[cfg(unix)]
+    fn gateway_command(
+        directory: &std::path::Path,
+        script: &str,
+    ) -> (portable_pty::CommandBuilder, String) {
+        let mut command = portable_pty::CommandBuilder::new("/bin/sh");
+        command.env_clear();
+        command.cwd(directory);
+        command.arg("-c");
+        command.arg(script);
+        (command, directory.to_string_lossy().into_owned())
+    }
+    #[cfg(unix)]
+    struct FixtureTerminalCleanup(Terminals);
+    #[cfg(unix)]
+    impl Drop for FixtureTerminalCleanup {
+        fn drop(&mut self) {
+            self.0.stop_all();
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn owned_gateway_fast_exit_delivers_final_tail_before_healthy_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let shells = gateway_shell_fixture(directory.path());
+        let manager = Terminals::default();
+        let _cleanup = FixtureTerminalCleanup(manager.clone());
+        let done = Arc::new(AtomicBool::new(false));
+        let healthy = Arc::new(AtomicBool::new(false));
+        let (send, receive) = mpsc::channel();
+        let ack = manager.clone();
+        let output = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                ack.acknowledge("gateway-tail-fixture", bytes.len());
+                let _ = send.send(bytes);
+            }
+            Ok(())
+        });
+        manager
+            .start_gateway(
+                &shells,
+                gateway_request(directory.path(), "gateway-tail-fixture"),
+                output,
+                Channel::new(|_| Ok(())),
+                GatewayTerminal {
+                    command: gateway_command(
+                        directory.path(),
+                        "printf '__owned_gateway_final_tail__\\n'",
+                    ),
+                    completion: done.clone(),
+                    drain_healthy: healthy.clone(),
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut bytes = Vec::new();
+        let mut eof = false;
+        while Instant::now() < deadline && !eof {
+            if let Ok(chunk) = receive.recv_timeout(Duration::from_millis(100)) {
+                eof = chunk.is_empty();
+                bytes.extend(chunk);
+            }
+        }
+        assert!(eof, "Owned PTY did not deliver its ordered EOF marker");
+        assert!(String::from_utf8_lossy(&bytes).contains("__owned_gateway_final_tail__"));
+        assert!(done.load(Ordering::SeqCst));
+        assert!(healthy.load(Ordering::SeqCst));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn owned_gateway_cancel_drains_group_and_output_failure_is_unhealthy() {
+        let directory = tempfile::tempdir().unwrap();
+        let shells = gateway_shell_fixture(directory.path());
+        for failed_channel in [false, true] {
+            let manager = Terminals::default();
+            let _cleanup = FixtureTerminalCleanup(manager.clone());
+            let done = Arc::new(AtomicBool::new(false));
+            let healthy = Arc::new(AtomicBool::new(false));
+            let id = if failed_channel {
+                "gateway-output-failure"
+            } else {
+                "gateway-cancel-fixture"
+            };
+            let (send, receive) = mpsc::channel();
+            let ack = manager.clone();
+            let output = Channel::new(move |body| {
+                if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                    if failed_channel {
+                        return Err(tauri::Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "fixture output channel failure",
+                        )));
+                    }
+                    ack.acknowledge(id, bytes.len());
+                    let _ = send.send(bytes);
+                }
+                Ok(())
+            });
+            manager
+                .start_gateway(
+                    &shells,
+                    gateway_request(directory.path(), id),
+                    output,
+                    Channel::new(|_| Ok(())),
+                    GatewayTerminal {
+                        command: gateway_command(
+                            directory.path(),
+                            "printf '__owned_gateway_ready__\\n'; exec /bin/sleep 30",
+                        ),
+                        completion: done.clone(),
+                        drain_healthy: healthy.clone(),
+                    },
+                )
+                .unwrap();
+            let mut pid = None;
+            if !failed_channel {
+                let ready_deadline = Instant::now() + Duration::from_secs(5);
+                let mut ready = Vec::new();
+                while Instant::now() < ready_deadline
+                    && !String::from_utf8_lossy(&ready).contains("__owned_gateway_ready__")
+                {
+                    if let Ok(chunk) = receive.recv_timeout(Duration::from_millis(100)) {
+                        ready.extend(chunk);
+                    }
+                }
+                assert!(String::from_utf8_lossy(&ready).contains("__owned_gateway_ready__"));
+                pid = manager.get(id).unwrap().pid;
+                #[cfg(target_os = "macos")]
+                assert!(!gateway_group_contains_only_zombies(pid.unwrap()));
+                manager.close(id);
+            }
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                done.load(Ordering::SeqCst),
+                "Owned PTY group did not drain within its bound"
+            );
+            assert_eq!(healthy.load(Ordering::SeqCst), !failed_channel);
+            if let Some(pid) = pid {
+                assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, -1);
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ESRCH)
+                );
+            }
+        }
+    }
     #[test]
     fn rejects_invalid_terminal_sizes() {
         assert!(size(0, 24).is_err());
@@ -1756,6 +2392,11 @@ mod tests {
                 operation_id: "operation".into(),
                 nonce: "nonce".into(),
             }),
+            router_profile_id: None,
+            router_id: None,
+            gateway_run_id: None,
+            gateway_run_revision: None,
+            native_recovery: None,
             cli_launch: Some(crate::cli_catalog::TitleCli::Codex),
         };
         assert!(validate_start_request(&request).is_err());
@@ -1777,6 +2418,25 @@ mod tests {
         );
         assert!(request.agent_ticket.is_none());
     }
+    #[test]
+    fn routed_terminal_request_defers_account_choice_but_still_rejects_agent_tickets() {
+        let mut request: StartRequest = serde_json::from_value(serde_json::json!({
+            "id":"routed", "profileId":"local:bash", "cwd":"/tmp", "cols":80, "rows":24,
+            "cliLaunch":"codex", "routerId":"pool"
+        }))
+        .unwrap();
+        assert!(request.router_profile_id.is_none());
+        assert!(validate_start_request(&request).is_ok());
+        request.cli_launch = None;
+        assert!(validate_start_request(&request).is_err());
+        request.cli_launch = Some(crate::cli_catalog::TitleCli::Codex);
+        request.agent_ticket = Some(AgentTicket {
+            operation_id: "operation".into(),
+            nonce: "nonce".into(),
+        });
+        assert!(validate_start_request(&request).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn cli_launch_resolves_rc_path_and_starts_once_in_the_pty() {
@@ -1860,6 +2520,11 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    router_profile_id: None,
+                    router_id: None,
+                    gateway_run_id: None,
+                    gateway_run_revision: None,
+                    native_recovery: None,
                     cli_launch: Some(crate::cli_catalog::TitleCli::Codex),
                 },
                 output,
@@ -2075,8 +2740,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn remote_backpressure_does_not_hold_local_terminal_flow_or_prevent_close() {
-        use std::time::Instant;
-
         let directory = tempfile::tempdir().unwrap();
         shell::prepare(directory.path()).unwrap();
         let profile = shell::discover()
@@ -2101,6 +2764,11 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    router_profile_id: None,
+                    router_id: None,
+                    gateway_run_id: None,
+                    gateway_run_revision: None,
+                    native_recovery: None,
                     cli_launch: None,
                 },
                 Channel::new(move |body| {
@@ -2203,6 +2871,11 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    router_profile_id: None,
+                    router_id: None,
+                    gateway_run_id: None,
+                    gateway_run_revision: None,
+                    native_recovery: None,
                     cli_launch: None,
                 },
                 output,
@@ -2460,6 +3133,11 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    router_profile_id: None,
+                    router_id: None,
+                    gateway_run_id: None,
+                    gateway_run_revision: None,
+                    native_recovery: None,
                     cli_launch: None,
                 },
                 output,
@@ -2667,6 +3345,11 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     agent_ticket: None,
+                    router_profile_id: None,
+                    router_id: None,
+                    gateway_run_id: None,
+                    gateway_run_revision: None,
+                    native_recovery: None,
                     cli_launch: None,
                 },
                 output,

@@ -31,6 +31,7 @@ mod cli_integrations;
 mod cli_launch;
 mod cli_mcp;
 mod cli_notifications;
+mod cli_router;
 mod cli_titles;
 mod cli_usage;
 mod credential_store;
@@ -178,6 +179,7 @@ pub fn run() {
         .manage(terminal::Terminals::default())
         .manage(cli_titles::CliTitleConfig::default())
         .manage(cli_usage::CliUsage::default())
+        .manage(cli_router::CliRouterService::default())
         .manage(cli_integrations::CliIntegrations::default())
         .manage(notifications::Notifications::default())
         .manage(files::SessionFile::default())
@@ -293,6 +295,33 @@ pub fn run() {
                 cli_integrations::inspect_mcp_clients,
                 cli_integrations::install_mcp_client,
                 cli_launch::installed_agent_clis,
+                cli_router::cli_router_snapshot,
+                cli_router::cli_router_mutate,
+                cli_router::cli_profile_open_terminal,
+                cli_router::cli_router_open_terminal,
+                cli_router::cli_profile_verify,
+                cli_router::cli_profile_refresh_native,
+                cli_router::cli_profile_native_report,
+                cli_router::cli_native_permissions,
+                cli_router::cli_native_permission_reply,
+                cli_router::cli_native_handoff_preview,
+                cli_router::cli_native_handoff_apply,
+                cli_router::cli_profile_set_api_key,
+                cli_router::cli_router_refresh_quota,
+                cli_router::cli_router_closing,
+                cli_router::cli_router_drain,
+                cli_router::cli_run_start,
+                cli_router::cli_run_acknowledge_coding_completion,
+                cli_router::cli_run_open_native_recovery,
+                cli_router::cli_run_send,
+                cli_router::cli_run_stop,
+                cli_router::cli_run_drain,
+                cli_router::cli_run_close_release,
+                cli_router::cli_run_pin,
+                cli_router::cli_run_update_data_grant,
+                cli_router::cli_run_effect_approvals,
+                cli_router::cli_run_decide_effect,
+                cli_router::cli_run_remove,
                 agent_control::agent_control_state,
                 agent_control::agent_control_startup_state,
                 agent_control::agent_control_startup_decide,
@@ -533,6 +562,9 @@ pub fn run() {
             }
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            if let Err(error) = app.state::<cli_router::CliRouterService>().drain(app) {
+                eprintln!("CLI router exit cleanup could not confirm completion: {error}");
+            }
             app.state::<remote::Remote>().shutdown();
             tauri::async_runtime::block_on(agent_control::shutdown(app));
             app.state::<auth::AuthController>().shutdown();
@@ -553,6 +585,7 @@ pub fn run() {
         } = event
         {
             if label == "main" {
+                app.state::<cli_router::CliRouterService>().stop_all();
                 app.state::<chat::commands::Chats>().stop();
                 app.state::<terminal::Terminals>().stop_all();
                 app.exit(0);

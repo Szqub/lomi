@@ -2,7 +2,15 @@ import { McpClientsSettings } from "./McpClientsSettings";
 import { AgentBrowserUploadApproval } from "./AgentBrowserUploadApproval";
 import { AgentAndroidApproval } from "./AgentAndroidApproval";
 import Pairing from "./AgentControlPairing";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage, native } from "./api";
@@ -17,7 +25,9 @@ import type { ControlState } from "./agent-control";
 import type { ControlStartupState } from "./agent-control-startup";
 import { formatShortcut } from "./keybindings";
 
-type AgentControlTab = "connect" | "sessions" | "preferences";
+const RouterSettings = lazy(() => import("./router/RouterSettings"));
+
+type AgentControlTab = "connect" | "sessions" | "preferences" | "router";
 
 function pendingRequestCount(
   broker: ControlState["broker"] | null | undefined,
@@ -733,7 +743,12 @@ export default function AgentControlSettingsPage() {
     tabSelectedByUser.current = true;
     setActiveTab(tab);
   };
-  const tabOrder: AgentControlTab[] = ["connect", "sessions", "preferences"];
+  const tabOrder: AgentControlTab[] = [
+    "connect",
+    "sessions",
+    "preferences",
+    "router",
+  ];
   const tabButtons = (tab: AgentControlTab) => ({
     id: `agent-control-tab-${tab}`,
     role: "tab" as const,
@@ -841,6 +856,13 @@ export default function AgentControlSettingsPage() {
         >
           Preferences
         </button>
+        <button
+          type="button"
+          className="agent-control-tab"
+          {...tabButtons("router")}
+        >
+          Router
+        </button>
       </div>
 
       {requestCount > 0 && activeTab !== "sessions" && (
@@ -909,6 +931,21 @@ export default function AgentControlSettingsPage() {
           </div>
         </Modal>
       )}
+
+      <section
+        className="agent-control-panel"
+        id="agent-control-panel-router"
+        role="tabpanel"
+        aria-labelledby="agent-control-tab-router"
+        tabIndex={0}
+        hidden={activeTab !== "router"}
+      >
+        {activeTab === "router" && (
+          <Suspense fallback={<p role="status">Loading routers…</p>}>
+            <RouterSettings />
+          </Suspense>
+        )}
+      </section>
 
       <section
         className="agent-control-panel"

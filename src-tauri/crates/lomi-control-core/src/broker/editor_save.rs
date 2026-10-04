@@ -119,6 +119,7 @@ impl Broker {
         body: EditorSaveBody,
         encode: impl FnOnce(&[u8], &str) -> Result<Vec<u8>, ErrorCode>,
     ) -> Result<EditorSaved, ErrorCode> {
+        let _project_write = self.project_write_admission()?;
         let (command, owner, directory, permit, connected, policy) = {
             let mut state = self.lock_state().map_err(|_| ErrorCode::ControlRevoked)?;
             let work = state.work.get(operation).ok_or(ErrorCode::ControlRevoked)?;

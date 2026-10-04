@@ -35,7 +35,12 @@ struct CliSpec {
     argument: Option<&'static str>,
 }
 
-const SPECS: [CliSpec; 15] = [
+const SPECS: [CliSpec; 24] = [
+    CliSpec {
+        cli: TitleCli::Crush,
+        aliases: &["crush"],
+        argument: None,
+    },
     CliSpec {
         cli: TitleCli::Claude,
         aliases: &["claude"],
@@ -104,6 +109,46 @@ const SPECS: [CliSpec; 15] = [
     CliSpec {
         cli: TitleCli::Grok,
         aliases: &["grok"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Aider,
+        aliases: &["aider"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Goose,
+        aliases: &["goose"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Pi,
+        aliases: &["pi"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Cline,
+        aliases: &["cline"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Openhands,
+        aliases: &["openhands"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Interpreter,
+        aliases: &["interpreter"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Continue,
+        aliases: &["cn"],
+        argument: None,
+    },
+    CliSpec {
+        cli: TitleCli::Deepagents,
+        aliases: &["deepagents-code", "dcode"],
         argument: None,
     },
     CliSpec {
@@ -627,8 +672,31 @@ mod tests {
     }
 
     #[test]
-    fn launch_specs_match_the_icon_bearing_mcp_client_catalog() {
-        assert_eq!(SPECS.map(|spec| spec.cli), TitleCli::MCP_CLIENTS);
+    fn launch_specs_cover_mcp_clients_and_native_gateway_clients() {
+        for cli in TitleCli::MCP_CLIENTS {
+            assert!(SPECS.iter().any(|spec| spec.cli == cli));
+        }
+        assert_eq!(
+            SPECS
+                .iter()
+                .map(|spec| spec.cli)
+                .collect::<HashSet<_>>()
+                .len(),
+            SPECS.len()
+        );
+        for cli in [
+            TitleCli::Aider,
+            TitleCli::Goose,
+            TitleCli::Pi,
+            TitleCli::Cline,
+            TitleCli::Openhands,
+            TitleCli::Interpreter,
+            TitleCli::Continue,
+            TitleCli::Deepagents,
+            TitleCli::Crush,
+        ] {
+            assert!(spec(cli).is_some());
+        }
         assert_eq!(spec(TitleCli::Kiro).unwrap().argument, Some("chat"));
         assert_eq!(spec(TitleCli::Openclaw).unwrap().argument, Some("tui"));
     }

@@ -24,12 +24,14 @@ export default function AgentsDialog({
   stage,
   onClose,
   onLaunch,
+  onRouter,
 }: {
   profile: ShellProfile;
   cwd: string;
   stage: RefObject<HTMLElement | null>;
   onClose: () => void;
   onLaunch: (cli: CliAgent, count: number) => Promise<void>;
+  onRouter?: () => void;
 }) {
   const id = useId();
   const refreshButton = useRef<HTMLButtonElement>(null);
@@ -289,6 +291,16 @@ export default function AgentsDialog({
           )}
         </div>
         <div className="dialog-actions">
+          {onRouter && (
+            <button
+              type="button"
+              className="button"
+              disabled={busy}
+              onClick={onRouter}
+            >
+              Open router
+            </button>
+          )}
           <button
             type="button"
             className="button"

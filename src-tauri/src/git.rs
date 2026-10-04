@@ -703,16 +703,20 @@ pub(crate) fn checked_repository(root: &Path, args: &[&str]) -> Result<Vec<u8>, 
 }
 
 static MUTATIONS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-pub(crate) struct MutationGuard(PathBuf);
+pub(crate) struct MutationGuard {
+    path: PathBuf,
+    _admission: crate::cli_router::project_lease::WriteAdmission,
+}
 impl Drop for MutationGuard {
     fn drop(&mut self) {
         if let Ok(mut active) = MUTATIONS.get_or_init(Mutex::default).lock() {
-            active.remove(&self.0);
+            active.remove(&self.path);
         }
     }
 }
 pub(crate) fn mutation_guard(root: &str) -> Result<MutationGuard, String> {
     let path = directory(root)?;
+    let admission = crate::cli_router::project_lease::admit(&[&path])?;
     if !MUTATIONS
         .get_or_init(Mutex::default)
         .lock()
@@ -721,7 +725,10 @@ pub(crate) fn mutation_guard(root: &str) -> Result<MutationGuard, String> {
     {
         return Err("Wait for the current Git operation in this repository to finish.".into());
     }
-    Ok(MutationGuard(path))
+    Ok(MutationGuard {
+        path,
+        _admission: admission,
+    })
 }
 
 fn relative(path: &str) -> Result<(), String> {

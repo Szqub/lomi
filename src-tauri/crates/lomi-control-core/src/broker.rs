@@ -380,6 +380,12 @@ struct State {
     git_panels: HashMap<String, (String, String)>,
 }
 
+/// Host-owned RAII admission, independent of the host's project lease registry.
+pub trait ProjectWritePermit: Send {}
+impl<T: Send> ProjectWritePermit for T {}
+pub type ProjectWriteAdmissionDispatch =
+    Arc<dyn Fn() -> Result<Box<dyn ProjectWritePermit>, ErrorCode> + Send + Sync>;
+
 pub struct Broker {
     pub endpoint: Endpoint,
     cleanup_runtime: tokio::runtime::Handle,
@@ -399,6 +405,7 @@ pub struct Broker {
     revoked: watch::Sender<u64>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     dispatch: Mutex<Option<UiDispatch>>,
+    project_write_admission: Option<ProjectWriteAdmissionDispatch>,
     terminal_dispatch: Mutex<Option<TerminalDispatch>>,
     terminal_input_dispatch: Mutex<Option<TerminalInputDispatch>>,
     terminal_close_dispatch: Mutex<Option<TerminalCloseDispatch>>,
@@ -482,6 +489,19 @@ fn error(code: ErrorCode) -> Reply {
 
 impl Broker {
     pub fn start(root: &Path) -> io::Result<Arc<Self>> {
+        Self::start_inner(root, None)
+    }
+    /// Install the host policy before any listener task can accept a connection.
+    pub fn start_with_project_write_admission(
+        root: &Path,
+        admission: ProjectWriteAdmissionDispatch,
+    ) -> io::Result<Arc<Self>> {
+        Self::start_inner(root, Some(admission))
+    }
+    fn start_inner(
+        root: &Path,
+        project_write_admission: Option<ProjectWriteAdmissionDispatch>,
+    ) -> io::Result<Arc<Self>> {
         use std::os::unix::fs::PermissionsExt;
         let cleanup_runtime = tokio::runtime::Handle::try_current().map_err(|_| failure())?;
         let store = receipts::Store::open(root, now()).map_err(|_| failure())?;
@@ -520,6 +540,7 @@ impl Broker {
             revoked,
             task: Mutex::new(None),
             dispatch: Mutex::new(None),
+            project_write_admission,
             terminal_dispatch: Mutex::new(None),
             terminal_input_dispatch: Mutex::new(None),
             terminal_close_dispatch: Mutex::new(None),
@@ -1722,7 +1743,26 @@ impl Broker {
         exchange
     }
 
+    fn project_write_admission(&self) -> Result<Option<Box<dyn ProjectWritePermit>>, ErrorCode> {
+        self.project_write_admission
+            .as_ref()
+            .map(|dispatch| dispatch())
+            .transpose()
+    }
     fn call(self: &Arc<Self>, id: &str, request: Request) -> Reply {
+        let _project_write = if needs_project_write_admission(&request) {
+            match self.project_write_admission() {
+                Ok(permit) => permit,
+                Err(code) => {
+                    return Reply::error(
+                        code,
+                        "Stop the active coding run before changing project files.",
+                    )
+                }
+            }
+        } else {
+            None
+        };
         match request {
             Request::FilesMutate(input) => return self.files_mutate(id, input),
             Request::EditorSave(input) => return self.editor_save(id, input),
@@ -2242,6 +2282,99 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for HandshakeIo<T> {
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+// Unknown future requests require host admission until their effect contract is
+// explicitly classified. Observations may persist private artifacts, never project files.
+fn needs_project_write_admission(request: &Request) -> bool {
+    !matches!(
+        request,
+        Request::Status(_)
+            | Request::Connect(_)
+            | Request::Workspaces(_)
+            | Request::Panels(_)
+            | Request::Events(_)
+            | Request::Diagnostics(_)
+            | Request::Operation(_)
+            | Request::CancelOperation(_)
+            | Request::ChatList(_)
+            | Request::ChatRead(_)
+            | Request::ChatStop(_)
+            | Request::EditorRead(_)
+            | Request::FilesSearch(_)
+            | Request::FilesList(_)
+            | Request::FilesRead(_)
+            | Request::GitDiff(_)
+            | Request::GitHistory(_)
+            | Request::GitCommit(_)
+            | Request::GitRemotes(_)
+            | Request::GitStatus(_)
+            | Request::AndroidLogcat(_)
+            | Request::AndroidSnapshot(_)
+            | Request::AndroidScreenshot(_)
+            | Request::AndroidList(_)
+            | Request::AndroidSetupPlan(_)
+            | Request::AndroidStop(_)
+            | Request::BrowserLogs(_)
+            | Request::ScreenshotBrowser(_)
+            | Request::ReadArtifact(_)
+            | Request::WaitBrowser(_)
+            | Request::SnapshotBrowser(_)
+            | Request::ReadSettings(_)
+            | Request::ReadTerminal(_)
+            | Request::InterruptTerminal(_)
+    )
+}
+
+#[cfg(test)]
+mod project_admission_tests {
+    use super::*;
+    struct Held(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    #[tokio::test]
+    async fn constructor_policy_retains_owned_permit_until_worker_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = count.clone();
+        let broker = Broker::start_with_project_write_admission(
+            &directory.path().join("control"),
+            Arc::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(Held(observed.clone())))
+            }),
+        )
+        .unwrap();
+        let permit = broker.project_write_admission().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        drop(permit);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        broker.shutdown().await;
+        let legacy = tempfile::tempdir().unwrap();
+        let broker = Broker::start(&legacy.path().join("control")).unwrap();
+        assert!(broker.project_write_admission().unwrap().is_none());
+        broker.shutdown().await;
+    }
+    #[test]
+    fn observations_remain_available_and_mutations_require_host_admission() {
+        assert!(!needs_project_write_admission(&Request::Status(
+            lomi_control_protocol::EmptyInput {}
+        )));
+        assert!(!needs_project_write_admission(&Request::Diagnostics(
+            lomi_control_protocol::EmptyInput {}
+        )));
+        let request = Request::OpenSettings(lomi_control_protocol::settings::SettingsOpenInput {
+            workspace_id: "workspace_1".into(),
+            page: lomi_control_protocol::settings::SettingsPage::About,
+            expected_revision: "1".into(),
+            retry_epoch: "epoch_1".into(),
+            request_key: "request_1".into(),
+        });
+        assert!(needs_project_write_admission(&request));
     }
 }
 

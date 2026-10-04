@@ -179,6 +179,18 @@ export default function SplitView({
                       />
                     </Suspense>
                   </div>
+                ) : layout.type === "cli-agent" ? (
+                  <div key={layout.id} className="split-child">
+                    <Suspense
+                      fallback={<div role="status">Loading CLI Agent…</div>}
+                    >
+                      <builtinViews.cliAgent
+                        tab={layout}
+                        onFocus={() => props.onFocus(layout.id)}
+                        onClose={() => props.onClosePane(layout.id)}
+                      />
+                    </Suspense>
+                  </div>
                 ) : layout.type === "chat" ? (
                   <div key={layout.id} className="split-child">
                     <Suspense

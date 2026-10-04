@@ -102,6 +102,11 @@ impl Broker {
         if super::panel_move::identities(state, &command.workspace_id) != command.panels {
             return Err(ErrorCode::RevisionConflict);
         }
+        // Router runs have frozen account/history grants outside MCP control.
+        // Reject the whole closure before another panel has any native effect.
+        if command.panels.iter().any(|panel| panel.kind == "cli-agent") {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         for panel in &command.panels {
             match panel.kind.as_str() {
                 "file" => {}
@@ -432,6 +437,9 @@ impl Broker {
         panels: &[PanelMoveIdentity],
     ) -> Result<CloseSteps, ErrorCode> {
         let work = state.work.get(operation).ok_or(ErrorCode::ControlRevoked)?;
+        if panels.iter().any(|panel| panel.kind == "cli-agent") {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         let ids = panels
             .iter()
             .map(|p| p.panel_id.clone())

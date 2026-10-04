@@ -37,7 +37,13 @@ export interface Split {
   second: Layout;
 }
 export type LayoutPane =
-  Pane | FileTab | BrowserTab | AndroidTab | ChatTab | PluginPanel;
+  | Pane
+  | FileTab
+  | BrowserTab
+  | AndroidTab
+  | ChatTab
+  | CliAgentTab
+  | PluginPanel;
 export type Layout = LayoutPane | Split;
 export interface LayoutSize {
   width: number;
@@ -163,6 +169,39 @@ export function updateAndroid(
     })),
   };
 }
+export interface CliAgentTab {
+  type: "cli-agent";
+  id: string;
+  title: string;
+  customTitle?: string;
+  runId: string;
+}
+export const newCliAgentTab = (
+  runId: string,
+  title = "CLI Agent",
+): CliAgentTab => ({
+  type: "cli-agent",
+  id: newId(),
+  title,
+  runId,
+});
+export function cliAgentTabs(session?: Session): CliAgentTab[] {
+  return (
+    session?.projects.flatMap((p) =>
+      p.workspaces.flatMap((w) =>
+        w.tabs.flatMap((t) =>
+          t.type === "terminal"
+            ? layoutPanes(t.layout).filter(
+                (p): p is CliAgentTab => p.type === "cli-agent",
+              )
+            : t.type === "cli-agent"
+              ? [t]
+              : [],
+        ),
+      ),
+    ) ?? []
+  );
+}
 export interface ChatTab {
   type: "chat";
   id: string;
@@ -238,6 +277,7 @@ export type Tab =
   | BrowserTab
   | AndroidTab
   | ChatTab
+  | CliAgentTab
   | PluginPanel;
 export const tabTitle = (tab: Tab) => tab.customTitle ?? tab.title;
 export type TabDropSide = "left" | "right" | "top" | "bottom";
@@ -261,7 +301,7 @@ export type SidebarPanel =
   "files" | "git" | "workspaces" | `${string}.${string}`;
 export type SidebarSide = "left" | "right";
 export interface Session {
-  version: 3;
+  version: 4;
   activeProjectId: string | null;
   projects: Project[];
   sidebar: SidebarPanel | null;
@@ -433,7 +473,7 @@ export function removeWorkspace(session: Session, id: string): Session {
 }
 export function newSession(): Session {
   return {
-    version: 3,
+    version: 4,
     projects: [],
     activeProjectId: null,
     sidebar: "files",
@@ -1182,7 +1222,7 @@ const string = (value: unknown, fallback: string) =>
 export function restoreSession(value: unknown, info: AppInfo): Session {
   const data = record(value);
   if (
-    ![1, 2, 3].includes(data.version as number) ||
+    ![1, 2, 3, 4].includes(data.version as number) ||
     !Array.isArray(data.projects)
   )
     if (value == null) return newSession();
@@ -1264,6 +1304,24 @@ export function restoreSession(value: unknown, info: AppInfo): Session {
       ...(automation ? { automation } : {}),
     };
   };
+  const cliAgent = (node: Record<string, unknown>): CliAgentTab => {
+    if (
+      typeof node.runId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,100}$/.test(node.runId)
+    )
+      throw new Error(
+        "Invalid saved CLI Agent descriptor. The session was preserved.",
+      );
+    return {
+      type: "cli-agent",
+      id: id(node.id),
+      title: string(node.title, "CLI Agent"),
+      runId: node.runId,
+      ...(typeof node.customTitle === "string"
+        ? { customTitle: node.customTitle }
+        : {}),
+    };
+  };
   const chat = (node: Record<string, unknown>): ChatTab => {
     if (
       typeof node.conversationId !== "string" ||
@@ -1339,6 +1397,7 @@ export function restoreSession(value: unknown, info: AppInfo): Session {
     if (node.type === "plugin") return plugin(node);
     if (node.type === "file") return file(node, cwd);
     if (node.type === "browser") return browser(node);
+    if (node.type === "cli-agent") return cliAgent(node);
     if (node.type === "chat") return chat(node);
     if (node.type === "android") return android(node);
     // Preserve every layout accepted by the native JSON parser's nesting limit.
@@ -1379,6 +1438,7 @@ export function restoreSession(value: unknown, info: AppInfo): Session {
             const tab = record(value);
             if (tab.type === "plugin") return plugin(tab);
             if (tab.type === "browser") return browser(tab);
+            if (tab.type === "cli-agent") return cliAgent(tab);
             if (tab.type === "chat") return chat(tab);
             if (tab.type === "android") return android(tab);
             if (tab.type === "file") {
@@ -1497,7 +1557,7 @@ export function restoreSession(value: unknown, info: AppInfo): Session {
         : 180
       : 250;
   return {
-    version: 3,
+    version: 4,
     projects,
     activeProjectId:
       data.activeProjectId === null

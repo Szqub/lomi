@@ -15,3 +15,7 @@ playwright-report/
 test-results/
 
 tests/fixtures/*/package/
+tests/fixtures/*/package.lomi-owned.json
+# Source-built, integrity-pinned router artifact (see scripts/build-router-grok.mjs).
+src-tauri/resources/grok/grok-*
+src-tauri/resources/grok/*.candidate

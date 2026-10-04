@@ -1,0 +1,121 @@
+.router-settings {
+  display: grid;
+  gap: 20px;
+}
+.router-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+}
+.router-create input {
+  flex: 1;
+  min-width: 120px;
+}
+.router-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.router-account-order {
+  padding-inline-start: 24px;
+}
+.router-account-order li {
+  padding: 8px 0;
+}
+.router-account-order li > span {
+  display: block;
+  margin-bottom: 6px;
+}
+.router-run-form {
+  display: grid;
+  gap: 12px;
+}
+.router-run-form label {
+  display: grid;
+  gap: 6px;
+}
+.router-run-form textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+.router-run-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: 260px;
+  padding: 12px;
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline);
+  border-radius: 6px;
+}
+.router-run-history {
+  overflow: auto;
+  max-height: 160px;
+}
+
+.router-profile-row .setting-controls {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
+}
+.router-profile-row .setting-label {
+  min-width: 0;
+  width: 100%;
+}
+.router-profile-row .router-create {
+  width: 100%;
+}
+
+.cli-agent-pane {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-container);
+}
+.cli-agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-outline);
+}
+.cli-agent-content {
+  overflow: auto;
+  min-height: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cli-agent-content label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cli-agent-turn pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.cli-agent-turn h3 {
+  font-size: inherit;
+  margin: 8px 0;
+}
+.cli-agent-turn {
+  border-bottom: 1px solid var(--color-outline);
+  padding-bottom: 12px;
+}
+
+.router-grant-accounts {
+  display: grid;
+  gap: 10px;
+}
+.router-grant-accounts label {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}

@@ -368,6 +368,24 @@ export async function mockDesktop(
             desktop.__nativeTest.agentControlStateReads++;
             return desktop.__nativeTest.agentControlState;
           }
+          if (command === "cli_router_closing") {
+            desktop.__nativeTest.routerClosing = args.closing;
+            return;
+          }
+          if (command === "cli_router_drain") {
+            desktop.__nativeTest.routerDrainCount =
+              (desktop.__nativeTest.routerDrainCount ?? 0) + 1;
+            return;
+          }
+          if (command === "cli_router_snapshot")
+            return {
+              revision: 0,
+              profiles: [],
+              routers: [],
+              quota: [],
+              runs: [],
+              capabilities: [],
+            };
           if (command === "agent_control_closing") {
             desktop.__nativeTest.agentControlClosing = args.closing;
             return;
@@ -585,9 +603,14 @@ export async function mockDesktop(
             if (action.preparation !== mock.androidPreparation)
               throw new Error("Stale shutdown preparation");
             if (action.type === "finish") {
-              await new Promise((resolve) =>
-                setTimeout(resolve, mock.androidExitDelay),
-              );
+              if (mock.androidExitHold)
+                await new Promise((resolve) => {
+                  mock.finishAndroidExit = resolve;
+                });
+              else
+                await new Promise((resolve) =>
+                  setTimeout(resolve, mock.androidExitDelay),
+                );
               if (mock.androidExitError) throw new Error(mock.androidExitError);
             } else if (action.type === "resume") {
               mock.androidPreparation = null;

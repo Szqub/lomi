@@ -267,6 +267,8 @@ export default function TabBar({
                   <Globe size={14} />
                 ) : tab.type === "android" ? (
                   <Monitor size={14} aria-hidden="true" />
+                ) : tab.type === "cli-agent" ? (
+                  <Terminal size={14} aria-hidden="true" />
                 ) : tab.type === "chat" ? (
                   <MessageSquare size={14} />
                 ) : tab.type === "file" ? (

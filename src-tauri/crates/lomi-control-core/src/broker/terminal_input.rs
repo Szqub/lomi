@@ -27,6 +27,15 @@ impl Broker {
         .unwrap_or_else(|_| error(ErrorCode::OutcomeUnknown))
     }
     fn input_terminal(self: &Arc<Self>, id: &str, input: TerminalInput) -> Reply {
+        let _project_write = match self.project_write_admission() {
+            Ok(permit) => permit,
+            Err(code) => {
+                return Reply::error(
+                    code,
+                    "Stop the active coding run before starting a terminal write.",
+                )
+            }
+        };
         let Ok(sequence) = input.input_sequence.parse::<u64>() else {
             return error(ErrorCode::RevisionConflict);
         };

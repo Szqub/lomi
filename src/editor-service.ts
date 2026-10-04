@@ -1,6 +1,10 @@
 import { fileTabs, updateFilePosition } from "./model";
 import type { FileTab, Session } from "./model";
-import type { DiskFile, EditorDocument } from "./editor-runtime";
+import type {
+  CodingEffectFence,
+  DiskFile,
+  EditorDocument,
+} from "./editor-runtime";
 import { defaultEditorPreferences } from "./editor-preferences";
 import type { EditorPreferences } from "./editor-preferences";
 import { retainAgentPreviews } from "./agent-preview";
@@ -21,6 +25,19 @@ let runtime: typeof import("./editor-runtime") | undefined;
 let loading: Promise<typeof import("./editor-runtime")> | undefined;
 let tabs: FileTab[] = [];
 let revision = 0;
+let codingFileFences = 0;
+let fileOperationFence = false;
+export const editorFileOperationsPaused = () => fileOperationFence;
+export function retainCodingFileFence() {
+  if (fileOperationFence) throw new Error("TARGET_BUSY");
+  ++codingFileFences;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    --codingFileFences;
+  };
+}
 const listeners = new Set<() => void>();
 export const editorFileKey = (file: FileTab) =>
   file.untitled ? `untitled\0${file.id}` : `${file.root}\0${file.relative}`;
@@ -84,6 +101,16 @@ export async function stageEditorRead(tab: FileTab, file: DiskFile) {
   return (await editorRuntime()).stageDocumentRead(tab, file);
 }
 
+export async function freezeCodingEffect(
+  targetCanonicalPath: string,
+  expectedBeforeHash: string | null,
+): Promise<CodingEffectFence> {
+  return (await editorRuntime()).freezeCodingEffect(
+    targetCanonicalPath,
+    expectedBeforeHash,
+  );
+}
+
 export function loadedEditor(tab: FileTab): EditorDocument | undefined {
   return runtime?.findDocument(tab);
 }
@@ -94,11 +121,28 @@ export function assertCleanEditorPaths(paths: ReadonlySet<string>) {
 }
 
 export async function pauseEditorFileOperations() {
-  const documents = runtime?.documents() ?? [];
-  await Promise.all(
-    documents.map((document) => document.pauseFileOperations()),
-  );
-  return () => documents.forEach((document) => document.resumeFileOperations());
+  if (codingFileFences > 0 || fileOperationFence)
+    throw new Error("TARGET_BUSY");
+  // The lease exists even when the lazy runtime has no loaded documents.
+  // Keep it until the caller finishes its native file/Git operation.
+  fileOperationFence = true;
+  let resume: (() => void) | undefined;
+  try {
+    resume = await runtime?.pauseAllFileOperations();
+  } catch (error) {
+    fileOperationFence = false;
+    throw error;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      resume?.();
+    } finally {
+      fileOperationFence = false;
+    }
+  };
 }
 
 export function relocateEditorFiles(

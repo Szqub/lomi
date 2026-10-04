@@ -79,6 +79,37 @@ impl Broker {
             return Err(ErrorCode::RevisionConflict);
         }
         let panels = &command.panels;
+        // Collective tab mutations cannot bypass the router's account/history
+        // grants by operating on a different panel in a mixed tab.
+        let affected_tabs: Vec<&str> = match &command.movement {
+            PanelMove::TransferTab { tab_id, .. } | PanelMove::ReorderTab { tab_id, .. } => {
+                vec![tab_id]
+            }
+            PanelMove::DockTab {
+                tab_id,
+                target_tab_id,
+                ..
+            } => vec![tab_id, target_tab_id],
+            PanelMove::MovePane {
+                panel_id,
+                target_panel_id,
+                ..
+            } => panels
+                .iter()
+                .filter(|panel| panel.panel_id == *panel_id || panel.panel_id == *target_panel_id)
+                .map(|panel| panel.tab_id.as_str())
+                .collect(),
+        };
+        if panels.iter().any(|panel| {
+            panel.kind == "cli-agent" && affected_tabs.contains(&panel.tab_id.as_str())
+        }) || command.destination.as_ref().is_some_and(|destination| {
+            destination
+                .panels
+                .iter()
+                .any(|panel| panel.kind == "cli-agent")
+        }) {
+            return Err(ErrorCode::UnsupportedCapability);
+        }
         let focus = |panel: &PanelMoveIdentity| {
             Self::validate_panel_action(
                 state,

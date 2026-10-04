@@ -77,11 +77,33 @@ or acronym.
 - Session v3 adds ChatTab to standalone tabs and mixed layouts; read v1/v2/v3
   and atomically preserve the exact legacy session before upgrading. Chat tabs
   never own PTYs. Missing conversation records remain chat placeholders.
+- Session v4 adds CLI Agent tabs/panes referencing native router run IDs. Read
+  v1/v2/v3/v4 and preserve exact legacy sessions before upgrading. Missing runs
+  stay placeholders; restoration never dispatches input or restores credentials.
 - `src/chat/` owns the lazy Chat AI interface, retained SDK Chat instances,
   native transport, Settings and history. One instance per conversation lives
   outside React; domain references govern close, never transient Dockview mounts.
   Native terminal events govern completion; SDK UI-only EOF requires resubscribe
   with epoch/watermark and active block IDs, without aborting or sending again.
+- `src/router/` and `src-tauri/src/cli_router/` own CLI profile/pool management,
+  new-terminal account selection and retained logical text turns. See
+  `docs/cli-router.md` for exact version gates and unfinished full coding-task
+  qualification. Codex text failover requires typed terminal exhaustion, empty
+  output and confirmed process drain. Final-view closing fences survive all
+  Chat/Android guards until domain removal or explicit cancellation. A catalog
+  entry never implies managed execution support; restoration never starts inference.
+  Saved-run access changes require explicit consent bound to the reviewed run
+  and account revisions. Adding pool members never shares old history by itself;
+  changing grants never dispatches a turn. Nested modal cancellation stops at
+  the topmost dialog so a review cannot discard its parent conversation draft.
+  Native Gateway mode uses exact-version CLI profiles, fresh private HOME/config,
+  an authenticated loopback server and explicit HTTPS API destinations. Upstream
+  keys stay in the native owner. Preserve the client's wire protocol and model;
+  switch only on authoritative HTTP 429 before downstream response bytes.
+  Saved gateway runs never auto-start or invent a resume thread. Mediated Codex
+  Coding has a separate persistent checkpoint/effect journal and four bounded
+  file tools. One-use Main approval holds the actual editor freeze through
+  durable completion; overlapping Lomi/MCP project writes require native leases.
 - `src-tauri/src/chat/` owns SQLite WAL/FULL history, branches, draft revisions,
   attachment copies, credentials, a shared owner lock and the bounded AI process.
   Send commits the exact draft and idempotent request before provider dispatch.

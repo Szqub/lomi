@@ -208,14 +208,14 @@ impl NotificationSource {
 pub fn notify_agent(
     window: Window,
     app: tauri::AppHandle,
-    preferences: State<'_, crate::terminal_preferences::TerminalPreferencesFile>,
-    terminals: State<'_, crate::terminal::Terminals>,
     kind: NotificationKind,
     context: String,
     source: Option<NotificationSource>,
     session_id: Option<String>,
 ) -> Result<bool, String> {
     main_window(&window)?;
+    let preferences = app.state::<crate::terminal_preferences::TerminalPreferencesFile>();
+    let terminals = app.state::<crate::terminal::Terminals>();
     let enabled = crate::terminal_preferences::load_terminal_preferences(
         window.clone(),
         app.clone(),

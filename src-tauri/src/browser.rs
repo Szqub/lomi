@@ -17,6 +17,12 @@ pub(crate) mod agent_permissions;
 pub(crate) mod native_input;
 pub mod servers;
 
+// The engine may outlive a view callback. A missing Finished event keeps its
+// admission retained, so a coding lease cannot race a still-running download.
+static DOWNLOAD_WRITES: std::sync::OnceLock<
+    Mutex<HashMap<std::path::PathBuf, crate::cli_router::project_lease::WriteAdmission>>,
+> = std::sync::OnceLock::new();
+
 #[derive(Default)]
 pub struct Browsers {
     creation: tauri::async_runtime::Mutex<()>,
@@ -411,18 +417,52 @@ async fn create(window: &Window, slot: &Slot) -> Result<Webview, String> {
                     let Some(name) = destination.file_name().map(|name| name.to_owned()) else {
                         return false;
                     };
-                    if std::fs::create_dir_all(&folder).is_err() {
-                        return false;
+                    let raw_target = folder.join(&name);
+                    let admission = match crate::cli_router::project_lease::admit(&[&raw_target]) {
+                        Ok(guard) => guard,
+                        Err(message) => {
+                            update(webview.app_handle(), &download_id, |page| {
+                                page.download = message
+                            });
+                            return false;
+                        }
+                    };
+                    if !folder.is_dir() {
+                        let Ok(_directory_admission) =
+                            crate::cli_router::project_lease::admit(&[&folder])
+                        else {
+                            return false;
+                        };
+                        if std::fs::create_dir_all(&folder).is_err() {
+                            return false;
+                        }
                     }
+                    let Ok(folder) = folder.canonicalize() else {
+                        return false;
+                    };
                     *destination = folder.join(name);
-                    if destination.exists() {
+                    let Ok(mut pending) = DOWNLOAD_WRITES.get_or_init(Mutex::default).lock() else {
+                        return false;
+                    };
+                    if destination.exists()
+                        || pending.contains_key(destination)
+                        || pending.len() >= 128
+                    {
                         return false;
                     }
+                    pending.insert(destination.clone(), admission);
+                    drop(pending);
                     update(webview.app_handle(), &download_id, |page| {
                         page.download = "Downloading…".into();
                     });
                 }
                 DownloadEvent::Finished { path, success, .. } => {
+                    if let Some(path) = &path {
+                        if let Ok(mut pending) = DOWNLOAD_WRITES.get_or_init(Mutex::default).lock()
+                        {
+                            pending.remove(path);
+                        }
+                    }
                     update(webview.app_handle(), &download_id, |page| {
                         page.download = if success {
                             format!(
