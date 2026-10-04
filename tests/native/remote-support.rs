@@ -208,6 +208,7 @@ async fn run(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), Strin
    const label = {};
    const deadline = performance.now() + 5000;
    let opened = false;
+   let confirming = false;
    let finished = false;
    let frame = 0;
    let lastReason = 'Main window did not receive focus';
@@ -228,6 +229,14 @@ async fn run(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), Strin
      if (finished) return;
      if (performance.now() >= deadline) return;
      if (document.hasFocus()) {{
+       if (confirming) {{
+         const dialog = document.querySelector('.remote-sharing-dialog');
+         const confirm = dialog && Array.from(dialog.querySelectorAll('button')).find(button => button.textContent.trim() === 'Share remotely');
+         if (confirm && !confirm.disabled) {{ cleanup(); confirm.click(); return; }}
+         lastReason = 'Workspace sharing confirmation has not mounted';
+         frame = requestAnimationFrame(tick);
+         return;
+       }}
        const row = document.querySelector('.workspace-list-entry[data-workspace-id="' + workspaceId + '"] .workspace-list-item');
        if (!row) {{ lastReason = 'Workspace row missing'; }}
        else {{
@@ -241,9 +250,9 @@ async fn run(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), Strin
          const menu = document.querySelector('[role="menu"][aria-label="Workspace actions"]');
          const item = menu && Array.from(menu.querySelectorAll('[role="menuitem"]')).find(element => element.getAttribute('aria-label') === label);
          if (item && !item.disabled && item.getAttribute('aria-disabled') !== 'true') {{
-           cleanup();
            item.click();
-           return;
+           if (label === 'Share remotely') {{ confirming = true; }}
+           else {{ cleanup(); return; }}
          }}
          lastReason = item ? 'Workspace action is disabled' : 'Workspace action menu has not mounted';
        }}
@@ -258,6 +267,8 @@ async fn run(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), Strin
  Some("sync-domain")=>{let workspaces=serde_json::from_value(command.get("workspaces").cloned().ok_or("Missing workspace inventory.")?).map_err(|_|"Invalid workspace inventory.")?;let s=remote::workspace::remote_sync_workspaces(app.get_window("main").ok_or("Main missing.")?,app.state::<Remote>(),text("epoch")?,command.get("revision").and_then(Value::as_u64).ok_or("Missing revision.")?,workspaces)?;Ok(json!({"remote":s}))},
  Some("share-workspace")=>{let s=remote::workspace::remote_share_workspace(app.get_window("main").ok_or("Main missing.")?,app.state::<Remote>(),text("workspaceId")?,command.get("shared").and_then(Value::as_bool).ok_or("Missing shared intent.")?).await?;Ok(json!({"remote":s}))},
  Some("inspect")=>Ok(json!({"remote":app.state::<Remote>().state(),"windowVisible":app.get_window("main").and_then(|w|w.is_visible().ok())})),
+ Some("idle-hour" | "helper-fault" | "snapshot")=>app.state::<Remote>().probe_lifecycle(app,command.get("op").and_then(Value::as_str).ok_or("Missing operation.")?,&id),
+ Some("resume")=>{let s=remote::remote_resume(app.get_window("main").ok_or("Main missing.")?,app.state::<Remote>()).await?;Ok(json!({"remote":s}))},
  Some("approve")=>{let permission: lomi_remote_crypto::Permissions=serde_json::from_value(command.get("permissions").cloned().ok_or("Missing permission.")?).map_err(|_|"Invalid permission.")?;let s=remote::remote_approve_pairing(settings.clone(),app.state::<Remote>(),text("pairingId")?,text("fingerprint")?,vec![id.clone()],permission).await?;Ok(json!({"remote":s}))},
  Some("revoke")=>{let s=remote::remote_revoke_grant(settings.clone(),app.state::<Remote>(),text("grantId")?).await?;Ok(json!({"remote":s}))},
  Some("local-input")=>{terminal::write_terminal(app.get_window("main").ok_or("Main missing.")?,app.state::<Terminals>(),command.get("sessionId").and_then(Value::as_str).unwrap_or(&id).to_string(),text("data")?).await?;Ok(json!({"sent":true}))},

@@ -1,8 +1,12 @@
 import { TerminalModels } from "./model.mjs";
 const models = new TerminalModels();
+// Native restore carries an 8 MiB checkpoint and a bounded 512 KiB suffix.
+const MAX_LINE = 12 * 1024 * 1024;
+const MAX_QUEUED_BYTES = 16 * 1024 * 1024;
 let pending = Buffer.alloc(0),
   queue = Promise.resolve(),
   queued = 0,
+  queuedBytes = 0,
   closed = false;
 function stop() {
   if (closed) return;
@@ -14,13 +18,14 @@ function stop() {
 process.stdin.on("data", (chunk) => {
   if (closed) return;
   pending = Buffer.concat([pending, chunk]);
-  if (pending.length > 65536) return stop();
+  if (pending.length > MAX_LINE + 1) return stop();
   for (;;) {
     const i = pending.indexOf(10);
     if (i < 0) break;
     const raw = pending.subarray(0, i);
     pending = pending.subarray(i + 1);
-    if (raw.length > 32768 || ++queued > 128) return stop();
+    if (raw.length > MAX_LINE || ++queued > 128 ||
+        (queuedBytes += raw.length) > MAX_QUEUED_BYTES) return stop();
     queue = queue
       .then(async () => {
         if (closed) return;
@@ -49,6 +54,7 @@ process.stdin.on("data", (chunk) => {
           });
         } finally {
           queued--;
+          queuedBytes -= raw.length;
         }
       })
       .catch(stop);

@@ -9,6 +9,8 @@ export default function RemoteWorkspaceStatus({
   busy,
   error,
   stopSharing,
+  paused,
+  resume,
 }: {
   workspace: { id: string; name: string };
   available: boolean;
@@ -16,6 +18,8 @@ export default function RemoteWorkspaceStatus({
   busy: boolean;
   error: string;
   stopSharing: () => Promise<void>;
+  paused?: boolean;
+  resume: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -29,8 +33,18 @@ export default function RemoteWorkspaceStatus({
       >
         <span className="remote-workspace-status-label">
           <Globe size={12} aria-hidden="true" />
-          Shared remotely
+          {paused ? "Remote paused" : "Shared remotely"}
         </span>
+        {paused && (
+          <button
+            type="button"
+            className="remote-workspace-stop"
+            disabled={!available || busy}
+            onClick={() => void resume()}
+          >
+            {busy ? "Resuming…" : "Resume remote"}
+          </button>
+        )}
         <button
           type="button"
           className="remote-workspace-stop"
@@ -46,6 +60,7 @@ export default function RemoteWorkspaceStatus({
           Stop sharing
         </button>
       </div>
+      {paused && error && <span role="alert">{error}</span>}
       {open && (
         <Modal
           className="remote-sharing-dialog"

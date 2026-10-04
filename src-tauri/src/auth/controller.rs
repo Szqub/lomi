@@ -38,6 +38,7 @@ struct Core {
     refresh_started: Option<Instant>,
     store: Option<CredentialStore>,
     app: Option<tauri::AppHandle>,
+    session_refresh_stop: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 struct BrowserAttempt {
@@ -97,7 +98,18 @@ impl Core {
             refresh_started: None,
             store: None,
             app: None,
+            session_refresh_stop: None,
         }
+    }
+
+    fn can_refresh_session_automatically(&self) -> bool {
+        self.token.is_some()
+            && matches!(
+                self.state.status,
+                AuthStatus::SignedIn | AuthStatus::Offline
+            )
+            && self.active_attempt_id.is_none()
+            && self.refresh_owner_generation != Some(self.generation)
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -137,6 +149,15 @@ pub(crate) struct RemoteBinding {
     pub user_id: String,
     pub session_id: String,
     pub expires_at: u64,
+    pub generation: u64,
+}
+
+impl RemoteBinding {
+    pub(crate) fn same_authority(&self, other: &Self) -> bool {
+        self.user_id == other.user_id
+            && self.session_id == other.session_id
+            && self.generation == other.generation
+    }
 }
 
 fn remote_binding(core: &Core) -> Result<RemoteBinding, String> {
@@ -159,6 +180,7 @@ fn remote_binding(core: &Core) -> Result<RemoteBinding, String> {
         user_id: user.id.clone(),
         session_id: session.id.clone(),
         expires_at: expires as u64,
+        generation: core.generation,
     })
 }
 
@@ -239,12 +261,39 @@ impl AuthController {
             }
         }
         self.publish();
+        self.start_session_refresh();
         if startup_check {
             let controller = self.clone();
             tauri::async_runtime::spawn(async move {
                 controller.refresh_state().await;
             });
         }
+    }
+
+    fn start_session_refresh(&self) {
+        let mut stopped = {
+            let Ok(mut core) = self.inner.core.lock() else {
+                return;
+            };
+            if core.session_refresh_stop.is_some() {
+                return;
+            }
+            let (stop, stopped) = tokio::sync::watch::channel(false);
+            core.session_refresh_stop = Some(stop);
+            stopped
+        };
+        let controller = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = async {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        controller.refresh_state_inner(true).await;
+                    } => {}
+                    _ = stopped.changed() => break,
+                }
+            }
+        });
     }
 
     pub fn snapshot(&self) -> AuthState {
@@ -267,14 +316,10 @@ impl AuthController {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(RemoteBinding, serde_json::Value), String> {
-        let (generation, token, binding) = {
+        let (token, binding) = {
             let core = self.inner.core.lock().map_err(|_| "Account unavailable.")?;
             let binding = remote_binding(&core)?;
-            (
-                core.generation,
-                core.token.clone().ok_or("Sign in first.")?,
-                binding,
-            )
+            (core.token.clone().ok_or("Sign in first.")?, binding)
         };
         let result = self
             .inner
@@ -284,11 +329,12 @@ impl AuthController {
             .remote_request(token.exposed(), method, path, body)
             .await;
         let core = self.inner.core.lock().map_err(|_| "Account unavailable.")?;
-        if generation != core.generation || remote_binding(&core)? != binding {
+        let current = remote_binding(&core)?;
+        if !current.same_authority(&binding) {
             return Err("Account session changed.".into());
         }
         let value = result.map_err(remote_request_message)?;
-        Ok((binding, value))
+        Ok((current, value))
     }
 
     #[cfg(feature = "remote-probe")]
@@ -578,6 +624,10 @@ impl AuthController {
     }
 
     pub async fn refresh_state(&self) -> AuthState {
+        self.refresh_state_inner(false).await
+    }
+
+    async fn refresh_state_inner(&self, automatic: bool) -> AuthState {
         if self.inner.api.is_none() {
             return self.snapshot();
         }
@@ -585,6 +635,10 @@ impl AuthController {
             let Ok(mut core) = self.inner.core.lock() else {
                 return self.snapshot();
             };
+            // Background checks never load storage or probe without a usable token.
+            if automatic && !core.can_refresh_session_automatically() {
+                return core.state.clone();
+            }
             if core.refresh_owner_generation == Some(core.generation)
                 || core.active_attempt_id.is_some()
             {
@@ -633,7 +687,10 @@ impl AuthController {
             }
             core.refresh_owner_generation = Some(core.generation);
             core.refresh_started = Some(Instant::now());
-            core.state.status = AuthStatus::Checking;
+            // A live session remains authorized while its online check is pending.
+            if remote_binding(&core).is_err() {
+                core.state.status = AuthStatus::Checking;
+            }
             core.state.message = None;
             match core.token.clone() {
                 Some(token) => RefreshAction::Session(core.generation, token),
@@ -893,6 +950,9 @@ impl AuthController {
 
     pub fn shutdown(&self) {
         if let Ok(mut core) = self.inner.core.lock() {
+            if let Some(stop) = core.session_refresh_stop.take() {
+                let _ = stop.send(true);
+            }
             core.next_generation();
             core.attempt = None;
             core.token = None;
@@ -1400,6 +1460,234 @@ mod tests {
     const TEST_CALLBACK_STATE: &str = "B123456789012345678901234567890123456789012";
     const TEST_VERIFIER: &str = "C123456789012345678901234567890123456789012";
     const ACTIVE_SESSION_JSON: &str = r#"{"user":{"id":"user-1","displayName":"Ada","email":"ada@example.com","githubLogin":"ada","status":"active"},"session":{"id":"session-1","expiresAt":"2026-10-01T00:00:00Z"}}"#;
+
+    fn authorized_core() -> Core {
+        let mut core = Core::new(AuthStatus::SignedIn, None);
+        core.token = Some(Secret::new("session-token".into()));
+        core.token_storage = Some(AuthStorage::Session);
+        core.state.user = Some(super::super::AuthUser {
+            id: "user-1".into(),
+            display_name: "Ada".into(),
+            email: "".into(),
+            github_login: "".into(),
+            status: "active".into(),
+        });
+        core.state.session = Some(super::super::AuthSession {
+            id: "session-1".into(),
+            expires_at: format_timestamp(SystemTime::now() + Duration::from_secs(120)),
+        });
+        core
+    }
+
+    #[test]
+    fn automatic_session_refresh_requires_existing_unblocked_idle_credentials() {
+        let mut core = authorized_core();
+        for status in [AuthStatus::SignedIn, AuthStatus::Offline] {
+            core.state.status = status;
+            assert!(core.can_refresh_session_automatically());
+        }
+        for status in [
+            AuthStatus::Unavailable,
+            AuthStatus::SignedOut,
+            AuthStatus::Authorizing,
+            AuthStatus::Checking,
+            AuthStatus::StorageLocked,
+            AuthStatus::Error,
+        ] {
+            core.state.status = status;
+            assert!(!core.can_refresh_session_automatically());
+        }
+        core.state.status = AuthStatus::SignedIn;
+        core.state.session.as_mut().unwrap().expires_at =
+            format_timestamp(SystemTime::now() - Duration::from_secs(1));
+        assert!(core.can_refresh_session_automatically());
+        core.active_attempt_id = Some("login".into());
+        assert!(!core.can_refresh_session_automatically());
+        core.active_attempt_id = None;
+        core.refresh_owner_generation = Some(core.generation);
+        assert!(!core.can_refresh_session_automatically());
+        core.refresh_owner_generation = None;
+        core.token = None;
+        assert!(!core.can_refresh_session_automatically());
+    }
+
+    #[tokio::test]
+    async fn automatic_checks_renew_expiry_and_recover_after_temporary_outage() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let first_expiry = format_timestamp(SystemTime::now() + Duration::from_secs(240));
+        let second_expiry = format_timestamp(SystemTime::now() + Duration::from_secs(480));
+        let bodies = [
+            ACTIVE_SESSION_JSON.replace("2026-10-01T00:00:00Z", &first_expiry),
+            "{}".into(),
+            ACTIVE_SESSION_JSON.replace("2026-10-01T00:00:00Z", &second_expiry),
+        ];
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in ["200 OK", "503 Service Unavailable", "200 OK"]
+                .into_iter()
+                .zip(bodies)
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_complete_http_request(&mut stream));
+                write_api_response(&mut stream, status, &body);
+            }
+            requests
+        });
+        let controller = controller_for_origin(origin, AuthStatus::SignedIn);
+        *controller.inner.core.lock().unwrap() = authorized_core();
+        let previous = controller.remote_binding().unwrap();
+        controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .state
+            .session
+            .as_mut()
+            .unwrap()
+            .expires_at = format_timestamp(SystemTime::now() - Duration::from_secs(1));
+        assert_eq!(controller.snapshot().status, AuthStatus::SignedIn);
+        assert!(controller.remote_binding().is_err());
+        assert_eq!(
+            controller.refresh_state_inner(true).await.status,
+            AuthStatus::SignedIn
+        );
+        let renewed = controller.remote_binding().unwrap();
+        assert!(renewed.same_authority(&previous));
+        assert!(renewed.expires_at > previous.expires_at);
+        controller.inner.core.lock().unwrap().refresh_started =
+            Some(Instant::now() - Duration::from_secs(60));
+        assert_eq!(
+            controller.refresh_state_inner(true).await.status,
+            AuthStatus::Offline
+        );
+        assert!(controller.remote_binding().is_err());
+        {
+            let mut core = controller.inner.core.lock().unwrap();
+            assert!(core.token.is_some());
+            core.refresh_started = Some(Instant::now() - Duration::from_secs(60));
+            core.state.session.as_mut().unwrap().expires_at =
+                format_timestamp(SystemTime::now() - Duration::from_secs(1));
+        }
+        assert_eq!(
+            controller.refresh_state_inner(true).await.status,
+            AuthStatus::SignedIn
+        );
+        let recovered = controller.remote_binding().unwrap();
+        assert!(recovered.same_authority(&previous));
+        assert!(recovered.expires_at > renewed.expires_at);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("GET /v1/me ")
+                && request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer session-token")));
+    }
+
+    #[tokio::test]
+    async fn automatic_checks_do_not_reload_blocked_storage_or_probe_signed_out() {
+        let root = tempfile::tempdir().unwrap();
+        let controller =
+            controller_for_origin("http://127.0.0.1:9".into(), AuthStatus::StorageLocked);
+        attach_unreadable_store(&controller, root.path());
+        let before = controller.snapshot();
+        let after = controller.refresh_state_inner(true).await;
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.message, before.message);
+        {
+            let mut core = controller.inner.core.lock().unwrap();
+            core.state.status = AuthStatus::SignedOut;
+            core.store = None;
+        }
+        assert_eq!(
+            controller.refresh_state_inner(true).await.status,
+            AuthStatus::SignedOut
+        );
+        assert!(controller
+            .inner
+            .core
+            .lock()
+            .unwrap()
+            .refresh_started
+            .is_none());
+    }
+
+    #[test]
+    fn remote_binding_renewal_retains_authority_and_checks_live_access() {
+        let mut core = authorized_core();
+        let previous = remote_binding(&core).unwrap();
+        core.state.session.as_mut().unwrap().expires_at =
+            format_timestamp(SystemTime::now() + Duration::from_secs(240));
+        let renewed = remote_binding(&core).unwrap();
+        assert!(previous.same_authority(&renewed));
+        assert_ne!(previous, renewed);
+        assert!(renewed.expires_at > previous.expires_at);
+        core.next_generation();
+        assert!(!previous.same_authority(&remote_binding(&core).unwrap()));
+        core.state.session.as_mut().unwrap().expires_at =
+            format_timestamp(SystemTime::now() - Duration::from_secs(1));
+        assert!(remote_binding(&core).is_err());
+        core = authorized_core();
+        core.state.user.as_mut().unwrap().status = "disabled".into();
+        assert!(remote_binding(&core).is_err());
+        core = authorized_core();
+        core.token = None;
+        assert!(remote_binding(&core).is_err());
+        core = authorized_core();
+        core.state.status = AuthStatus::Offline;
+        assert!(remote_binding(&core).is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_refresh_retains_live_authority_then_applies_renewal_or_denial() {
+        for denied in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let (requested_tx, requested_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let expiry = format_timestamp(SystemTime::now() + Duration::from_secs(240));
+            let body = ACTIVE_SESSION_JSON.replace("2026-10-01T00:00:00Z", &expiry);
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_complete_http_request(&mut stream);
+                requested_tx.send(request).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                write_api_response(
+                    &mut stream,
+                    if denied { "401 Unauthorized" } else { "200 OK" },
+                    if denied { "{}" } else { &body },
+                );
+            });
+            let controller = controller_for_origin(origin, AuthStatus::SignedIn);
+            *controller.inner.core.lock().unwrap() = authorized_core();
+            let previous = controller.remote_binding().unwrap();
+            let refreshing = controller.clone();
+            let task = tokio::spawn(async move { refreshing.refresh_state().await });
+            let request = tokio::time::timeout(Duration::from_secs(3), requested_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(request.starts_with("GET /v1/me "));
+            assert_eq!(controller.snapshot().status, AuthStatus::SignedIn);
+            assert_eq!(controller.remote_binding().unwrap(), previous);
+            release_tx.send(()).unwrap();
+            let state = task.await.unwrap();
+            if denied {
+                assert_eq!(state.status, AuthStatus::SignedOut);
+                assert!(controller.remote_binding().is_err());
+            } else {
+                assert_eq!(state.status, AuthStatus::SignedIn);
+                let current = controller.remote_binding().unwrap();
+                assert!(current.same_authority(&previous));
+                assert!(current.expires_at > previous.expires_at);
+            }
+            server.join().unwrap();
+        }
+    }
 
     struct DelayedDesktopServer {
         origin: String,

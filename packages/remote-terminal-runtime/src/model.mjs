@@ -1,6 +1,8 @@
 import headless from "@xterm/headless";
 import {
   captureSnapshot,
+  restoreSnapshot,
+  validateSnapshot,
   safeBoundary,
   SCROLLBACK,
   MAX_SNAPSHOT_BYTES,
@@ -48,7 +50,7 @@ export class TerminalModels {
       !UUID.test(req.sessionId) ||
       !UUID.test(req.epoch) ||
       !validSeq(req.seq) ||
-      !["create", "write", "resize", "snapshot", "drop"].includes(req.op)
+      !["create", "restore", "write", "resize", "snapshot", "drop"].includes(req.op)
     )
       throw new Error("INVALID_REQUEST");
     const allowed = [
@@ -58,13 +60,14 @@ export class TerminalModels {
       "epoch",
       "seq",
       ...(req.op === "write" ? ["data"] : []),
+      ...(req.op === "restore" ? ["state", "suffix", "cols", "rows"] : []),
       ...(["create", "resize"].includes(req.op) ? ["cols", "rows"] : []),
     ];
     if (Object.keys(req).some((k) => !allowed.includes(k)))
       throw new Error("INVALID_REQUEST");
     const old = this.sessions.get(req.sessionId);
-    if (req.op === "create") {
-      if (old || this.sessions.size >= 32 || req.seq !== 0)
+    if (["create", "restore"].includes(req.op)) {
+      if (old || this.sessions.size >= 32 || (req.op === "create" && req.seq !== 0))
         throw new Error("SESSION_LIMIT");
       dims(req.cols, req.rows);
       const term = new headless.Terminal({
@@ -88,8 +91,30 @@ export class TerminalModels {
         suffixBytes: 0,
         checkpointAt: Date.now(),
       };
-      this.sessions.set(req.sessionId, session);
-      return { seq: 0 };
+      try {
+        if (req.op === "restore") {
+          validateSnapshot(req.state);
+          if (req.state.cols !== req.cols || req.state.rows !== req.rows ||
+              typeof req.suffix !== "string" || req.suffix.length > Math.ceil(MAX_SUFFIX / 3) * 4 ||
+              !/^[A-Za-z0-9+/]*={0,2}$/.test(req.suffix))
+            throw new Error("INVALID_REQUEST");
+          const suffix = Buffer.from(req.suffix, "base64");
+          if (suffix.length > MAX_SUFFIX || suffix.toString("base64") !== req.suffix)
+            throw new Error("INVALID_DATA");
+          restoreSnapshot(term, req.state);
+          await writeTerminal(term, suffix);
+          assertModelBounds(term);
+          session.seq = req.seq;
+          session.checkpoint = req.state;
+          session.suffix = suffix.length ? [suffix] : [];
+          session.suffixBytes = suffix.length;
+        }
+        this.sessions.set(req.sessionId, session);
+        return { seq: session.seq };
+      } catch (error) {
+        term.dispose();
+        throw error;
+      }
     }
     if (!old || old.epoch !== req.epoch) throw new Error("STALE_SESSION");
     if (req.op === "drop") {

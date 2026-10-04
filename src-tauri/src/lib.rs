@@ -395,6 +395,8 @@ pub fn run() {
                 chat::commands::chat_recover,
                 remote::remote_get_state,
                 remote::remote_set_enabled,
+                remote::remote_resume,
+                remote::remote_note_activity,
                 remote::remote_share_session,
                 remote::workspace::remote_begin_workspace_sync,
                 remote::workspace::remote_sync_workspaces,

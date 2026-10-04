@@ -10,6 +10,7 @@ export interface RemoteWorkspaceStatus {
 export interface RemoteState {
   qualified: boolean;
   enabled: boolean;
+  paused?: boolean;
   online: boolean;
   message: string | null;
   domainEpoch: string | null;

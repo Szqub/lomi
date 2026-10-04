@@ -67,7 +67,10 @@ pub(super) async fn start(
             return Ok(());
         }
         if !c.enabled
-            || c.binding.as_ref() != Some(&binding)
+            || !c
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
             || !c.deadline.is_some_and(|d| d > Instant::now())
         {
             return Err("Remote authorization expired.".into());
@@ -83,7 +86,7 @@ pub(super) async fn start(
             || wire.expires_at > now() + 120
             || wire.host_bundle != p.bundle
             || wire.device_bundle != local.device_bundle
-            || wire.signed_approval != local.approval
+            || !grant_allows_wire(p, local, &wire, now())
             || wire.context.channel_id != uuid_bytes(&wire.id)?
             || wire.context.session_id != uuid_bytes(&wire.session_id)?
             || wire.context.grant_id != uuid_bytes(&wire.grant_id)?
@@ -162,7 +165,7 @@ pub(super) async fn start(
             Some(&json!({})),
         )
         .await?;
-    if ticket.get("channel") != Some(&value) {
+    if !ticket_matches_wire(&ticket, &value, &wire) {
         stop.store(true, Ordering::SeqCst);
         return Err("Remote ticket context changed.".into());
     }
@@ -261,6 +264,69 @@ fn workspace_allowed(c: &Core, wire: &Wire) -> bool {
     wire.context.validate_approval(a).is_ok()
 }
 
+// An established channel retains its original signed deadline even after the
+// exact same authority is renewed. Both signatures must still verify locally.
+fn grant_allows_wire(policy: &Policy, grant: &LocalGrant, wire: &Wire, timestamp: u64) -> bool {
+    let old = &wire.signed_approval.approval;
+    let current = &grant.approval.approval;
+    grant.confirmed
+        && !grant.revoked
+        && (grant.approval == wire.signed_approval
+            || (workspace::same_approval_scope(old, current)
+                && current.expires_at > old.expires_at))
+        && wire
+            .signed_approval
+            .verify(
+                &policy.bundle,
+                &old.host_fingerprint,
+                old,
+                timestamp,
+                wire.context.access_epoch,
+            )
+            .is_ok()
+        && grant
+            .approval
+            .verify(
+                &policy.bundle,
+                &current.host_fingerprint,
+                current,
+                timestamp,
+                wire.context.access_epoch,
+            )
+            .is_ok()
+}
+
+fn ticket_matches_wire(ticket: &Value, original: &Value, wire: &Wire) -> bool {
+    let Some(mut channel) = ticket.get("channel").cloned() else {
+        return false;
+    };
+    if channel == *original {
+        return true;
+    }
+    let Ok(renewed) = serde_json::from_value::<Wire>(channel.clone()) else {
+        return false;
+    };
+    let old = &wire.signed_approval.approval;
+    let next = &renewed.signed_approval.approval;
+    if !workspace::same_approval_scope(old, next)
+        || next.expires_at <= old.expires_at
+        || renewed
+            .signed_approval
+            .verify(
+                &wire.host_bundle,
+                &next.host_fingerprint,
+                next,
+                now(),
+                wire.context.access_epoch,
+            )
+            .is_err()
+    {
+        return false;
+    }
+    channel["signedApproval"] = original["signedApproval"].clone();
+    channel == *original
+}
+
 fn allowed(
     remote: &Remote,
     app: &tauri::AppHandle,
@@ -272,7 +338,10 @@ fn allowed(
     if stop.load(Ordering::SeqCst)
         || !remote.healthy.load(Ordering::SeqCst)
         || wire.expires_at <= now()
-        || app.state::<AuthController>().remote_binding().as_ref() != Ok(binding)
+        || !app
+            .state::<AuthController>()
+            .remote_binding()
+            .is_ok_and(|b| b.same_authority(binding))
     {
         return false;
     }
@@ -280,7 +349,9 @@ fn allowed(
         return false;
     };
     c.enabled
-        && c.binding.as_ref() == Some(binding)
+        && c.binding
+            .as_ref()
+            .is_some_and(|b| b.same_authority(binding))
         && c.deadline.is_some_and(|d| d > Instant::now())
         && (if wire.context.version == 2 {
             workspace_allowed(&c, wire)
@@ -292,8 +363,7 @@ fn allowed(
                 g.id == wire.grant_id
                     && g.confirmed
                     && !g.revoked
-                    && g.approval == wire.signed_approval
-                    && g.approval.approval.expires_at > now()
+                    && grant_allows_wire(p, g, wire, now())
             })
         })
         && (wire.context.purpose == Some(ChannelPurpose::Metadata)
@@ -777,6 +847,85 @@ mod tests {
             .sync(&domain_epoch, 1, vec![projection])
             .unwrap();
         assert!(workspace_allowed(&core, &wire));
+        let mut grant = LocalGrant {
+            id: wire.grant_id.clone(),
+            device_bundle: wire.device_bundle.clone(),
+            approval: wire.signed_approval.clone(),
+            revoked: false,
+            confirmed: true,
+            pairing_id: None,
+        };
+        let mut next = grant.approval.approval.clone();
+        next.expires_at += 3600;
+        let renewed = host.sign_peer_approval(next.clone()).unwrap();
+        let original = json!({"id":wire.id,"sessionId":wire.session_id,"hostId":wire.host_id,
+            "deviceId":wire.device_id,"grantId":wire.grant_id,"context":wire.context,
+            "hostBundle":wire.host_bundle,"deviceBundle":wire.device_bundle,
+            "signedApproval":wire.signed_approval,"expiresAt":chrono::DateTime::from_timestamp(wire.expires_at as i64, 0).unwrap().to_rfc3339()});
+        let mut ticket_channel = original.clone();
+        ticket_channel["signedApproval"] = serde_json::to_value(&renewed).unwrap();
+        assert!(ticket_matches_wire(
+            &json!({"channel":ticket_channel}),
+            &original,
+            &wire
+        ));
+        ticket_channel["context"]["revision"] = json!(4);
+        assert!(!ticket_matches_wire(
+            &json!({"channel":ticket_channel}),
+            &original,
+            &wire
+        ));
+        workspace::stage_grant_update(&mut grant, &renewed);
+        let durable: LocalGrant =
+            serde_json::from_slice(&serde_json::to_vec(&grant).unwrap()).unwrap();
+        assert!(durable.confirmed);
+        assert_eq!(durable.approval, wire.signed_approval);
+        assert!(grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &durable,
+            &wire,
+            now()
+        ));
+        grant.approval = renewed;
+        assert!(grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &grant,
+            &wire,
+            now()
+        ));
+        assert!(!grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &grant,
+            &wire,
+            wire.signed_approval.approval.expires_at
+        ));
+        next.permissions = Permissions::Observe;
+        grant.approval = host.sign_peer_approval(next).unwrap();
+        assert!(!grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &grant,
+            &wire,
+            now()
+        ));
+        grant.approval = wire.signed_approval.clone();
+        grant.revoked = true;
+        assert!(!grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &grant,
+            &wire,
+            now()
+        ));
+        grant.revoked = false;
+        let mut membership = grant.approval.approval.clone();
+        membership.revision += 1;
+        workspace::stage_grant_update(&mut grant, &host.sign_peer_approval(membership).unwrap());
+        assert!(!grant.confirmed);
+        assert!(!grant_allows_wire(
+            core.policy.as_ref().unwrap(),
+            &grant,
+            &wire,
+            now()
+        ));
         let mut forged = wire.clone();
         forged.context.session_epoch = Some([99; 16]);
         assert!(!workspace_allowed(&core, &forged));

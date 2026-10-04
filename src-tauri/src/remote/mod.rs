@@ -1,4 +1,5 @@
 //! Native Remote authority. Cloud records cannot create local grants.
+pub(crate) mod activity;
 mod channel;
 mod policy;
 mod runtime;
@@ -29,6 +30,7 @@ pub struct RemoteState {
     pub qualified: bool,
     pub enabled: bool,
     pub online: bool,
+    pub paused: bool,
     pub host_id: Option<String>,
     pub fingerprint: Option<String>,
     pub message: Option<String>,
@@ -90,6 +92,8 @@ pub struct Pairing {
 
 struct Core {
     enabled: bool,
+    paused: bool,
+    activation_revision: u64,
     binding: Option<crate::auth::controller::RemoteBinding>,
     identity: Option<Identity>,
     policy: Option<Policy>,
@@ -108,7 +112,48 @@ struct Core {
 }
 
 impl Core {
+    fn activation_is_current(&self, activation_revision: u64, policy_revision: u64) -> bool {
+        self.activation_revision == activation_revision && self.policy_revision == policy_revision
+    }
+    fn close_channels(&mut self) {
+        self.deadline = None;
+        for stop in self.channels.values() {
+            stop.store(true, Ordering::SeqCst);
+        }
+        self.channels.clear();
+        self.channel_workspaces.clear();
+        self.channel_grants.clear();
+        self.pairings.clear();
+    }
+
+    fn pause_idle(&mut self) {
+        self.close_channels();
+        self.enabled = false;
+        self.paused = true;
+        self.activation_revision = self.activation_revision.wrapping_add(1);
+        self.restore_binding = self.binding.clone();
+        self.message =
+            Some("Remote paused after an hour of inactivity. Resume it from the desktop.".into());
+    }
+
+    fn refresh_bound_authority(&mut self, current: Option<crate::auth::controller::RemoteBinding>) {
+        if let Some(binding) = self.binding.as_ref() {
+            if !current.as_ref().is_some_and(|b| b.same_authority(binding)) {
+                self.reset_bound_authority();
+                return;
+            }
+            self.binding = current.clone();
+        }
+        if self
+            .restore_binding
+            .as_ref()
+            .is_some_and(|previous| current.as_ref().is_some_and(|b| b.same_authority(previous)))
+        {
+            self.restore_binding = current;
+        }
+    }
     fn reset_bound_authority(&mut self) {
+        self.activation_revision = self.activation_revision.wrapping_add(1);
         self.enabled = false;
         self.deadline = None;
         self.binding = None;
@@ -127,6 +172,7 @@ impl Core {
         self.message = Some("Remote account authorization changed.".into());
     }
     fn storage_failed(&mut self) {
+        self.activation_revision = self.activation_revision.wrapping_add(1);
         self.enabled = false;
         self.deadline = None;
         self.message = Some("Remote secure policy could not be committed.".into());
@@ -215,6 +261,8 @@ impl Default for Core {
     fn default() -> Self {
         Self {
             enabled: false,
+            paused: false,
+            activation_revision: 0,
             binding: None,
             identity: None,
             policy: None,
@@ -260,53 +308,228 @@ impl Default for Remote {
 impl Remote {
     pub fn initialize(&self, app: tauri::AppHandle) {
         let terminals = app.state::<Terminals>().inner().clone();
-        let Ok((receiver, healthy)) = terminals.observe_remote() else {
+        let Ok((receiver, healthy, observation)) = terminals.observe_remote() else {
             return;
         };
         self.healthy.store(true, Ordering::SeqCst);
         let controller = self.clone();
         let observer_app = app.clone();
         std::thread::spawn(move || {
+            const RECOVERING: &str = "Remote is recovering terminal state. Try again shortly.";
+            let revoke_unavailable = |id: &str| {
+                if let Ok(mut core) = controller.core.lock() {
+                    core.shares.remove(id);
+                    core.legacy_shares.remove(id);
+                }
+                observer_app.state::<Terminals>().remote_revoke(id);
+            };
+            let emit_delta = |delta: Value, generation: Option<u64>| {
+                let kind = delta.get("type").and_then(Value::as_str);
+                if let Some(id) = delta.get("sessionId").and_then(Value::as_str) {
+                    if matches!(kind, Some("output" | "resize"))
+                        && generation
+                            .is_none_or(|g| observation.current_generation(id, g) != Some(false))
+                    {
+                        return;
+                    }
+                    if kind == Some("unavailable") {
+                        revoke_unavailable(id);
+                    }
+                }
+                let _ = controller.events.send(delta);
+            };
+            let sync_losses = |generations: &mut HashMap<String, u64>| {
+                let mut deltas = Vec::new();
+                if let Ok(mut runtime) = controller.runtime.lock() {
+                    for (id, generation, lost, exited, dimensions) in observation.sessions() {
+                        let replaced = generations.get(&id).is_some_and(|old| *old != generation);
+                        if lost || replaced {
+                            if let Some(delta) = runtime.invalidate(&id) {
+                                deltas.push(delta);
+                            }
+                        }
+                        if lost && !exited && (replaced || !runtime.sessions.contains_key(&id)) {
+                            if let Some((cols, rows)) = dimensions {
+                                if let Ok(Some(delta)) = runtime.discard_lost_event(
+                                    crate::terminal::RemoteTerminalEvent::Start {
+                                        id: id.clone(),
+                                        cols,
+                                        rows,
+                                    },
+                                ) {
+                                    deltas.push(delta);
+                                }
+                                generations.insert(id.clone(), generation);
+                            }
+                        }
+                        if lost && exited {
+                            if let Ok(Some(delta)) = runtime.discard_lost_event(
+                                crate::terminal::RemoteTerminalEvent::Exit {
+                                    id: id.clone(),
+                                    code: None,
+                                },
+                            ) {
+                                deltas.push(delta);
+                            }
+                            observation.retire(&id, generation);
+                            generations.remove(&id);
+                        }
+                    }
+                }
+                let changed = !deltas.is_empty();
+                for delta in deltas {
+                    emit_delta(delta, None);
+                }
+                if changed {
+                    let _ = controller.reconcile_workspaces(&observer_app);
+                }
+            };
+            let mut generations = HashMap::new();
+            let mut recovering = false;
             while !controller.stopped.load(Ordering::SeqCst) {
                 if !healthy.load(Ordering::SeqCst) {
-                    controller.fail_closed("Remote terminal observer exceeded its budget.");
                     controller.healthy.store(false, Ordering::SeqCst);
+                    controller.fail_closed("Remote terminal observer is unavailable.");
                     break;
                 }
-                match receiver.recv_timeout(Duration::from_millis(100)) {
-                    Ok(event) => {
-                        let result = controller
+                sync_losses(&mut generations);
+                let needs_recovery = controller
+                    .runtime
+                    .lock()
+                    .map(|runtime| runtime.needs_recovery())
+                    .unwrap_or(true);
+                if recovering || needs_recovery {
+                    if !recovering {
+                        controller.healthy.store(false, Ordering::SeqCst);
+                        controller.fail_closed(RECOVERING);
+                    }
+                    recovering = true;
+                    let result = controller
+                        .runtime
+                        .lock()
+                        .map_err(|_| "Terminal model unavailable.".to_string())
+                        .and_then(|mut runtime| {
+                            let delta = runtime.recover(&observer_app)?;
+                            let unavailable = runtime
+                                .sessions
+                                .values()
+                                .filter(|session| !session.available)
+                                .map(|session| session.id.clone())
+                                .collect::<Vec<_>>();
+                            Ok((delta, runtime.needs_recovery(), unavailable))
+                        });
+                    if controller.stopped.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    // A producer may have reached its bound during helper IPC.
+                    // Fence those sessions before publishing recovery results.
+                    sync_losses(&mut generations);
+                    if let Ok((delta, still_recovering, unavailable)) = result {
+                        for id in unavailable {
+                            revoke_unavailable(&id);
+                        }
+                        if let Some(delta) = delta {
+                            let generation = delta
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .and_then(|id| generations.get(id))
+                                .copied();
+                            emit_delta(delta, generation);
+                        }
+                        let _ = controller.reconcile_workspaces(&observer_app);
+                        let actual_fault = controller
                             .runtime
                             .lock()
-                            .map_err(|_| "Terminal model unavailable.".into())
-                            .and_then(|mut r| r.observe(&observer_app, event));
-                        let _ = controller.reconcile_workspaces(&observer_app);
-                        match result {
-                            Ok(Some(delta)) => {
-                                if delta.get("type").and_then(Value::as_str) == Some("unavailable")
-                                {
-                                    if let Some(id) = delta.get("sessionId").and_then(Value::as_str)
-                                    {
-                                        if let Ok(mut c) = controller.core.lock() {
-                                            c.shares.remove(id);
-                                            c.legacy_shares.remove(id);
-                                        }
-                                        observer_app.state::<Terminals>().remote_revoke(id);
-                                    }
+                            .map(|runtime| runtime.needs_recovery())
+                            .unwrap_or(true);
+                        if !still_recovering && !actual_fault && healthy.load(Ordering::SeqCst) {
+                            if let Ok(mut core) = controller.core.lock() {
+                                if core.message.as_deref() == Some(RECOVERING) {
+                                    core.message = None;
                                 }
-                                let _ = controller.events.send(delta);
                             }
-                            Ok(None) => {}
-                            Err(_) => {
-                                controller.healthy.store(false, Ordering::SeqCst);
-                                controller
-                                    .fail_closed("Independent terminal model is unavailable.");
-                                break;
+                            controller.healthy.store(true, Ordering::SeqCst);
+                            recovering = false;
+                            continue;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
+                match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(observed) => {
+                        let Some(lost) = observation.current(&observed) else {
+                            continue;
+                        };
+                        let id = observed.event.session_id().to_owned();
+                        let generation = observed.generation;
+                        let start = matches!(
+                            &observed.event,
+                            crate::terminal::RemoteTerminalEvent::Start { .. }
+                        );
+                        let exit = matches!(
+                            &observed.event,
+                            crate::terminal::RemoteTerminalEvent::Exit { .. }
+                        );
+                        let output = matches!(
+                            &observed.event,
+                            crate::terminal::RemoteTerminalEvent::Output { .. }
+                        );
+                        if start && lost && generations.get(&id) == Some(&generation) {
+                            continue;
+                        }
+                        if start {
+                            generations.insert(id.clone(), generation);
+                        }
+                        let (result, needs_recovery) = match controller.runtime.lock() {
+                            Ok(mut runtime) => {
+                                let result = if lost {
+                                    runtime.discard_lost_event(observed.event)
+                                } else {
+                                    runtime.observe(&observer_app, observed.event)
+                                };
+                                (result, runtime.needs_recovery())
                             }
+                            Err(_) => (Err("Terminal model unavailable.".to_string()), true),
+                        };
+                        if exit {
+                            observation.retire(&id, generation);
+                            generations.remove(&id);
+                        }
+                        sync_losses(&mut generations);
+                        let unavailable = result
+                            .as_ref()
+                            .ok()
+                            .and_then(Option::as_ref)
+                            .is_some_and(|delta| {
+                                delta.get("type").and_then(Value::as_str) == Some("unavailable")
+                            });
+                        if !output || unavailable {
+                            let _ = controller.reconcile_workspaces(&observer_app);
+                        }
+                        let failed = result.is_err();
+                        if let Ok(Some(delta)) = result {
+                            emit_delta(delta, Some(generation));
+                        }
+                        let actual_fault = controller
+                            .runtime
+                            .lock()
+                            .map(|runtime| runtime.needs_recovery())
+                            .unwrap_or(true);
+                        if failed || needs_recovery || actual_fault {
+                            controller.healthy.store(false, Ordering::SeqCst);
+                            controller.fail_closed(RECOVERING);
+                            recovering = true;
                         }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(_) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        controller.healthy.store(false, Ordering::SeqCst);
+                        if !controller.stopped.load(Ordering::SeqCst) {
+                            controller.fail_closed("Remote terminal observer is unavailable.");
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -316,12 +539,23 @@ impl Remote {
             while !controller.stopped.load(Ordering::SeqCst) {
                 interval.tick().await;
                 controller.reset_changed_binding(&app);
-                if LIVE_QUALIFIED && !controller.core.lock().map(|c| c.enabled).unwrap_or(false) {
+                controller.pause_if_idle(&app, SystemTime::now());
+                if LIVE_QUALIFIED
+                    && controller
+                        .core
+                        .lock()
+                        .map(|c| !c.enabled && !c.paused)
+                        .unwrap_or(false)
+                {
                     if let Ok(binding) = app.state::<AuthController>().remote_binding() {
                         let unchecked = controller
                             .core
                             .lock()
-                            .map(|c| c.restore_binding.as_ref() != Some(&binding))
+                            .map(|c| {
+                                !c.restore_binding
+                                    .as_ref()
+                                    .is_some_and(|b| b.same_authority(&binding))
+                            })
                             .unwrap_or(false);
                         if unchecked {
                             let account = hex(&Sha256::digest(
@@ -330,7 +564,9 @@ impl Remote {
                             if let Ok(shared) =
                                 Policy::has_shared_consent(&account, &binding.session_id)
                             {
-                                if shared && controller.enable_inner(&app, false).await.is_err() {
+                                if shared
+                                    && controller.enable_inner(&app, false, false).await.is_err()
+                                {
                                     controller.fail_closed(
                                         "Remote workspace consent could not be restored.",
                                     );
@@ -341,10 +577,20 @@ impl Remote {
                         }
                     }
                 }
-                if controller.core.lock().map(|c| c.enabled).unwrap_or(false)
-                    && controller.poll(&app).await.is_err()
-                {
-                    controller.fail_closed("Remote authorization could not be confirmed.");
+                if controller.core.lock().map(|c| c.enabled).unwrap_or(false) {
+                    let revision = controller
+                        .core
+                        .lock()
+                        .map(|c| c.activation_revision)
+                        .unwrap_or(0);
+                    if let Err(message) = controller.poll(&app).await {
+                        if let Ok(mut core) = controller.core.lock() {
+                            if core.enabled && core.activation_revision == revision {
+                                core.close_channels();
+                                core.message = Some(message);
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -353,9 +599,23 @@ impl Remote {
     fn reset_changed_binding(&self, app: &tauri::AppHandle) {
         let current = app.state::<AuthController>().remote_binding().ok();
         if let Ok(mut core) = self.core.lock() {
-            if core.binding.is_some() && core.binding != current {
-                core.reset_bound_authority();
+            core.refresh_bound_authority(current);
+        }
+    }
+    fn pause_if_idle(&self, app: &tauri::AppHandle, now: SystemTime) {
+        let terminals = app.state::<Terminals>();
+        let sessions = if let Ok(mut core) = self.core.lock() {
+            if core.paused || !terminals.activity.is_idle(now) {
+                return;
             }
+            let sessions = core.shares.iter().cloned().collect::<Vec<_>>();
+            core.pause_idle();
+            sessions
+        } else {
+            return;
+        };
+        for id in sessions {
+            terminals.remote_revoke(&id);
         }
     }
     fn fail_closed(&self, message: &str) {
@@ -391,6 +651,7 @@ impl Remote {
         RemoteState {
             qualified: LIVE_QUALIFIED,
             enabled: core.enabled,
+            paused: core.paused,
             online: core.deadline.is_some_and(|d| Instant::now() < d)
                 && self.healthy.load(Ordering::SeqCst),
             host_id: policy.map(|p| p.host_id.clone()),
@@ -475,6 +736,9 @@ impl Remote {
             self.fail_closed("Remote is disabled.");
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
             core.enabled = false;
+            core.paused = false;
+            core.activation_revision = core.activation_revision.wrapping_add(1);
+            app.state::<Terminals>().activity.deactivate();
             core.shares.clear();
             core.legacy_shares.clear();
             core.restore_binding = core.binding.clone();
@@ -494,7 +758,42 @@ impl Remote {
         if !LIVE_QUALIFIED {
             return Err("This build has not qualified Remote live access.".into());
         }
-        self.enable_inner(app, false).await
+        self.enable_inner(app, false, true).await
+    }
+
+    #[cfg(feature = "remote-probe")]
+    pub(crate) fn probe_lifecycle(
+        &self,
+        app: &tauri::AppHandle,
+        operation: &str,
+        id: &str,
+    ) -> Result<Value, String> {
+        if app.state::<AuthController>().remote_environment()? != "development" {
+            return Err("Remote probes require the local fixture account.".into());
+        }
+        match operation {
+            "idle-hour" => {
+                app.state::<Terminals>().activity.probe_elapsed_hour()?;
+                self.pause_if_idle(app, SystemTime::now());
+                Ok(json!({"remote":self.state()}))
+            }
+            "helper-fault" => {
+                let mut runtime = self.runtime.lock().map_err(|_| "Runtime unavailable.")?;
+                runtime.probe_kill_helper()?;
+                // Detect the dead child through the ordinary snapshot request path;
+                // the real observer owns subsequent recovery and channel fencing.
+                if runtime.snapshot(id).is_ok() {
+                    return Err("Helper fault was not detected.".into());
+                }
+                Ok(json!({"faultDetected":runtime.needs_recovery()}))
+            }
+            "snapshot" => self
+                .runtime
+                .lock()
+                .map_err(|_| "Runtime unavailable.")?
+                .snapshot(id),
+            _ => Err("Invalid lifecycle probe operation.".into()),
+        }
     }
 
     #[cfg(feature = "remote-probe")]
@@ -502,15 +801,24 @@ impl Remote {
         if app.state::<AuthController>().remote_environment()? != "development" {
             return Err("Remote probes require the local fixture account.".into());
         }
-        self.enable_inner(app, true).await
+        self.enable_inner(app, true, true).await
     }
 
-    async fn enable_inner(&self, app: &tauri::AppHandle, probe: bool) -> Result<(), String> {
+    async fn enable_inner(
+        &self,
+        app: &tauri::AppHandle,
+        probe: bool,
+        reset_activity: bool,
+    ) -> Result<(), String> {
         if !self.healthy.load(Ordering::SeqCst) {
-            return Err(
-                "Independent terminal state is unavailable. Restart Lomi before sharing.".into(),
-            );
+            return Err("Remote is recovering terminal state. Try again shortly.".into());
         }
+        self.reset_changed_binding(app);
+        let (activation_revision, policy_revision) = {
+            let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
+            core.activation_revision = core.activation_revision.wrapping_add(1);
+            (core.activation_revision, core.policy_revision)
+        };
         let auth = app.state::<AuthController>();
         let (binding, session) = auth
             .remote_request(reqwest::Method::GET, "/v1/remote/native/session", None)
@@ -526,32 +834,78 @@ impl Remote {
         {
             return Err("Remote session does not match the desktop account.".into());
         }
-        #[cfg(feature = "remote-probe")]
-        let (policy, identity) = if probe {
-            Policy::probe(&hex(&account_id), &binding.session_id, account_id)?
+        let retained = {
+            let core = self.core.lock().map_err(|_| "Remote unavailable.")?;
+            if core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
+                && core.identity.is_some()
+            {
+                core.policy
+                    .as_ref()
+                    .map(|p| (p.host_id.clone(), p.bundle.clone()))
+            } else {
+                None
+            }
+        };
+        let loaded = if retained.is_some() {
+            None
         } else {
-            Policy::load_or_create(&hex(&account_id), &binding.session_id, account_id)?
+            #[cfg(feature = "remote-probe")]
+            let loaded = if probe {
+                Policy::probe(&hex(&account_id), &binding.session_id, account_id)?
+            } else {
+                Policy::load_or_create(&hex(&account_id), &binding.session_id, account_id)?
+            };
+            #[cfg(not(feature = "remote-probe"))]
+            let loaded = {
+                let _ = probe;
+                Policy::load_or_create(&hex(&account_id), &binding.session_id, account_id)?
+            };
+            Some(loaded)
         };
-        #[cfg(not(feature = "remote-probe"))]
-        let (policy, identity) = {
-            let _ = probe;
-            Policy::load_or_create(&hex(&account_id), &binding.session_id, account_id)?
-        };
+        let (host_id, bundle) = retained
+            .or_else(|| {
+                loaded
+                    .as_ref()
+                    .map(|(p, _)| (p.host_id.clone(), p.bundle.clone()))
+            })
+            .ok_or("Remote identity unavailable.")?;
         auth.remote_request(
             reqwest::Method::POST,
             "/v1/remote/native/hosts",
-            Some(&json!({"hostId":policy.host_id,"name":"Lomi desktop","bundle":policy.bundle})),
+            Some(&json!({"hostId":host_id,"name":"Lomi desktop","bundle":bundle})),
         )
         .await?;
-        if auth.remote_binding()? != binding {
+        let current = auth.remote_binding()?;
+        if !current.same_authority(&binding) {
             return Err("Account session changed.".into());
         }
         {
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            core.binding = Some(binding);
-            core.policy = Some(policy);
-            core.identity = Some(identity);
+            if !core.activation_is_current(activation_revision, policy_revision)
+                || !self.healthy.load(Ordering::SeqCst)
+            {
+                return Err("Remote settings changed while connecting. Try again.".into());
+            }
+            core.binding = Some(current);
+            if let Some((policy, identity)) = loaded {
+                core.policy = Some(policy);
+                core.identity = Some(identity);
+            }
+            let terminals = app.state::<Terminals>();
+            if reset_activity {
+                terminals.activity.activate();
+            } else {
+                terminals.activity.restore();
+                if terminals.activity.is_idle(SystemTime::now()) {
+                    core.pause_idle();
+                    return Ok(());
+                }
+            }
             core.enabled = true;
+            core.paused = false;
             core.message = None;
             core.deadline = None;
         }
@@ -562,17 +916,25 @@ impl Remote {
         self.reconcile_workspaces(app)?;
         let auth = app.state::<AuthController>();
         let binding = auth.remote_binding()?;
-        let (host_id, shares, workspaces, policy_revision) = {
+        let (host_id, shares, workspaces, policy_revision, activation_revision) = {
             let core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            if core.binding.as_ref() != Some(&binding) || !self.healthy.load(Ordering::SeqCst) {
-                return Err("Remote authorization changed.".into());
+            if !self.healthy.load(Ordering::SeqCst) {
+                return Err("Remote is recovering terminal state. Try again shortly.".into());
+            }
+            if !core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
+                || !core.enabled
+            {
+                return Err("Remote connection is no longer active.".into());
             }
             let runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Terminal model unavailable.")?;
             (core.policy.as_ref().ok_or("Remote identity unavailable.")?.host_id.clone(),
-                core.shares.iter().filter_map(|id| runtime.sessions.get(id)).filter(|s| s.available).map(|s| json!({"id":s.id,"epoch":s.epoch,"label":s.label,"cols":s.cols,"rows":s.rows})).collect::<Vec<_>>(), core.policy.as_ref().ok_or("Remote identity unavailable.")?.workspaces.iter().filter(|w| w.shared && core.domain.revision > 0 && core.domain.workspaces.iter().any(|d| d.id == w.id)).enumerate().map(|(i,w)| json!({"id":w.id,"epoch":w.epoch,"revision":w.revision,"label":format!("Workspace {}",i+1),"permissions":"control","sessionIds":w.sessions.iter().map(|s| s.0.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),core.policy_revision)
+                core.shares.iter().filter_map(|id| runtime.sessions.get(id)).filter(|s| s.available).map(|s| json!({"id":s.id,"epoch":s.epoch,"label":s.label,"cols":s.cols,"rows":s.rows})).collect::<Vec<_>>(), core.policy.as_ref().ok_or("Remote identity unavailable.")?.workspaces.iter().filter(|w| w.shared && core.domain.revision > 0 && core.domain.workspaces.iter().any(|d| d.id == w.id)).enumerate().map(|(i,w)| json!({"id":w.id,"epoch":w.epoch,"revision":w.revision,"label":format!("Workspace {}",i+1),"permissions":"control","sessionIds":w.sessions.iter().map(|s| s.0.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),core.policy_revision,core.activation_revision)
         };
         auth.remote_request(
             reqwest::Method::POST,
@@ -607,26 +969,34 @@ impl Remote {
             .and_then(Value::as_str)
             .ok_or_else(|| "Invalid Remote deadline.".to_string())
             .and_then(parse_expiry)?;
+        let current = auth.remote_binding()?;
         if pairings.len() > 32
             || channels.len() > 64
             || grants.len() > 64
             || authorization <= now()
-            || auth.remote_binding()? != binding
+            || !current.same_authority(&binding)
         {
             return Err("Remote authorization expired.".into());
         }
         {
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            if core.binding.as_ref() != Some(&binding) || !core.enabled {
-                return Err("Remote authorization changed.".into());
+            if !core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
+                || !core.enabled
+                || core.activation_revision != activation_revision
+            {
+                return Err("Remote connection is no longer active.".into());
             }
             core.deadline = Some(
                 Instant::now()
                     + Duration::from_secs(
                         10.min(authorization - now())
-                            .min(binding.expires_at.saturating_sub(now())),
+                            .min(current.expires_at.saturating_sub(now())),
                     ),
             );
+            core.binding = Some(current);
             core.message = None;
             let pending_pairings: HashSet<String> = pairings
                 .iter()
@@ -654,7 +1024,7 @@ impl Remote {
                 }
             });
         }
-        self.update_workspace_grants(app).await?;
+        self.update_workspace_grants(app, grants).await?;
         for wire in channels {
             channel::start(self.clone(), app.clone(), wire.clone()).await?;
         }
@@ -673,7 +1043,10 @@ impl Remote {
         let binding = auth.remote_binding()?;
         let (signed, grant_id) = {
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            if core.binding.as_ref() != Some(&binding)
+            if !core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
                 || !core.deadline.is_some_and(|d| d > Instant::now())
             {
                 return Err("Remote authorization expired.".into());
@@ -921,6 +1294,25 @@ pub async fn remote_set_enabled(
     Ok(remote.state())
 }
 #[tauri::command]
+pub async fn remote_resume(
+    window: Window,
+    remote: State<'_, Remote>,
+) -> Result<RemoteState, String> {
+    if !matches!(window.label(), "main" | "settings") {
+        return Err("Untrusted Remote caller.".into());
+    }
+    remote.enable(window.app_handle(), true).await?;
+    Ok(remote.state())
+}
+#[tauri::command]
+pub fn remote_note_activity(window: Window, terminals: State<'_, Terminals>) -> Result<(), String> {
+    if !matches!(window.label(), "main" | "settings") {
+        return Err("Untrusted Remote caller.".into());
+    }
+    terminals.activity.record();
+    Ok(())
+}
+#[tauri::command]
 pub fn remote_share_session(
     window: Window,
     remote: State<'_, Remote>,
@@ -1052,6 +1444,52 @@ pub fn reopen_main_window(window: Window) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn idle_pause_retains_consent_and_fences_pending_activation() {
+        let (mut policy, grant) = fixture_grant();
+        policy.grants.push(grant.clone());
+        let binding = crate::auth::controller::RemoteBinding {
+            user_id: "account".into(),
+            session_id: "parent".into(),
+            expires_at: now() + 7200,
+            generation: 1,
+        };
+        let mut core = Core {
+            enabled: true,
+            policy: Some(policy),
+            binding: Some(binding.clone()),
+            deadline: Some(Instant::now() + Duration::from_secs(10)),
+            ..Core::default()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        core.channels.insert("active".into(), stop.clone());
+        core.shares.insert("session".into());
+        let operation = core.activation_revision;
+        let policy_revision = core.policy_revision;
+        core.pause_idle();
+        assert!(!core.enabled);
+        assert!(core.paused);
+        assert!(core.deadline.is_none());
+        assert!(stop.load(Ordering::SeqCst));
+        assert!(core.channels.is_empty());
+        assert!(core.shares.contains("session"));
+        assert_eq!(
+            core.policy.as_ref().unwrap().grants[0].approval,
+            grant.approval
+        );
+        assert_eq!(core.restore_binding.as_ref(), Some(&binding));
+        assert!(!core.activation_is_current(operation, policy_revision));
+        core.refresh_bound_authority(Some(crate::auth::controller::RemoteBinding {
+            expires_at: binding.expires_at + 7200,
+            ..binding
+        }));
+        assert!(core.paused);
+        assert!(!core.enabled);
+        let operation = core.activation_revision;
+        assert!(core.activation_is_current(operation, policy_revision));
+        core.policy_revision += 1;
+        assert!(!core.activation_is_current(operation, policy_revision));
+    }
     fn fixture_grant() -> (Policy, LocalGrant) {
         let (policy, host) = Policy::probe("account", "parent", [1; 16]).unwrap();
         let device =
@@ -1090,6 +1528,81 @@ mod tests {
         )
     }
     #[test]
+    fn binding_renewal_preserves_consent_channels_and_current_expiry() {
+        let (policy, _) = fixture_grant();
+        let binding = crate::auth::controller::RemoteBinding {
+            user_id: "account".into(),
+            session_id: "parent".into(),
+            expires_at: now() + 60,
+            generation: 1,
+        };
+        let mut core = Core {
+            enabled: true,
+            binding: Some(binding.clone()),
+            restore_binding: Some(binding.clone()),
+            policy: Some(policy),
+            deadline: Some(Instant::now() + Duration::from_secs(10)),
+            ..Core::default()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        core.channels.insert("channel".into(), stop.clone());
+        core.shares.insert("shared-session".into());
+        let renewed = crate::auth::controller::RemoteBinding {
+            expires_at: binding.expires_at + 120,
+            ..binding
+        };
+        let deadline = core.deadline;
+        core.refresh_bound_authority(Some(renewed.clone()));
+        assert!(core.enabled);
+        assert_eq!(core.binding.as_ref(), Some(&renewed));
+        assert_eq!(core.restore_binding.as_ref(), Some(&renewed));
+        assert!(core.policy.is_some());
+        assert!(core.shares.contains("shared-session"));
+        assert!(core.channels.contains_key("channel"));
+        assert!(!stop.load(Ordering::SeqCst));
+        assert_eq!(core.deadline, deadline);
+    }
+
+    #[test]
+    fn authority_changes_and_missing_live_authorization_stop_channels() {
+        let binding = crate::auth::controller::RemoteBinding {
+            user_id: "account".into(),
+            session_id: "parent".into(),
+            expires_at: now() + 60,
+            generation: 1,
+        };
+        for current in [
+            Some(crate::auth::controller::RemoteBinding {
+                user_id: "other".into(),
+                ..binding.clone()
+            }),
+            Some(crate::auth::controller::RemoteBinding {
+                session_id: "other".into(),
+                ..binding.clone()
+            }),
+            Some(crate::auth::controller::RemoteBinding {
+                generation: 2,
+                ..binding.clone()
+            }),
+            None,
+        ] {
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut core = Core {
+                enabled: true,
+                binding: Some(binding.clone()),
+                ..Core::default()
+            };
+            core.channels.insert("channel".into(), stop.clone());
+            core.shares.insert("shared-session".into());
+            core.refresh_bound_authority(current);
+            assert!(!core.enabled);
+            assert!(core.binding.is_none());
+            assert!(core.shares.is_empty());
+            assert!(stop.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
     fn account_switch_fences_old_credentials_and_preserves_domain_for_new_parent() {
         let (policy, _) = fixture_grant();
         let mut core = Core {
@@ -1099,6 +1612,7 @@ mod tests {
                 user_id: "old-account".into(),
                 session_id: "old-parent".into(),
                 expires_at: now() + 60,
+                generation: 1,
             }),
             ..Core::default()
         };
@@ -1119,6 +1633,7 @@ mod tests {
             user_id: "new-account".into(),
             session_id: "new-parent".into(),
             expires_at: now() + 60,
+            generation: 2,
         });
         assert_ne!(core.binding.as_ref().unwrap().session_id, "old-parent");
     }

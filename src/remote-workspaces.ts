@@ -108,7 +108,7 @@ export function useRemoteWorkspaces(
     if (!engine) {
       setError(
         native
-          ? "Remote sharing is not ready. Try again, or restart Lomi if this continues."
+          ? "Remote sharing is not ready. Try again shortly."
           : "Remote sharing requires the Lomi desktop app.",
       );
       return;
@@ -171,5 +171,19 @@ export function useRemoteWorkspaces(
       setBusy(undefined);
     }
   };
-  return { state, error, busy, share, available };
+  const resume = async () => {
+    if (!canShareRemotely(auth.current.current) || acting.current) return;
+    acting.current = true;
+    setBusy("resume");
+    setError("");
+    try {
+      accept.current(await api<RemoteState>("remote_resume"));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      acting.current = false;
+      setBusy(undefined);
+    }
+  };
+  return { state, error, busy, share, resume, available };
 }

@@ -2764,6 +2764,8 @@ export default function Workbench() {
             {remoteWorkspace?.shared && (
               <RemoteWorkspaceStatus
                 available={remoteWorkspaces.available}
+                paused={remoteWorkspaces.state?.paused}
+                resume={remoteWorkspaces.resume}
                 key={workspace.id}
                 workspace={workspace}
                 connectionMessage={

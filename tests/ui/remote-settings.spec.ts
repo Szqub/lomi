@@ -2,6 +2,51 @@ import { test, expect } from "@playwright/test";
 import { mockDesktop } from "./desktop";
 import { mockRemoteAccount } from "./remote-auth";
 
+test("settings can resume idle remote and user gestures record activity", async ({
+  page,
+}) => {
+  await mockDesktop(page, false);
+  await mockRemoteAccount(page);
+  await page.addInitScript(() => {
+    const desktop = window as any;
+    const state = {
+      qualified: true,
+      enabled: false,
+      paused: true,
+      online: false,
+      message: "Remote paused after an hour of inactivity.",
+      domainEpoch: null,
+      workspaces: [
+        { id: "workspace", shared: true, online: false, message: null },
+      ],
+      grants: [],
+    };
+    desktop.__remoteInvoke = async (command: string) => {
+      if (command === "remote_resume")
+        Object.assign(state, {
+          paused: false,
+          enabled: true,
+          online: true,
+          message: null,
+        });
+      return structuredClone(state);
+    };
+  });
+  await page.goto("/?window=settings&page=remote");
+  const resume = page.getByRole("button", {
+    name: "Resume remote",
+    exact: true,
+  });
+  await expect(resume).toBeVisible();
+  await resume.click();
+  await expect(resume).toHaveCount(0);
+  const commands = await page.evaluate(() =>
+    (window as any).__nativeTest.calls.map((c: any) => c.command),
+  );
+  expect(commands).toContain("remote_note_activity");
+  expect(commands).toContain("remote_resume");
+});
+
 test("Remote uses workspace sharing and keeps browser revocation without manual setup", async ({
   page,
 }, testInfo) => {

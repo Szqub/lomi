@@ -213,6 +213,14 @@ const SCRIPT: &str = r#"(() => {
   const send = signal => window.__TAURI_INTERNALS__.invoke('plugin:browser|signal', { signal }).catch(() => {});
   addEventListener('focus', () => send('focus'));
   addEventListener('pointerdown', () => send('focus'), true);
+  let lastActivity = -Infinity;
+  for (const type of ['pointerdown', 'pointermove', 'keydown', 'input', 'wheel']) {
+    addEventListener(type, event => {
+      if (!event.isTrusted || performance.now() - lastActivity < 1000) return;
+      lastActivity = performance.now();
+      send('activity');
+    }, { capture: true, passive: true });
+  }
   addEventListener('keydown', event => {
     if (!event.isTrusted || event.isComposing || event.altKey) return;
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
@@ -797,6 +805,7 @@ pub async fn browser_action(window: Window, id: String, action: Action) -> Resul
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Signal {
+    Activity,
     Focus,
     Address,
     Close,
@@ -843,6 +852,10 @@ pub async fn signal(webview: Webview, signal: Signal) -> Result<(), String> {
             .get(id)
             .is_none_or(|page| page.bounds.is_none())
         {
+            return Ok(());
+        }
+        if matches!(signal, Signal::Activity) {
+            app.state::<crate::terminal::Terminals>().activity.record();
             return Ok(());
         }
         if matches!(signal, Signal::Address | Signal::Find) {

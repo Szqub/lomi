@@ -46,6 +46,18 @@ export default function RemoteSettingsPage({
       setBusy(false);
     }
   };
+  const resume = async () => {
+    if (!available || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      setState(await api<RemoteState>("remote_resume"));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const sharedWorkspaces = state?.workspaces?.filter((w) => w.shared) ?? [];
   const connectedBrowsers =
     state?.grants?.filter((grant) => !grant.revoked) ?? [];
@@ -69,6 +81,16 @@ export default function RemoteSettingsPage({
       ) : (
         <>
           {state?.message && <SettingsNotice>{state.message}</SettingsNotice>}
+          {state?.paused && (
+            <button
+              type="button"
+              className="button"
+              disabled={!available || busy}
+              onClick={() => void resume()}
+            >
+              {busy ? "Resuming…" : "Resume remote"}
+            </button>
+          )}
           <SettingsSection
             title="Workspace access"
             description={
@@ -83,7 +105,9 @@ export default function RemoteSettingsPage({
           >
             <p className="settings-help">
               Terminal contents and input are encrypted between your devices.
-              Local typing immediately takes control back.
+              Local typing immediately takes control back. Remote pauses after
+              an hour without terminal data or activity in Lomi windows. Resume
+              it here or from the workspace.
             </p>
           </SettingsSection>
           <SettingsSection

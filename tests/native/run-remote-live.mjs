@@ -134,6 +134,8 @@ let browser,
   demoDeadline,
   seq = 0;
 const checks = [];
+const hasOutput = (screen, marker) =>
+  screen.split("\n").some((line) => line.trim() === marker);
 const wait = async (fn, timeout = 120000, allowCancelled = false) => {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -191,10 +193,40 @@ try {
   });
   context = await browser.newContext();
   page = await context.newPage();
-  await page.goto("http://127.0.0.1:4322");
+  page.on("pageerror", (error) =>
+    console.error("Browser error:", error.message),
+  );
+  const relaySockets = [];
+  page.on("response", (response) => {
+    if (response.status() >= 400)
+      console.error(
+        "Browser response:",
+        response.status(),
+        new URL(response.url()).pathname,
+      );
+  });
+  page.on("requestfailed", (request) =>
+    console.error(
+      "Browser request failed:",
+      new URL(request.url()).pathname,
+      request.failure()?.errorText,
+    ),
+  );
+  page.on("websocket", (socket) => {
+    if (socket.url().includes("/v1/relay")) {
+      const record = { closed: false };
+      relaySockets.push(record);
+      socket.on("close", () => {
+        record.closed = true;
+      });
+    }
+  });
+  await page.goto("http://127.0.0.1:4322/?auth=cancelled");
   await page.getByRole("link", { name: "Continue with Lomi" }).waitFor();
   assert.equal(
-    await page.getByRole("button", { name: "Workspaces", exact: true }).count(),
+    await page
+      .getByRole("navigation", { name: "Shared workspaces", exact: true })
+      .count(),
     0,
   );
   checks.push("unauthenticated browser exposes login only");
@@ -207,8 +239,10 @@ try {
       sameSite: "Lax",
     },
   ]);
-  await page.reload();
-  await page.getByRole("button", { name: "Workspaces", exact: true }).waitFor();
+  await page.goto("http://127.0.0.1:4322/");
+  await page
+    .getByRole("navigation", { name: "Shared workspaces", exact: true })
+    .waitFor();
   if (manual) {
     await writeFile(
       join(directory, "demo-ready.json"),
@@ -227,8 +261,8 @@ try {
         expiresAt: fixture.desktopExpiresAt,
         instructions: [
           "The visible browser and isolated Lomi desktop use the same local test account.",
-          "Desktop: right-click Remote test workspace → Share remotely.",
-          "Browser: Workspaces → Open workspace; all three terminals are available automatically.",
+          "Desktop: right-click Remote test workspace → Share remotely, then confirm.",
+          "Browser: choose Remote test workspace in the sidebar; all three terminal panes follow the workspace layout.",
           "New terminal panes join the shared workspace automatically; Stop sharing removes browser access.",
           "Close the desktop window to test background sessions; use the Dock to reopen it.",
           "Press Ctrl+C in this terminal to stop the local demo.",
@@ -262,16 +296,18 @@ try {
         (w) => w.id === workspace.id && w.shared && w.online,
       );
     }, 30000);
-    const response = await page.request.get(
-      "http://127.0.0.1:4322/v1/remote/workspaces",
-      {
-        headers: { "X-Lomi-Request": "1" },
-      },
-    );
-    const publicWorkspaces = (await response.json()).workspaces;
-    const published = publicWorkspaces.find(
-      (w) => w.id === workspace.id && w.hostId === state.remote.hostId,
-    );
+    let publicWorkspaces;
+    const published = await wait(async () => {
+      const response = await page.request.get(
+        "http://127.0.0.1:4322/v1/remote/workspaces",
+        { headers: { "X-Lomi-Request": "1" } },
+      );
+      assert.equal(response.ok(), true);
+      publicWorkspaces = (await response.json()).workspaces;
+      return publicWorkspaces.find(
+        (w) => w.id === workspace.id && w.hostId === state.remote.hostId,
+      );
+    }, 30000);
     assert.ok(
       published,
       "Native shared workspace is discoverable by the same account",
@@ -297,91 +333,240 @@ try {
     checks.push(
       "unshared workspace excluded and cloud inventory contains no private names or paths",
     );
-    const card = page
-      .locator(".resource-list li")
-      .filter({ hasText: workspace.name });
-    await card.getByRole("button", { name: "Open", exact: true }).click();
-    await page.getByRole("group", { name: "Workspace terminals" }).waitFor();
-    assert.equal(await page.locator(".terminal-tabs button").count(), 3);
+    const card = page.getByRole("link", { name: workspace.name, exact: true });
+    const terminalPanel = page.locator(".terminal-panel").first();
+    await card.click();
+    await page.getByRole("tabpanel").waitFor();
+    assert.equal(await page.locator(".terminal-tabs button").count(), 2);
     assert.equal(
       await page.getByText("Full pairing fingerprint", { exact: true }).count(),
       0,
     );
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^In control$/ })
       .waitFor();
     await wait(
       async () =>
-        await page
+        await terminalPanel
           .locator(".xterm-screen")
           .innerText()
-          .then((v) => v.includes("LOMI_NATIVE_REMOTE_READY"))
+          .then((v) => hasOutput(v, "LOMI_NATIVE_REMOTE_READY"))
           .catch(() => false),
       30000,
     );
     checks.push(
       "automatic account enrollment and encrypted native snapshot without token exchange",
     );
-    const input = page.locator(".xterm-helper-textarea");
+    const input = terminalPanel.locator(".xterm-helper-textarea");
+    const activateTerminal = async (marker) => {
+      await wait(
+        async () =>
+          hasOutput(
+            await terminalPanel.locator(".xterm-screen").innerText(),
+            "LOMI_NATIVE_REMOTE_READY",
+          ),
+        30000,
+      );
+      await input.focus();
+      await page.keyboard.insertText(`printf '${marker}\\n'`);
+      await page.keyboard.press("Enter");
+      await wait(
+        async () =>
+          hasOutput(
+            await terminalPanel.locator(".xterm-screen").innerText(),
+            marker,
+          ),
+        30000,
+      );
+      await terminalPanel
+        .getByRole("status")
+        .filter({ hasText: /^In control$/ })
+        .waitFor();
+    };
     await input.waitFor({ state: "attached" });
     await input.focus();
-    await page.keyboard.type("printf 'LOMI_BROWSER_INPUT_OK\\n'");
+    await page.keyboard.insertText("printf 'LOMI_BROWSER_INPUT_OK\\n'");
     await page.keyboard.press("Enter");
     await wait(
       async () =>
-        await page
+        await terminalPanel
           .locator(".xterm-screen")
           .innerText()
-          .then((v) => v.includes("LOMI_BROWSER_INPUT_OK"))
+          .then((v) => hasOutput(v, "LOMI_BROWSER_INPUT_OK"))
           .catch(() => false),
       30000,
     );
     checks.push("leased browser input writes real native PTY");
+    const reconnectTerminal = async (previousSockets) => {
+      await wait(async () => {
+        const reconnect = page.getByRole("button", {
+          name: "Reconnect",
+          exact: true,
+        });
+        if (await reconnect.isVisible().catch(() => false))
+          await reconnect.click();
+        return (
+          relaySockets.length > previousSockets &&
+          (await terminalPanel
+            .getByRole("status")
+            .filter({ hasText: /^(Observing|In control)$/ })
+            .isVisible()
+            .catch(() => false))
+        );
+      }, 30000);
+      await wait(
+        async () =>
+          hasOutput(
+            await terminalPanel.locator(".xterm-screen").innerText(),
+            "LOMI_NATIVE_REMOTE_READY",
+          ),
+        30000,
+      );
+    };
+    const originalSessions = (await command("inspect")).remote.sessions.map(
+      (s) => ({ id: s.id, epoch: s.epoch }),
+    );
+    for (let cycle = 1; cycle <= 2; cycle++) {
+      const socketCount = relaySockets.length;
+      const paused = await command("idle-hour");
+      assert.equal(paused.remote.paused, true);
+      assert.equal(paused.remote.enabled, false);
+      assert.equal(
+        paused.remote.workspaces.find((w) => w.id === workspace.id).shared,
+        true,
+      );
+      assert.deepEqual(
+        paused.remote.sessions.map((s) => ({ id: s.id, epoch: s.epoch })),
+        originalSessions,
+      );
+      await wait(
+        async () => relaySockets.slice(0, socketCount).every((s) => s.closed),
+        15000,
+      );
+      await command("local-input", {
+        data: `printf 'LOMI_LOCAL_PAUSED_${cycle}\\n'\n`,
+      });
+      assert.equal((await command("inspect")).remote.paused, true);
+      const resumed = await command("resume");
+      assert.equal(resumed.remote.paused, false);
+      assert.equal(resumed.remote.enabled, true);
+      await reconnectTerminal(socketCount);
+      await input.focus();
+      await page.keyboard.insertText(
+        `printf 'LOMI_BROWSER_RESUMED_${cycle}\\n'`,
+      );
+      await page.keyboard.press("Enter");
+      await wait(async () => {
+        const screen = await terminalPanel.locator(".xterm-screen").innerText();
+        return (
+          hasOutput(screen, `LOMI_LOCAL_PAUSED_${cycle}`) &&
+          hasOutput(screen, `LOMI_BROWSER_RESUMED_${cycle}`)
+        );
+      }, 30000);
+      await terminalPanel
+        .getByRole("status")
+        .filter({ hasText: /^In control$/ })
+        .waitFor();
+      assert.deepEqual(
+        (await command("inspect")).remote.sessions.map((s) => ({
+          id: s.id,
+          epoch: s.epoch,
+        })),
+        originalSessions,
+      );
+    }
+    checks.push(
+      "two idle-hour pauses close real relay sockets, retain workspace consent and PTYs, and public Resume restores encrypted input without desktop restart",
+    );
+    const exactBefore = await command("snapshot");
+    const helperSocketCount = relaySockets.length;
+    assert.equal((await command("helper-fault")).faultDetected, true);
+    await wait(
+      async () =>
+        relaySockets.slice(0, helperSocketCount).every((s) => s.closed),
+      15000,
+    );
+    const exactAfter = await wait(
+      async () => command("snapshot").catch(() => null),
+      30000,
+    );
+    assert.deepEqual(
+      exactAfter,
+      exactBefore,
+      "Helper restoration preserves exact terminal state and watermark without replaying bytes",
+    );
+    assert.deepEqual(
+      (await command("inspect")).remote.sessions.map((s) => ({
+        id: s.id,
+        epoch: s.epoch,
+      })),
+      originalSessions,
+    );
+    await reconnectTerminal(helperSocketCount);
+    await input.focus();
+    await page.keyboard.insertText("printf 'LOMI_BROWSER_HELPER_RECOVERED\\n'");
+    await page.keyboard.press("Enter");
+    await wait(
+      async () =>
+        hasOutput(
+          await terminalPanel.locator(".xterm-screen").innerText(),
+          "LOMI_BROWSER_HELPER_RECOVERED",
+        ),
+      30000,
+    );
+    checks.push(
+      "real helper child failure fences old encrypted sockets, restores exact snapshot/watermark in the same epoch, and accepts input over a new encrypted connection",
+    );
     await command("ui-terminal-action", { action: "new-tab" });
     await wait(
-      async () => (await page.locator(".terminal-tabs button").count()) === 4,
+      async () => (await page.locator(".terminal-tabs button").count()) === 3,
       30000,
     );
-    await page
-      .locator(".terminal-status")
-      .filter({ hasText: "Observing. Input is disabled." })
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^Observing$/ })
       .waitFor();
-    await page
-      .getByRole("button", { name: "Take control", exact: true })
-      .click();
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
-      .waitFor();
+    await activateTerminal("LOMI_SCOPE_NEW_TAB");
     await command("ui-terminal-action", { action: "split" });
     await wait(
-      async () => (await page.locator(".terminal-tabs button").count()) === 5,
+      async () =>
+        (await command("inspect")).remote.sessions.filter((s) => s.available)
+          .length === 5,
       30000,
     );
-    await page
-      .locator(".terminal-status")
-      .filter({ hasText: "Observing. Input is disabled." })
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^Observing$/ })
       .waitFor();
-    await page
-      .getByRole("button", { name: "Take control", exact: true })
-      .click();
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
+    await activateTerminal("LOMI_SCOPE_SPLIT");
+    await page.locator(".terminal-tabs button").nth(2).click();
+    await wait(
+      async () => (await page.locator(".terminal-panel").count()) === 2,
+      30000,
+    );
+    assert.equal(await page.locator(".terminal-tabs button").count(), 3);
+    await page.locator(".terminal-tabs button").first().click();
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^In control$/ })
       .waitFor();
     checks.push(
-      "new terminal tab and split update signed scope, reconnect observing, and accept explicit control",
+      "new terminal tab and split update signed scope, reconnect observing, and accept terminal activation control",
     );
     const selectedUrl = page.url();
     await page.reload();
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^In control$/ })
       .waitFor();
     assert.equal(page.url(), selectedUrl);
     await wait(
       async () =>
-        await page
+        await terminalPanel
           .locator(".xterm-screen")
           .innerText()
-          .then((v) => v.includes("LOMI_BROWSER_INPUT_OK"))
+          .then((v) => hasOutput(v, "LOMI_BROWSER_INPUT_OK"))
           .catch(() => false),
       30000,
     );
@@ -391,14 +576,14 @@ try {
     await command("close-window");
     await wait(async () => !(await command("inspect")).windowVisible, 10000);
     await input.focus();
-    await page.keyboard.type("printf 'LOMI_HIDDEN_NATIVE_OK\\n'");
+    await page.keyboard.insertText("printf 'LOMI_HIDDEN_NATIVE_OK\\n'");
     await page.keyboard.press("Enter");
     await wait(
       async () =>
-        await page
+        await terminalPanel
           .locator(".xterm-screen")
           .innerText()
-          .then((v) => v.includes("LOMI_HIDDEN_NATIVE_OK"))
+          .then((v) => hasOutput(v, "LOMI_HIDDEN_NATIVE_OK"))
           .catch(() => false),
       30000,
     );
@@ -408,24 +593,26 @@ try {
     await command("local-input", { data: "printf 'LOMI_LOCAL_PRIORITY\\n'\n" });
     await wait(
       async () =>
-        await page.getByRole("button", { name: "Take control" }).isVisible(),
+        await terminalPanel
+          .getByRole("status")
+          .filter({ hasText: /^Observing$/ })
+          .isVisible(),
       15000,
     );
     checks.push("local human input invalidates remote lease");
-    await page.getByRole("button", { name: "Activity", exact: true }).click();
-    await page.getByRole("button", { name: "Workspaces", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Collapse sidebar", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Expand sidebar", exact: true })
+      .click();
     assert.equal(
       await page.getByRole("region", { name: "Shared terminal" }).count(),
       1,
     );
-    checks.push("navigation retains connected terminal");
+    checks.push("sidebar navigation retains connected terminal");
     await command("reopen-window");
-    await page
-      .getByRole("button", { name: "Take control", exact: true })
-      .click();
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
-      .waitFor();
+    await activateTerminal("LOMI_LOCAL_RECLAIM");
     await command("ui-workspace-action", {
       workspaceId: workspace.id,
       action: "stop",
@@ -438,8 +625,9 @@ try {
     }, 10000);
     await wait(
       async () =>
-        !(await page
-          .getByRole("button", { name: "Renew control", exact: true })
+        !(await terminalPanel
+          .getByRole("status")
+          .filter({ hasText: /^In control$/ })
           .count()),
       15000,
     );
@@ -468,11 +656,13 @@ try {
       workspaceId: workspace.id,
       action: "share",
     });
-    await card.getByRole("button", { name: "Open", exact: true }).click();
-    await page
-      .getByRole("button", { name: "Renew control", exact: true })
+    await card.click();
+    await terminalPanel
+      .getByRole("status")
+      .filter({ hasText: /^(Observing|In control)$/ })
       .waitFor();
-    assert.equal(await page.locator(".terminal-tabs button").count(), 5);
+    await activateTerminal("LOMI_RESHARED_INPUT");
+    assert.equal(await page.locator(".terminal-tabs button").count(), 3);
     checks.push(
       "re-sharing enrolls a fresh scope automatically without refreshing the browser",
     );
@@ -488,7 +678,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     assert.equal(
       await page
-        .getByRole("button", { name: "Renew control", exact: true })
+        .getByRole("status")
+        .filter({ hasText: /^In control$/ })
         .count(),
       0,
     );

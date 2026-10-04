@@ -1,5 +1,25 @@
 # Test workspace Remote locally
 
+Remote remains enabled while any desktop terminal produces data or receives
+input, or the user interacts with a Lomi window (including browser panels).
+Network heartbeats, account checks and rendering do not reset the activity timer.
+After more than one hour without activity across all windows and terminals,
+Remote pauses and closes its channels. Local terminals and workspace consent
+remain intact. **Resume remote** in the workspace footer or Remote settings
+reconnects without restarting Lomi. Explicitly stopping workspace sharing still
+revokes that workspace's access, including while paused.
+
+Active native approvals renew with identical scope before their deadline. Mobile
+refresh and browser identity checks renew bounded account sessions. Deploy the
+matching desktop, mobile, standalone `remote-web` and `auth-app` changes together;
+the database owner must apply `auth-app/ops/remote-database-permissions.sql` so the
+private exchange role can update validity deadlines without reading source tokens.
+
+The terminal helper restores its checkpoint and ordered journal after failure.
+If an individual terminal exceeds the bounded recovery budget, its remote model
+becomes unavailable rather than publishing incomplete terminal state. Local
+terminal output continues, and other terminal models recover independently.
+
 The local demo runs on macOS ARM64 with a genuine isolated test account, retained
 native terminals, PostgreSQL, the account API and the browser's release WASM
 crypto. It supplies test login sessions; interactive GitHub OAuth is a separate
@@ -38,7 +58,7 @@ use the same account. A separate browser must log in before discovering Remote.
 4. Refresh the browser. It enrolls a fresh ephemeral browser identity, discovers
    the workspace and reconnects with a fresh terminal snapshot.
 5. Close the desktop window and continue in the browser. Reopen Lomi from the Dock.
-   Local typing takes control back; **Take control** in the browser requests it again.
+   Local typing takes control back; activating the browser terminal requests it again.
 6. Right-click the workspace and choose **Stop sharing**. Browser access closes;
    local terminals continue running.
 
@@ -56,8 +76,8 @@ also 32. Increasing the observer budget or introducing on-demand state bootstrap
 requires separate terminal-state qualification.
 
 Established channels reconnect in observing mode with fresh keys and snapshots.
-Request control explicitly after a connection or workspace scope change; automatic
-renewal never restores a lease preempted by local typing. Unconfirmed input
+Activate a terminal to request control after a connection or workspace scope
+change; automatic renewal never restores a lease preempted by local typing. Unconfirmed input
 is never replayed. An explicitly revoked browser enrollment does not silently
 regain access during the same page lifetime.
 
@@ -103,7 +123,21 @@ pnpm test:remote:native
 ```
 
 The automated native/browser check uses desktop port `1449`. Its receipt records
-only checks actually completed. The completed local 0.5.2 run passed 15 checks. Release 0.5.3 also passed the
+only checks actually completed. The lifecycle regression advances the activity
+clock past one hour through a debug-only probe; it does not wait for a physical
+hour. Two pause/resume cycles must close the existing relay sockets, retain
+workspace consent and native terminal identities, and accept encrypted browser
+input through the public Resume command in the same desktop process. Local
+input while paused must continue working without automatically resuming Remote.
+
+The helper recovery check kills the actual terminal helper child. It compares
+the restored snapshot and sequence exactly, checks that terminal epochs stay
+unchanged, and requires encrypted input over a replacement connection. These
+probes require `remote-probe` and isolated fixture app data; release builds reject
+qualification features.
+
+The current macOS ARM64 lifecycle regression passed all 17 checks, including
+both accelerated idle/resume cycles and recovery after killing the real helper. Release 0.5.3 also passed the
 public staging and production runs, with 12 checks each. Signed release artifact
 verification and production backup restoration are recorded separately in the
 workspace rollout evidence.

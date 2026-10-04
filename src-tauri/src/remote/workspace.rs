@@ -416,7 +416,7 @@ pub async fn remote_share_workspace(
     {
         #[cfg(feature = "remote-probe")]
         if window.state::<AuthController>().remote_environment()? == "development" {
-            remote.enable_inner(window.app_handle(), true).await?;
+            remote.enable_inner(window.app_handle(), true, true).await?;
         } else {
             remote.enable(window.app_handle(), true).await?;
         }
@@ -503,6 +503,43 @@ pub async fn remote_share_workspace(
         }
         core.policy_revision = core.policy_revision.wrapping_add(1);
     }
+    // Unsharing is a durable consent change even while Remote is paused. It
+    // must not enter the active publication/readiness path or resume sharing.
+    let inactive_revocations = {
+        let core = remote.core.lock().map_err(|_| "Remote unavailable.")?;
+        (!shared && !core.enabled).then(|| {
+            core.policy
+                .as_ref()
+                .map(|policy| {
+                    policy
+                        .grants
+                        .iter()
+                        .filter(|grant| {
+                            grant.revoked
+                                && grant.approval.approval.workspace_id
+                                    == uuid_bytes(&workspace_id).ok()
+                        })
+                        .map(|grant| grant.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    };
+    if let Some(grants) = inactive_revocations {
+        for id in grants {
+            // Local revocation already succeeded. Cloud retirement is best
+            // effort while paused, and the next activation republishes scope.
+            let _ = window
+                .state::<AuthController>()
+                .remote_request(
+                    reqwest::Method::POST,
+                    &format!("/v1/remote/native/grants/{id}/revoke"),
+                    Some(&json!({})),
+                )
+                .await;
+        }
+        return Ok(remote.state());
+    }
     for _ in 0..50 {
         remote.reconcile_workspaces(window.app_handle())?;
         let ready = {
@@ -549,6 +586,15 @@ mod tests {
             first: Box::new(first),
             second: Box::new(second),
         }
+    }
+    #[test]
+    fn renewal_is_proactive_and_capped_by_both_current_owners() {
+        assert_eq!(renewal_expiry(1301, 100000, 100000, 1000), None);
+        assert_eq!(renewal_expiry(1300, 100000, 100000, 1000), Some(44200));
+        assert_eq!(renewal_expiry(1300, 2000, 3000, 1000), Some(2000));
+        assert_eq!(renewal_expiry(1300, 3000, 2000, 1000), Some(2000));
+        assert_eq!(renewal_expiry(1300, 1300, 3000, 1000), None);
+        assert_eq!(renewal_expiry(1300, 1200, 3000, 1000), None);
     }
     #[test]
     fn tab_layouts_validate_membership_bounds_and_legacy_metadata() {
@@ -828,12 +874,17 @@ impl Remote {
     pub(super) async fn update_workspace_grants(
         &self,
         app: &tauri::AppHandle,
+        cloud_grants: &[Value],
     ) -> Result<(), String> {
         let auth = app.state::<AuthController>();
         let binding = auth.remote_binding()?;
         let updates = {
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            if core.binding.as_ref() != Some(&binding) {
+            if !core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
+            {
                 return Err("Account session changed.".into());
             }
             core.prune_inactive_grants()?;
@@ -853,10 +904,22 @@ impl Remote {
                 }) else {
                     continue;
                 };
-                if a.revision == w.revision && g.confirmed {
+                let cap = cloud_grants
+                    .iter()
+                    .find(|cloud| cloud.get("id").and_then(Value::as_str) == Some(g.id.as_str()))
+                    .and_then(|cloud| cloud.get("maxApprovalExpiresAt"))
+                    .and_then(Value::as_str)
+                    .and_then(|value| parse_expiry(value).ok());
+                let renewal = a.revision == w.revision && g.confirmed;
+                let expiry = cap
+                    .and_then(|cap| renewal_expiry(a.expires_at, cap, binding.expires_at, now()));
+                if renewal && expiry.is_none() {
                     continue;
                 }
                 let mut next = a.clone();
+                if renewal {
+                    next.expires_at = expiry.ok_or("Missing grant owner deadline.")?;
+                }
                 next.revision = w.revision;
                 next.session_ids = w
                     .sessions
@@ -971,8 +1034,9 @@ impl Remote {
             let policy = core.policy.as_mut().ok_or("Remote identity unavailable.")?;
             for (id, pairing_id, device_bundle, signed) in &updates {
                 if let Some(g) = policy.grants.iter_mut().find(|g| &g.id == id) {
-                    g.approval = signed.clone();
-                    g.confirmed = false;
+                    // Keep the previously confirmed authority in secure storage
+                    // until a pure expiry renewal has actually been published.
+                    stage_grant_update(g, signed);
                 } else {
                     if policy.grants.len() >= 32 {
                         return Err("Remote device budget exceeded.".into());
@@ -1023,7 +1087,11 @@ impl Remote {
                 }
             }
             let mut core = self.core.lock().map_err(|_| "Remote unavailable.")?;
-            if core.binding.as_ref() != Some(&binding) {
+            if !core
+                .binding
+                .as_ref()
+                .is_some_and(|b| b.same_authority(&binding))
+            {
                 return Err("Account session changed.".into());
             }
             let policy = core.policy.as_mut().ok_or("Remote identity unavailable.")?;
@@ -1036,11 +1104,19 @@ impl Remote {
             let g = policy
                 .grants
                 .iter_mut()
-                .find(|g| g.id == id && !g.revoked && g.approval == signed)
+                .find(|g| {
+                    g.id == id
+                        && !g.revoked
+                        && (g.approval == signed
+                            || (g.confirmed
+                                && same_approval_scope(&g.approval.approval, &signed.approval)
+                                && signed.approval.expires_at > g.approval.approval.expires_at))
+                })
                 .ok_or("Local workspace permission changed.")?;
             if !current {
                 return Err("Workspace membership changed during publication.".into());
             }
+            g.approval = signed;
             g.confirmed = true;
             g.pairing_id = None;
             if let Err(error) = policy.save() {
@@ -1136,4 +1212,26 @@ pub(super) fn workspace_unavailable(
         .filter_map(|t| t.session_id.as_ref())
         .filter_map(|id| runtime.sessions.get(id))
         .find_map(|s| s.unavailable_reason.map(str::to_owned))
+}
+
+/// Exact signed authority, excluding only its renewable deadline.
+pub(super) fn same_approval_scope(old: &PeerApproval, next: &PeerApproval) -> bool {
+    if old.version != 2 || next.version != 2 {
+        return false;
+    }
+    let mut normalized = next.clone();
+    normalized.expires_at = old.expires_at;
+    old == &normalized
+}
+
+pub(super) fn stage_grant_update(grant: &mut LocalGrant, signed: &SignedPeerApproval) {
+    if !grant.confirmed || !same_approval_scope(&grant.approval.approval, &signed.approval) {
+        grant.approval = signed.clone();
+        grant.confirmed = false;
+    }
+}
+
+fn renewal_expiry(current: u64, owner: u64, native: u64, timestamp: u64) -> Option<u64> {
+    let next = owner.min(native).min(timestamp.saturating_add(12 * 3600));
+    (current <= timestamp.saturating_add(300) && next > current).then_some(next)
 }

@@ -46,6 +46,8 @@ struct Session {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     flow: Mutex<Flow>,
+    // Serializes Remote producers and records the final Exit boundary.
+    remote_events: Arc<Mutex<bool>>,
     ready: Condvar,
     pid: Option<u32>,
     profile: Profile,
@@ -62,6 +64,35 @@ impl Drop for HumanInputGuard {
 }
 
 impl Session {
+    fn resize(&self, id: String, size: PtySize, sink: Option<RemoteSink>) -> Result<(), String> {
+        let remote_closed = self
+            .remote_events
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if *remote_closed {
+            return Err("Terminal closed.".into());
+        }
+        {
+            let flow = self.flow.lock().map_err(|error| error.to_string())?;
+            if flow.closed {
+                return Err("Terminal closed.".into());
+            }
+            self.master
+                .lock()
+                .map_err(|error| error.to_string())?
+                .resize(size)
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(sink) = sink {
+            sink.send(RemoteTerminalEvent::Resize {
+                id,
+                cols: size.cols,
+                rows: size.rows,
+            });
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     fn control(&self) -> Option<Arc<Mutex<TerminalControl>>> {
         self.flow.lock().ok().and_then(|f| f.control.clone())
@@ -238,17 +269,153 @@ pub(crate) enum RemoteTerminalEvent {
     Exit { id: String, code: Option<u32> },
 }
 
+pub(crate) struct RemoteObservedEvent {
+    pub event: RemoteTerminalEvent,
+    pub generation: u64,
+}
+
+#[derive(Default)]
+struct RemoteObservationState {
+    next_generation: u64,
+    sessions: HashMap<String, RemoteObservationSession>,
+}
+struct RemoteObservationSession {
+    generation: u64,
+    lost: bool,
+    exited: bool,
+    dimensions: Option<(u16, u16)>,
+}
+#[derive(Clone, Default)]
+pub(crate) struct RemoteObserver {
+    state: Arc<Mutex<RemoteObservationState>>,
+}
+type RemoteSessionObservation = (String, u64, bool, bool, Option<(u16, u16)>);
+
+impl RemoteObserver {
+    pub(crate) fn sessions(&self) -> Vec<RemoteSessionObservation> {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .sessions
+                    .iter()
+                    .map(|(id, s)| (id.clone(), s.generation, s.lost, s.exited, s.dimensions))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    pub(crate) fn current(&self, event: &RemoteObservedEvent) -> Option<bool> {
+        self.current_generation(event.event.session_id(), event.generation)
+    }
+    pub(crate) fn current_generation(&self, id: &str, generation: u64) -> Option<bool> {
+        self.state
+            .lock()
+            .ok()?
+            .sessions
+            .get(id)
+            .filter(|s| s.generation == generation)
+            .map(|s| s.lost)
+    }
+    pub(crate) fn retire(&self, id: &str, generation: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            if state
+                .sessions
+                .get(id)
+                .is_some_and(|s| s.generation == generation)
+            {
+                state.sessions.remove(id);
+            }
+        }
+    }
+}
+impl RemoteTerminalEvent {
+    pub(crate) fn session_id(&self) -> &str {
+        match self {
+            Self::Start { id, .. }
+            | Self::Output { id, .. }
+            | Self::Resize { id, .. }
+            | Self::Exit { id, .. } => id,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct RemoteSink {
-    sender: SyncSender<RemoteTerminalEvent>,
+    sender: SyncSender<RemoteObservedEvent>,
     healthy: Arc<std::sync::atomic::AtomicBool>,
+    observer: RemoteObserver,
+    activity: crate::remote::activity::Activity,
 }
 
 impl RemoteSink {
     fn send(&self, event: RemoteTerminalEvent) {
-        if self.sender.try_send(event).is_err() {
-            // Losing any byte invalidates the independent terminal model.
-            self.healthy.store(false, Ordering::SeqCst);
+        if !matches!(&event, RemoteTerminalEvent::Output { data, .. } if data.is_empty()) {
+            self.activity.record();
+        }
+        let id = event.session_id().to_owned();
+        let generation = {
+            let Ok(mut state) = self.observer.state.lock() else {
+                self.healthy.store(false, Ordering::SeqCst);
+                return;
+            };
+            if matches!(&event, RemoteTerminalEvent::Start { .. })
+                || !state.sessions.contains_key(&id)
+            {
+                state.next_generation += 1;
+                let generation = state.next_generation;
+                let dimensions = match &event {
+                    RemoteTerminalEvent::Start { cols, rows, .. } => Some((*cols, *rows)),
+                    _ => None,
+                };
+                state.sessions.insert(
+                    id.clone(),
+                    RemoteObservationSession {
+                        generation,
+                        lost: false,
+                        exited: false,
+                        dimensions,
+                    },
+                );
+            }
+            let session = state.sessions.get_mut(&id).unwrap();
+            if session.lost {
+                if matches!(&event, RemoteTerminalEvent::Exit { .. }) {
+                    session.exited = true;
+                }
+                return;
+            }
+            session.generation
+        };
+        let exited = matches!(&event, RemoteTerminalEvent::Exit { .. });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let mut observed = RemoteObservedEvent { event, generation };
+        loop {
+            match self.sender.try_send(observed) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.healthy.store(false, Ordering::SeqCst);
+                    return;
+                }
+                Err(mpsc::TrySendError::Full(event)) => observed = event,
+            }
+            if std::time::Instant::now() >= deadline {
+                // Local PTY readers must keep draining even when the helper can
+                // never restart. Only this terminal's Remote model loses fidelity.
+                if let Ok(mut state) = self.observer.state.lock() {
+                    if let Some(session) = state
+                        .sessions
+                        .get_mut(&id)
+                        .filter(|s| s.generation == generation)
+                    {
+                        session.lost = true;
+                        session.exited = exited;
+                    }
+                } else {
+                    self.healthy.store(false, Ordering::SeqCst);
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 }
@@ -270,6 +437,7 @@ pub(crate) struct RemoteReceipt {
 pub struct Terminals {
     sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
     remote_sink: Arc<Mutex<Option<RemoteSink>>>,
+    pub(crate) activity: crate::remote::activity::Activity,
 }
 
 #[derive(Clone)]
@@ -335,8 +503,9 @@ impl Terminals {
         &self,
     ) -> Result<
         (
-            Receiver<RemoteTerminalEvent>,
+            Receiver<RemoteObservedEvent>,
             Arc<std::sync::atomic::AtomicBool>,
+            RemoteObserver,
         ),
         String,
     > {
@@ -355,11 +524,14 @@ impl Terminals {
         }
         let (sender, receiver) = mpsc::sync_channel(256);
         let healthy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let observer = RemoteObserver::default();
         *slot = Some(RemoteSink {
             sender,
+            observer: observer.clone(),
             healthy: healthy.clone(),
+            activity: self.activity.clone(),
         });
-        Ok((receiver, healthy))
+        Ok((receiver, healthy, observer))
     }
 
     pub(crate) fn remote_claim(&self, id: &str, owner: &str, lease_id: &str) -> Result<(), String> {
@@ -525,7 +697,7 @@ impl Terminals {
         let Ok(fd) = session.control_fd() else {
             return rejected();
         };
-        match terminal_io::write(fd, data, Duration::from_secs(2), allowed) {
+        let receipt = match terminal_io::write(fd, data, Duration::from_secs(2), allowed) {
             Ok(written) => RemoteReceipt {
                 written,
                 status: "accepted",
@@ -538,7 +710,11 @@ impl Terminals {
                     "partial"
                 },
             },
+        };
+        if receipt.written > 0 {
+            self.activity.record();
         }
+        receipt
     }
 
     #[cfg(not(unix))]
@@ -757,11 +933,16 @@ impl Terminals {
                 control,
                 ..Flow::default()
             }),
+            remote_events: Arc::new(Mutex::new(false)),
             ready: Condvar::new(),
             human_generation: AtomicU64::new(0),
             human_waiters: AtomicUsize::new(0),
             remote_lease: Mutex::new(None),
         });
+        // Remote producers serialize separately from Flow so queue backpressure
+        // cannot block local input, acknowledgements or terminal shutdown.
+        let remote_events = session.remote_events.clone();
+        let remote_order = remote_events.lock().map_err(|error| error.to_string())?;
         {
             let mut sessions = self.sessions.lock().map_err(|error| error.to_string())?;
             if sessions.contains_key(&request.id) {
@@ -780,6 +961,7 @@ impl Terminals {
                 rows: request.rows,
             });
         }
+        drop(remote_order);
         let sessions = Arc::downgrade(&self.sessions);
         thread::spawn(move || {
             let mut buffer = [0_u8; 16 * 1024];
@@ -816,6 +998,9 @@ impl Terminals {
                     Ok(0) | Err(_) => break,
                     Ok(length) => length,
                 };
+                let remote_order = remote_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 {
                     let mut flow = session
                         .flow
@@ -830,15 +1015,15 @@ impl Terminals {
                             }
                         }
                     }
-                    // This lock binds observer attachment to the same producer boundary.
-                    if let Some(sink) = &remote_sink {
-                        sink.send(RemoteTerminalEvent::Output {
-                            id: request.id.clone(),
-                            data: buffer[..length].to_vec(),
-                        });
-                    }
                     flow.pending += length;
                 }
+                if let Some(sink) = &remote_sink {
+                    sink.send(RemoteTerminalEvent::Output {
+                        id: request.id.clone(),
+                        data: buffer[..length].to_vec(),
+                    });
+                }
+                drop(remote_order);
                 if output
                     .send(Response::new(buffer[..length].to_vec()))
                     .is_err()
@@ -849,12 +1034,17 @@ impl Terminals {
             }
             drop(reader);
             let code = child.wait().ok().map(|status| status.exit_code());
+            let mut remote_closed = remote_events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *remote_closed = true;
             if let Some(sink) = &remote_sink {
                 sink.send(RemoteTerminalEvent::Exit {
                     id: request.id.clone(),
                     code,
                 });
             }
+            drop(remote_closed);
             #[cfg(unix)]
             if let Some(control) = session.control() {
                 if let Ok(mut control) = control.lock() {
@@ -1169,6 +1359,9 @@ impl Terminals {
         }
         let session = self.get(id)?;
         let _human_guard = if human {
+            if !data.is_empty() {
+                self.activity.record();
+            }
             session.human_waiters.fetch_add(1, Ordering::SeqCst);
             Some(HumanInputGuard(session.clone()))
         } else {
@@ -1410,21 +1603,9 @@ pub async fn resize_terminal(
     let size = size(cols, rows)?;
     let sink = state.remote_sink.lock().ok().and_then(|s| s.clone());
     // ConPTY resize is synchronous and must not block the native event loop.
-    tauri::async_runtime::spawn_blocking(move || {
-        let _flow = session.flow.lock().map_err(|error| error.to_string())?;
-        session
-            .master
-            .lock()
-            .map_err(|error| error.to_string())?
-            .resize(size)
-            .map_err(|error| error.to_string())?;
-        if let Some(sink) = sink {
-            sink.send(RemoteTerminalEvent::Resize { id, cols, rows });
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || session.resize(id, size, sink))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1721,23 +1902,272 @@ mod tests {
         assert!(parents.unwrap().contains(&std::process::id()));
     }
     #[test]
-    fn remote_observer_overflow_is_bounded_and_marks_state_unusable() {
+    fn remote_observer_backpressure_preserves_bytes_and_remains_healthy() {
         let manager = Terminals::default();
-        let (_receive, healthy) = manager.observe_remote().unwrap();
+        let (receive, healthy, _) = manager.observe_remote().unwrap();
+        let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
+        for index in 0..256 {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "test".into(),
+                data: vec![index as u8; 16 * 1024],
+            });
+        }
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            sink.send(RemoteTerminalEvent::Output {
+                id: "test".into(),
+                data: b"after the burst".to_vec(),
+            });
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        assert!(healthy.load(Ordering::SeqCst));
+        for index in 0..256 {
+            let RemoteTerminalEvent::Output { id, data } = receive.recv().unwrap().event else {
+                panic!("Expected ordered terminal output");
+            };
+            assert_eq!(id, "test");
+            assert_eq!(data, vec![index as u8; 16 * 1024]);
+        }
+        let RemoteTerminalEvent::Output { data, .. } = receive.recv().unwrap().event else {
+            panic!("Expected the output queued after the burst");
+        };
+        assert_eq!(data, b"after the burst");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        producer.join().unwrap();
+        assert!(healthy.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn remote_observer_sustained_outage_bounds_local_producers_and_tracks_only_lost_session() {
+        let manager = Terminals::default();
+        let (receive, healthy, observer) = manager.observe_remote().unwrap();
+        let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
+        for _ in 0..256 {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "lost".into(),
+                data: vec![0; 16 * 1024],
+            });
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..4096 {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "lost".into(),
+                data: vec![1; 16 * 1024],
+            });
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(healthy.load(Ordering::SeqCst));
+        assert!(observer
+            .sessions()
+            .iter()
+            .any(|(id, _, lost, _, _)| id == "lost" && *lost));
+        for _ in 0..256 {
+            receive.recv().unwrap();
+        }
+        sink.send(RemoteTerminalEvent::Start {
+            id: "survivor".into(),
+            cols: 80,
+            rows: 24,
+        });
+        sink.send(RemoteTerminalEvent::Output {
+            id: "survivor".into(),
+            data: b"exact".to_vec(),
+        });
+        assert_eq!(observer.current(&receive.recv().unwrap()), Some(false));
+        let output = receive.recv().unwrap();
+        assert_eq!(observer.current(&output), Some(false));
+        let RemoteTerminalEvent::Output { data, .. } = output.event else {
+            panic!("Expected survivor output");
+        };
+        assert_eq!(data, b"exact");
+        sink.send(RemoteTerminalEvent::Exit {
+            id: "lost".into(),
+            code: Some(0),
+        });
+        assert!(observer
+            .sessions()
+            .iter()
+            .any(|(id, _, lost, exited, _)| id == "lost" && *lost && *exited));
+    }
+
+    #[test]
+    fn remote_observer_lost_start_retains_dimensions_and_restart_fences_old_events() {
+        let manager = Terminals::default();
+        let (receive, healthy, observer) = manager.observe_remote().unwrap();
+        let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
+        for _ in 0..256 {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "filler".into(),
+                data: vec![0],
+            });
+        }
+        sink.send(RemoteTerminalEvent::Start {
+            id: "lost-start".into(),
+            cols: 120,
+            rows: 40,
+        });
+        let lost = observer
+            .sessions()
+            .into_iter()
+            .find(|(id, _, _, _, _)| id == "lost-start")
+            .unwrap();
+        assert!(lost.2);
+        assert_eq!(lost.4, Some((120, 40)));
+        assert!(healthy.load(Ordering::SeqCst));
+        for _ in 0..256 {
+            receive.recv().unwrap();
+        }
+        sink.send(RemoteTerminalEvent::Start {
+            id: "lost-start".into(),
+            cols: 80,
+            rows: 24,
+        });
+        let old_start = receive.recv().unwrap();
+        sink.send(RemoteTerminalEvent::Start {
+            id: "lost-start".into(),
+            cols: 100,
+            rows: 30,
+        });
+        let new_start = receive.recv().unwrap();
+        assert_eq!(observer.current(&old_start), None);
+        assert_eq!(observer.current(&new_start), Some(false));
+        assert_ne!(old_start.generation, new_start.generation);
+    }
+
+    #[test]
+    fn remote_observer_disconnect_releases_backpressured_producers() {
+        let manager = Terminals::default();
+        let (receive, healthy, _) = manager.observe_remote().unwrap();
         let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
         for _ in 0..256 {
             sink.send(RemoteTerminalEvent::Output {
                 id: "test".into(),
-                data: vec![42; 16 * 1024],
+                data: vec![42],
             });
         }
-        assert!(healthy.load(Ordering::SeqCst));
-        sink.send(RemoteTerminalEvent::Output {
-            id: "test".into(),
-            data: vec![42],
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            sink.send(RemoteTerminalEvent::Output {
+                id: "test".into(),
+                data: vec![43],
+            });
+            done_tx.send(()).unwrap();
         });
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        drop(receive);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        producer.join().unwrap();
         assert!(!healthy.load(Ordering::SeqCst));
-        assert!(manager.observe_remote().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_backpressure_does_not_hold_local_terminal_flow_or_prevent_close() {
+        use std::time::Instant;
+
+        let directory = tempfile::tempdir().unwrap();
+        shell::prepare(directory.path()).unwrap();
+        let profile = shell::discover()
+            .into_iter()
+            .find(|p| p.kind == "bash")
+            .unwrap();
+        let shells = Shells {
+            profiles: vec![profile.clone()],
+            integration: directory.path().to_owned(),
+        };
+        let manager = Terminals::default();
+        let (receive, healthy, _) = manager.observe_remote().unwrap();
+        let sink = manager.remote_sink.lock().unwrap().clone().unwrap();
+        let ack = manager.clone();
+        manager
+            .start(
+                &shells,
+                StartRequest {
+                    id: "remote-backpressure-test".into(),
+                    profile_id: profile.id,
+                    cwd: directory.path().to_string_lossy().into_owned(),
+                    cols: 80,
+                    rows: 24,
+                    agent_ticket: None,
+                    cli_launch: None,
+                },
+                Channel::new(move |body| {
+                    if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                        ack.acknowledge("remote-backpressure-test", bytes.len());
+                    }
+                    Ok(())
+                }),
+                Channel::new(|_| Ok(())),
+            )
+            .unwrap();
+        let session = manager.get("remote-backpressure-test").unwrap();
+        while sink
+            .sender
+            .try_send(RemoteObservedEvent {
+                generation: 0,
+                event: RemoteTerminalEvent::Output {
+                    id: "test".into(),
+                    data: vec![42],
+                },
+            })
+            .is_ok()
+        {}
+        manager
+            .write("remote-backpressure-test", "printf 'burst-output'\r")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while session.remote_events.try_lock().is_ok() {
+            if Instant::now() >= deadline {
+                manager.close("remote-backpressure-test");
+                panic!("The PTY producer did not encounter Remote backpressure");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(session.flow.try_lock().is_ok());
+        assert!(healthy.load(Ordering::SeqCst));
+        let resizing_session = session.clone();
+        let (resize_started_tx, resize_started_rx) = mpsc::channel();
+        let (resize_done_tx, resize_done_rx) = mpsc::channel();
+        let resizing = thread::spawn(move || {
+            resize_started_tx.send(()).unwrap();
+            resize_done_tx
+                .send(resizing_session.resize(
+                    "remote-backpressure-test".into(),
+                    size(100, 30).unwrap(),
+                    Some(sink),
+                ))
+                .unwrap();
+        });
+        resize_started_rx.recv().unwrap();
+        assert!(resize_done_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        let closer = manager.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let close = thread::spawn(move || {
+            closer.close("remote-backpressure-test");
+            done_tx.send(()).unwrap();
+        });
+        let closed = done_rx.recv_timeout(Duration::from_secs(2));
+        drop(receive);
+        close.join().unwrap();
+        // With bounded waiting, resize may finish before close wins the race.
+        let _ = resize_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        resizing.join().unwrap();
+        assert!(closed.is_ok(), "Local close waited for the Remote consumer");
+        assert!(session.flow.lock().unwrap().closed);
     }
 
     #[cfg(unix)]

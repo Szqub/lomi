@@ -42,6 +42,70 @@ async function unshareCalls(page: Page) {
   );
 }
 
+test("idle pause can be resumed repeatedly without restarting or unsharing", async ({
+  page,
+}, testInfo) => {
+  await setup(page);
+  await page.evaluate(() => {
+    const desktop = window as any;
+    desktop.__remoteInvoke = async (command: string) => {
+      if (command === "remote_resume") {
+        if (desktop.__failResume)
+          throw new Error("Connection unavailable. Try again.");
+        Object.assign(desktop.__nativeTest.remoteState, {
+          paused: false,
+          enabled: true,
+          online: true,
+          message: null,
+        });
+      }
+      return structuredClone(desktop.__nativeTest.remoteState);
+    };
+  });
+  for (let round = 0; round < 2; round++) {
+    await page.evaluate(async () => {
+      const mock = (window as any).__nativeTest;
+      Object.assign(mock.remoteState, {
+        paused: true,
+        enabled: false,
+        online: false,
+        message:
+          "Remote paused after an hour of inactivity. Resume it from the desktop.",
+      });
+      await mock.emitEvent("lomi-remote-state", mock.remoteState);
+    });
+    const resume = page.getByRole("button", {
+      name: "Resume remote",
+      exact: true,
+    });
+    await expect(resume).toBeVisible();
+    if (round === 0) {
+      await page.evaluate(() => {
+        (window as any).__failResume = true;
+      });
+      await resume.click();
+      await expect(page.getByRole("alert")).toHaveText(
+        "Connection unavailable. Try again.",
+      );
+      await page.evaluate(() => {
+        (window as any).__failResume = false;
+      });
+      await page.screenshot({ path: testInfo.outputPath("remote-paused.png") });
+    }
+    await resume.click();
+    await expect(resume).toHaveCount(0);
+    await expect(
+      page.locator("footer").getByText("Shared remotely", { exact: true }),
+    ).toBeVisible();
+  }
+  expect(await unshareCalls(page)).toEqual([]);
+  const commands = await page.evaluate(() =>
+    (window as any).__nativeTest.calls.map((c: any) => c.command),
+  );
+  expect(commands.filter((c: string) => c === "remote_resume")).toHaveLength(3);
+  expect(commands).not.toContain("close_terminal");
+});
+
 test("footer follows the active shared workspace and remains visible offline", async ({
   page,
 }, testInfo) => {
@@ -70,6 +134,39 @@ test("footer follows the active shared workspace and remains visible offline", a
   await expect(
     page.getByRole("button", { name: "Stop sharing remotely" }),
   ).toBeInViewport();
+});
+
+test("stopping sharing while paused succeeds without resuming", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.evaluate(async () => {
+    const desktop = window as any;
+    const state = desktop.__nativeTest.remoteState;
+    Object.assign(state, { enabled: false, paused: true, online: false });
+    desktop.__remoteInvoke = async (command: string, args: any) => {
+      if (command === "remote_share_workspace")
+        state.workspaces.find((w: any) => w.id === args.workspaceId).shared =
+          args.shared;
+      return structuredClone(state);
+    };
+    await desktop.__nativeTest.emitEvent("lomi-remote-state", state);
+  });
+  await expect(
+    page.getByRole("button", { name: "Resume remote", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Stop sharing remotely" }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Stop sharing", exact: true })
+    .click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  await expect(page.locator("footer .remote-workspace-status")).toHaveCount(0);
+  const commands = await page.evaluate(() =>
+    (window as any).__nativeTest.calls.map((c: any) => c.command),
+  );
+  expect(commands).not.toContain("remote_resume");
+  expect(commands).not.toContain("close_terminal");
 });
 
 test("cancel and Escape preserve sharing; confirmation unshares only the current workspace", async ({
