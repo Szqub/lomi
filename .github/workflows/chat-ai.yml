@@ -82,3 +82,6 @@ jobs:
       - name: Test native Chat AI storage and dispatch
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib chat:: -- --test-threads=1
+      - name: Test native notification migration
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib notifications:: -- --test-threads=1
