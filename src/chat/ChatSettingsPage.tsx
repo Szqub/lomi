@@ -776,10 +776,10 @@ export default function ChatSettingsPage() {
                                   ? {
                                       models: [
                                         ...new Set([
+                                          editingModel.trim(),
                                           ...(destinationChanged
                                             ? []
                                             : editing.models),
-                                          editingModel.trim(),
                                         ]),
                                       ],
                                     }
