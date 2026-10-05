@@ -1,12 +1,13 @@
 # CLI agent integrations
 
-Run installed agents in ordinary Lomi terminal panels. Lomi recognizes the 30
-agents below plus the existing Antigravity CLI on macOS and Linux. It recognizes
+Run installed agents in ordinary Lomi terminal panels. Lomi recognizes the 16
+agents below on macOS and Linux. It recognizes
 native executables, documented Node/Bun launchers and Python console scripts;
 inline code, prompt arguments and remote SSH commands are not agent identities.
 This does not install the agents or restore their conversations after restart.
 
-The titlebar **+ → Agents** dialog launches the 15 clients listed in MCP settings.
+The titlebar **+ → Agents** dialog launches 15 clients in this catalog. Pi can
+be started with a terminal command or through Router.
 It shows only executables found in the selected terminal environment and uses
 bundled brand icons from Iconify. Choose a CLI and the number of terminal panels
 (four by default). Lomi opens one new tab with a grid of panels and starts an
@@ -27,6 +28,27 @@ installation. Refresh the list after installing or removing a CLI.
 applicable integrations in the status bar. Inspection never writes configuration;
 installation requires a click. Client approval and Lomi pairing still apply.
 
+## Router setup
+
+Open **Settings → Agent control → Router**, select **New router**, choose an
+agent, then add or include its saved accounts in priority order. Accounts are
+saved separately and can be reused. New routers start disabled; enable one only
+after configuring compatible accounts. Existing routers open directly for
+editing. API endpoint and key changes require explicit saving; subscription
+logins stay in the native CLI. Quota balancing uses comparable fresh reports and
+falls back to account order when they are unavailable.
+
+On macOS ARM64 with Node 22.19 or newer, `node scripts/install-router-clis.mjs`
+prepares the exact Kimi, Kilo and Pi packages pinned in
+`scripts/router-cli-installations.json`, without running lifecycle scripts or
+changing shell startup files. It requires an existing trusted `~/.local/bin/npm`
+file or symlink and checks ownership and permissions for Node, npm and their
+parent directories. Add `~/.local/bin` to the launch environment's PATH
+if needed. Native adapters and `cli_router/gateway_profiles.rs` enforce supported
+versions and capabilities. Source support does not establish real-account
+qualification, automatic subscription failover or cross-account native history
+continuity. Saved runs never start inference during restoration.
+
 ## MCP adapters
 
 Paths below are defaults. Documented environment overrides are resolved from the
@@ -35,47 +57,30 @@ Project settings may override user settings. For newly supported agents started
 with an explicit configuration/profile flag, use that agent's own setup or
 Settings for its default user configuration; Lomi does not guess the active file.
 
-| Agent                                                                                                           | Command                    | Automatic user MCP configuration                                                                                      |
-| --------------------------------------------------------------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Claude Code                                                                                                     | `claude`                   | `~/.claude.json`                                                                                                      |
-| OpenAI Codex CLI                                                                                                | `codex`                    | `~/.codex/config.toml`                                                                                                |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)                    | `gemini`                   | `~/.gemini/settings.json`                                                                                             |
-| [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)  | `copilot`                  | `~/.copilot/mcp-config.json`; local server type and tools list                                                        |
-| Cursor CLI                                                                                                      | `cursor-agent`             | `~/.cursor/mcp.json`                                                                                                  |
-| [OpenCode](https://opencode.ai/v2/docs/mcp-servers)                                                             | `opencode`                 | `~/.config/opencode/opencode.json` or `.jsonc`; current v2 `mcp.servers` with command array                           |
-| [OpenClaw](https://docs.openclaw.ai/gateway/config-extensions)                                                  | `openclaw`                 | `~/.openclaw/openclaw.json`; JSON5 `mcp.servers`                                                                      |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/mcp.md)  | `hermes`                   | `~/.hermes/config.yaml`; `mcp_servers` map                                                                            |
-| [Pi Coding Agent](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)               | `pi`                       | Requires an MCP extension; no built-in MCP registry                                                                   |
-| [Aider](https://aider.chat/docs/config/options.html)                                                            | `aider`                    | No documented native MCP client                                                                                       |
-| [Goose](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/config-files.md)                | `goose`                    | `~/.config/goose/config.yaml`; `extensions`, `cmd`, `envs`                                                            |
-| [Cline CLI](https://docs.cline.bot/getting-started/config)                                                      | `cline`                    | Existing `~/.cline/data/settings/cline_mcp_settings.json` or legacy `~/.cline/mcp.json`; see path qualification below |
-| [Kilo Code CLI](https://kilo.ai/docs/automate/mcp/using-in-kilo-code)                                           | `kilo`, `kilocode`         | `~/.config/kilo/kilo.jsonc`; `mcp` with command array                                                                 |
-| [Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/)                                     | `qwen`                     | `~/.qwen/settings.json`                                                                                               |
-| [Kiro CLI](https://kiro.dev/docs/mcp/configuration/)                                                            | `kiro-cli`                 | `~/.kiro/settings/mcp.json`                                                                                           |
-| [Factory Droid](https://docs.factory.ai/harness/mcp)                                                            | `droid`                    | `~/.factory/mcp.json`                                                                                                 |
-| [OpenHands CLI](https://docs.openhands.dev/openhands/usage/cli/mcp-servers)                                     | `openhands`                | `~/.openhands/mcp.json`; targets the deprecated v1 CLI                                                                |
-| [Continue CLI](https://docs.continue.dev/reference)                                                             | `cn`                       | `~/.continue/config.yaml`; `mcpServers` list                                                                          |
-| [Amp CLI](https://ampcode.com/docs/customize/mcp)                                                               | `amp`                      | `~/.config/amp/settings.json` or `.jsonc`; `amp.mcpServers`                                                           |
-| [Auggie](https://docs.augmentcode.com/cli/integrations)                                                         | `auggie`                   | `~/.augment/settings.json`                                                                                            |
-| [Crush](https://github.com/charmbracelet/crush/blob/main/docs/config/README.md)                                 | `crush`                    | Manual setup in `crushrc`; Lomi does not rewrite executable shell configuration                                       |
-| [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/mcp-servers)                                               | `vibe`                     | `~/.vibe/config.toml`; `[[mcp_servers]]` entries                                                                      |
-| [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/mcp.md)                 | `kimi`                     | `~/.kimi-code/mcp.json`; targets the successor, not legacy Kimi CLI                                                   |
-| [Open Interpreter](https://www.openinterpreter.com/docs/terminal/mcp)                                           | `interpreter`              | `~/.openinterpreter/config.toml`; `mcp_servers` table                                                                 |
-| [Grok Build](https://docs.x.ai/build/features/mcp-servers)                                                      | `grok`                     | `~/.grok/config.toml`; `mcp_servers` table                                                                            |
-| [Junie CLI](https://junie.labs.jb.gg/docs/junie-cli-mcp-configuration.html)                                     | `junie`                    | `~/.junie/mcp/mcp.json`                                                                                               |
-| [Deep Agents Code](https://github.com/langchain-ai/deepagents/blob/main/openwiki/workflows/deep-agents-code.md) | `dcode`, `deepagents-code` | `~/.deepagents/.mcp.json`                                                                                             |
-| [Freebuff CLI](https://github.com/CodebuffAI/freebuff/blob/main/sdk/src/agents/load-mcp-config.ts)              | `freebuff`                 | `~/.agents/mcp.json`, separate from Freebuff's profile directory                                                      |
-| [Trae Agent](https://github.com/bytedance/trae-agent/blob/main/trae_agent/utils/config.py)                      | `trae-cli`                 | Manual project/selected `trae_config.yaml`; no shared user registry                                                   |
-| [SWE-agent](https://github.com/SWE-agent/SWE-agent/blob/main/docs/config/config.md)                             | `sweagent`                 | No documented native MCP client                                                                                       |
-| [Antigravity CLI](https://antigravity.google/docs/mcp/)                                                         | `agy`                      | `~/.gemini/config/mcp_config.json`                                                                                    |
+| Agent                                                                                                          | Command            | Automatic user MCP configuration                                                            |
+| -------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| Claude Code                                                                                                    | `claude`           | `~/.claude.json`                                                                            |
+| OpenAI Codex CLI                                                                                               | `codex`            | `~/.codex/config.toml`                                                                      |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)                   | `gemini`           | `~/.gemini/settings.json`                                                                   |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers) | `copilot`          | `~/.copilot/mcp-config.json`; local server type and tools list                              |
+| Cursor CLI                                                                                                     | `cursor-agent`     | `~/.cursor/mcp.json`                                                                        |
+| [OpenCode](https://opencode.ai/v2/docs/mcp-servers)                                                            | `opencode`         | `~/.config/opencode/opencode.json` or `.jsonc`; current v2 `mcp.servers` with command array |
+| [OpenClaw](https://docs.openclaw.ai/gateway/config-extensions)                                                 | `openclaw`         | `~/.openclaw/openclaw.json`; JSON5 `mcp.servers`                                            |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/mcp.md) | `hermes`           | `~/.hermes/config.yaml`; `mcp_servers` map                                                  |
+| [Pi Coding Agent](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)              | `pi`               | Requires an MCP extension; no built-in MCP registry                                         |
+| [Kilo Code CLI](https://kilo.ai/docs/automate/mcp/using-in-kilo-code)                                          | `kilo`, `kilocode` | `~/.config/kilo/kilo.jsonc`; `mcp` with command array                                       |
+| [Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/)                                    | `qwen`             | `~/.qwen/settings.json`                                                                     |
+| [Kiro CLI](https://kiro.dev/docs/mcp/configuration/)                                                           | `kiro-cli`         | `~/.kiro/settings/mcp.json`                                                                 |
+| [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/mcp-servers)                                              | `vibe`             | `~/.vibe/config.toml`; `[[mcp_servers]]` entries                                            |
+| [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/mcp.md)                | `kimi`             | `~/.kimi-code/mcp.json`; targets the successor, not legacy Kimi CLI                         |
+| [Grok Build](https://docs.x.ai/build/features/mcp-servers)                                                     | `grok`             | `~/.grok/config.toml`; `mcp_servers` table                                                  |
+| [Antigravity CLI](https://antigravity.google/docs/mcp/)                                                        | `agy`              | `~/.gemini/config/mcp_config.json`                                                          |
 
 Supported environment overrides include `CODEX_HOME`, `GEMINI_CLI_HOME`,
-`COPILOT_HOME`, `XDG_CONFIG_HOME` (OpenCode, Kilo, Amp and Goose), `OPENCODE_CONFIG`,
-`OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`, `HERMES_HOME`, `GOOSE_PATH_ROOT`,
-`CLINE_DATA_DIR`, `KILO_CONFIG`, `QWEN_HOME`, `KIRO_HOME`, `VIBE_HOME`, `KIMI_CODE_HOME`,
-`INTERPRETER_HOME`, `GROK_HOME`, `JUNIE_HOME` and `DEEPAGENTS_HOME`.
-`GEMINI_CLI_HOME` is the parent of `.gemini`. `GOOSE_PATH_ROOT` contains the
-`config/config.yaml` path. Relative overrides are rejected.
+`COPILOT_HOME`, `XDG_CONFIG_HOME` (OpenCode and Kilo), `OPENCODE_CONFIG`,
+`OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`, `HERMES_HOME`, `KILO_CONFIG`,
+`QWEN_HOME`, `KIRO_HOME`, `VIBE_HOME`, `KIMI_CODE_HOME` and `GROK_HOME`.
+`GEMINI_CLI_HOME` is the parent of `.gemini`. Relative overrides are rejected.
 
 Antigravity CLI's current MCP documentation retains the global
 `~/.gemini/config/mcp_config.json` path and also supports workspace-local
@@ -86,14 +91,12 @@ inspection leaves it untouched, and explicit installation initializes the
 JSON still blocks automatic setup. Remote Antigravity servers use `serverUrl`;
 Lomi registers a local `command` and `args` entry.
 
-Cline's documentation names two layouts. Without `CLINE_DATA_DIR`, Lomi only
-writes when exactly one documented file already exists; otherwise initialize MCP
-with `cline mcp`, then refresh. OpenCode/Amp configurations with both JSON and
-JSONC files require manual setup. Legacy OpenCode MCP maps require migration to v2 or manual setup.
-Inline OpenCode/Kilo configuration, OpenCode/Kilo's
-additional config directory, custom OpenClaw profiles/homes, custom Junie config locations and custom Claude MCP
-homes are not guessed. Vibe with `VIBE_CLI=rust` requires manual qualification;
-the upstream Rust MCP manager documents OAuth-only additions.
+OpenCode configurations with both JSON and JSONC files require manual setup.
+Legacy OpenCode MCP maps require migration to v2 or manual setup.
+Inline OpenCode/Kilo configuration, OpenCode/Kilo's additional config directory,
+custom OpenClaw profiles/homes and custom Claude MCP homes are not guessed.
+Vibe with `VIBE_CLI=rust` requires manual qualification; the upstream Rust MCP
+manager documents OAuth-only additions.
 
 Configuration updates preserve unrelated values, reject a foreign server named
 `lomi`, check file revisions, save exact original backups and replace files
@@ -153,12 +156,8 @@ running instance** as the source of the executable and argument values. That
 manual connection uses the separate `lomi-mcp` helper and must be copied again
 after a server restart, as described in [MCP usage](mcp/USAGE.md).
 
-For Trae, put the copied command/args in `mcp_servers.lomi` in the selected
-`trae_config.yaml`, and include `lomi` in `allow_mcp_servers`. For Crush, use its
-`crushrc` MCP configuration builtins from the linked official documentation. Pi
-needs a separately installed MCP extension. Aider and official SWE-agent remain
-usable as terminal programs, but cannot be given a native MCP configuration that
-their current contracts do not provide.
+Pi needs a separately installed MCP extension. The other 15 catalog clients
+support automatic MCP configuration.
 
 ## Account usage in the titlebar
 
@@ -194,7 +193,7 @@ Account quota and a conversation's context window are different. Lomi does not
 estimate subscription quota from tokens, prompts, transcripts or terminal output.
 All agents in the catalog can appear in this control. Numeric quota requires a
 provider-specific reader and a compatible existing login. Provider-dependent
-clients such as OpenCode, Aider and Goose do not have one universal account limit;
+clients such as OpenCode do not have one universal account limit;
 the details show an unavailable status when Lomi has no verified account reader.
 This describes Lomi's current coverage, rather than assuming the provider has no
 usage API.

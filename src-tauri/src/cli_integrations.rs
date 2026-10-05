@@ -294,8 +294,7 @@ pub async fn inspect_mcp_clients(
             McpClientStatus {
                 cli,
                 manual_reason: None,
-                notice: matches!(cli, TitleCli::Hermes | TitleCli::Goose | TitleCli::Continue)
-                    .then_some(
+                notice: (cli == TitleCli::Hermes).then_some(
                     "YAML is reformatted and comments are removed; the original file is backed up.",
                 ),
                 name: name(cli),

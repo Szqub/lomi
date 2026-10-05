@@ -1,6 +1,13 @@
 use crate::cli_catalog::TitleCli;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, io::Read, path::Path, sync::Mutex, time::SystemTime};
+use std::{
+    collections::HashSet,
+    fs,
+    io::{Read, Write},
+    path::Path,
+    sync::Mutex,
+    time::SystemTime,
+};
 use tauri::{Emitter, Manager, State, Window};
 
 const LIMIT: usize = 512 * 1024;
@@ -106,7 +113,29 @@ fn read(path: &Path) -> Result<Snapshot, String> {
         if bytes.len() > LIMIT {
             return Err("The notification inbox exceeds 512 KiB.".into());
         }
-        let data: Stored = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let mut retired = HashSet::new();
+        for item in value
+            .get_mut("items")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or("Invalid notification inbox.")?
+        {
+            if item
+                .get("agent")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(crate::cli_catalog::is_retired_id)
+            {
+                retired.insert(
+                    item["id"]
+                        .as_str()
+                        .ok_or("Invalid notification identifier.")?
+                        .to_string(),
+                );
+                item["agent"] = serde_json::Value::Null;
+            }
+        }
+        let data: Stored = serde_json::from_value(value).map_err(|error| error.to_string())?;
         if !matches!(data.version, 1 | 2) {
             return Err("Unsupported notification inbox version.".into());
         }
@@ -115,6 +144,44 @@ fn read(path: &Path) -> Result<Snapshot, String> {
             items: data.items,
         };
         snapshot.validate()?;
+        if !retired.is_empty() {
+            snapshot.items.retain(|item| !retired.contains(&item.id));
+            snapshot.revision = snapshot
+                .revision
+                .checked_add(1)
+                .filter(|revision| *revision <= MAX_INTEGER)
+                .ok_or("Notification revision limit reached.")?;
+            let parent = path.parent().ok_or("Invalid notification inbox path.")?;
+            let backup = parent.join(format!(
+                "notifications-before-cli-removal-{}.json",
+                lomi_control_core::broker::new_id()
+                    .map_err(|_| "Cannot create a notification backup identifier.".to_string())?
+            ));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            let mut file = options.open(&backup).map_err(|error| error.to_string())?;
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            fs::File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            crate::files::write_json(
+                path,
+                &Stored {
+                    version: 2,
+                    revision: snapshot.revision,
+                    items: snapshot.items.clone(),
+                },
+                LIMIT,
+            )?;
+        }
         snapshot
             .items
             .sort_by_key(|item| std::cmp::Reverse(item.created_at));
@@ -312,6 +379,54 @@ pub fn clear_notifications(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_notifications_migrate_with_exact_backup_and_keep_surviving_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        let source = r#"{"version":2,"revision":2,"items":[{"id":"notification-1","kind":"finished","agent":"goose","title":"Retired task","body":"","createdAt":1,"read":false},{"id":"notification-2","kind":"attention","agent":"codex","title":"Keep task","body":"","createdAt":2,"read":false}]}"#;
+        fs::write(&path, source).unwrap();
+        let snapshot = read(&path).unwrap();
+        assert_eq!(snapshot.revision, 3);
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].agent, Some(TitleCli::Codex));
+        let backups: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("notifications-before-cli-removal-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read_to_string(&backups[0]).unwrap(), source);
+        assert_eq!(read(&path).unwrap().revision, 3);
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["items"].as_array().unwrap().len(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_invalid_retired_notifications_preserve_original_inbox() {
+        for (agent, title) in [("unknown-cli", "Task"), ("goose", "")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("notifications.json");
+            let source = serde_json::json!({"version":2,"revision":1,"items":[{"id":"notification-1","kind":"finished","agent":agent,"title":title,"body":"","createdAt":1,"read":false}]}).to_string();
+            fs::write(&path, &source).unwrap();
+            assert!(read(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), source);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
 
     #[test]
     fn roundtrips_agent_metadata_in_version_two() {

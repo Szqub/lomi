@@ -156,6 +156,8 @@ export type RouterAction =
       cli: string;
       label: string;
       orderedProfileIds: string[];
+      enabled?: boolean;
+      balanceRemainingQuota?: boolean;
     }
   | {
       type: "update_router";

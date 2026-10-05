@@ -9,7 +9,6 @@ mod coding_runtime;
 mod coding_transport;
 mod commands;
 mod credentials;
-mod crush;
 #[cfg(unix)]
 mod effects;
 #[cfg(unix)]
@@ -27,7 +26,6 @@ mod gateway_store;
 mod gateway_tests;
 mod gateway_transform;
 mod gateway_url;
-mod goose;
 mod grants;
 mod grok;
 mod grok_artifact;

@@ -7,10 +7,16 @@ export function useRouterSnapshot(poll = false) {
   const [snapshot, setSnapshot] = useState<CliRouterSnapshot>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const clearError = useCallback(() => setError(""), []);
   const live = useRef(false),
     lock = useRef(false);
+  const latest = useRef<CliRouterSnapshot | undefined>(undefined);
+  const readSnapshot = useCallback(() => latest.current, []);
   const accept = useCallback((next: CliRouterSnapshot) => {
-    if (live.current) setSnapshot((current) => acceptSnapshot(current, next));
+    if (live.current) {
+      latest.current = acceptSnapshot(latest.current, next);
+      setSnapshot(latest.current);
+    }
   }, []);
   const refresh = useCallback(async () => {
     try {
@@ -79,5 +85,5 @@ export function useRouterSnapshot(poll = false) {
         action,
       },
     });
-  return { snapshot, error, busy, command, mutate };
+  return { snapshot, error, busy, command, mutate, clearError, readSnapshot };
 }

@@ -16,7 +16,7 @@ trait Backend {
     }
 }
 struct Native;
-fn valid(id: &str) -> Result<(), String> {
+pub(super) fn valid(id: &str) -> Result<(), String> {
     if id
         .strip_prefix("router-key-")
         .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -462,6 +462,47 @@ mod tests {
             })
             .unwrap();
         (directory, store)
+    }
+    #[test]
+    fn retired_profile_migration_preserves_cleanup_obligations_until_key_store_recovers() {
+        for status in ["staged", "cleanup", "remove", "metadata_only"] {
+            let (directory, mut store) = fixture();
+            let backend = Fake::default();
+            let id = format!("router-key-{}", super::super::new_id().unwrap());
+            if status != "metadata_only" {
+                store.credential_stage(&id, "profile").unwrap();
+            }
+            backend.put(&id, "pending-key").unwrap();
+            let mut original = serde_json::to_value(store.snapshot().unwrap()).unwrap();
+            original["profiles"][0]["cli"] = serde_json::json!("goose");
+            if status == "metadata_only" {
+                original["profiles"][0]["authState"] = serde_json::json!("pending_remove");
+                original["profiles"][0]["credentialRef"] = serde_json::json!(id);
+            }
+            drop(store);
+            let path = directory.path().join("router.sqlite");
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection
+                .execute("UPDATE snapshot SET data = ?1", [original.to_string()])
+                .unwrap();
+            if status != "metadata_only" {
+                connection
+                    .execute("UPDATE credential_journal SET status = ?1", [status])
+                    .unwrap();
+            }
+            drop(connection);
+            let mut store = Store::open(&path).unwrap();
+            assert!(store.snapshot().unwrap().profiles.is_empty());
+            assert_eq!(store.credential_journal().unwrap().len(), 1);
+            backend.fail_remove.set(true);
+            assert!(recover_with(&mut store, &backend).is_err());
+            assert_eq!(store.credential_journal().unwrap().len(), 1);
+            assert_eq!(backend.keys.borrow().len(), 1);
+            backend.fail_remove.set(false);
+            recover_with(&mut store, &backend).unwrap();
+            assert!(store.credential_journal().unwrap().is_empty());
+            assert!(backend.keys.borrow().is_empty());
+        }
     }
     #[test]
     fn immutable_rotation_and_revision_checks_preserve_current_key() {

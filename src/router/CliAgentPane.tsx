@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { CliAgentTab } from "../model";
 import { IconButton } from "../ui";
-import { X } from "../icons";
+import { FileCode, History, MessageSquare, Send, Terminal, X } from "../icons";
 import { SettingsNotice } from "../settings-ui";
 import { getRunView } from "./run-runtime";
 import { isRunning } from "./model";
@@ -10,7 +10,9 @@ import CodingApproval from "./CodingApproval";
 import NativeApproval from "./NativeApproval";
 import NativeHandoff from "./NativeHandoff";
 import GatewayCliPane from "./GatewayCliPane";
+import { runStateLabels } from "./presentation";
 import "./router.css";
+import "./router-launch.css";
 
 export default function CliAgentPane({
   tab,
@@ -80,18 +82,25 @@ export default function CliAgentPane({
   }
   return (
     <section
-      className="cli-agent-pane"
+      className="cli-agent-pane router-saved-pane"
       onPointerDown={onFocus}
       onFocusCapture={onFocus}
       aria-label={tab.customTitle ?? tab.title}
     >
       <header className="cli-agent-header">
-        <strong>{tab.customTitle ?? run?.title ?? tab.title}</strong>
+        <div className="cli-agent-heading">
+          <strong>{tab.customTitle ?? run?.title ?? tab.title}</strong>
+          {run && (
+            <span className="router-state" data-state={run.state}>
+              {runStateLabels[run.state]}
+            </span>
+          )}
+        </div>
         <IconButton title="Close CLI Agent view" onClick={onClose}>
           <X size={14} />
         </IconButton>
       </header>
-      <div className="cli-agent-content">
+      <div className="cli-agent-content router-pane-content">
         {state.error && (
           <SettingsNotice tone="error">{state.error}</SettingsNotice>
         )}
@@ -100,116 +109,152 @@ export default function CliAgentPane({
         )}
         {state.loaded && !run && (
           <SettingsNotice>
-            This saved run is no longer available. Close this view or open
-            another run from Agents → Open router.
+            Saved run unavailable. Open another run from Agents → Open router.
           </SettingsNotice>
         )}
         {run && (
           <>
-            <p className="settings-help">
-              {capability?.name ?? router?.cli ?? "CLI Agent"} ·{" "}
-              {run.model ?? "No model"}
-              {run.reasoningEffort
-                ? ` · ${run.reasoningEffort} reasoning`
-                : ""}{" "}
-              · {run.state.replaceAll("_", " ")}
-            </p>
-            <p className="settings-help">
-              {native
-                ? "Native coding retains CLI tools, conversation state and permission policies. Permission requests appear here. The CLI executes its own file and shell operations."
-                : coding
-                  ? "Coding retains native conversation history. Four bounded project tools can list, read, write and apply structured patches. Every write or patch requires your explicit approval. Native shell execution is unavailable."
-                  : "Retained logical text context is sent in a fresh CLI conversation. Project files and tools are unavailable."}
-            </p>
+            <div className="router-pane-meta">
+              {coding ? (
+                <FileCode size={14} aria-hidden="true" />
+              ) : native ? (
+                <Terminal size={14} aria-hidden="true" />
+              ) : (
+                <MessageSquare size={14} aria-hidden="true" />
+              )}
+              <span>{capability?.name ?? router?.cli ?? "CLI Agent"}</span>
+              <span title={run.model ?? undefined}>
+                {run.model ?? "No model"}
+              </span>
+              <span>
+                {coding ? "Edit files" : native ? "CLI account" : "Chat"}
+              </span>
+              {run.reasoningEffort && <span>{run.reasoningEffort}</span>}
+            </div>
+            <div className="router-run-controls router-pane-toolbar">
+              <label>
+                <span>Account</span>
+                <select
+                  aria-label="Account for next attempt"
+                  value={run.pinnedProfileId ?? ""}
+                  disabled={state.busy || running}
+                  onChange={(event) =>
+                    void command("cli_run_pin", {
+                      runId: run.id,
+                      profileId: event.target.value || null,
+                    })
+                  }
+                >
+                  <option value="">Router order</option>
+                  {run.allowedProfileIds.map((id) => (
+                    <option key={id} value={id}>
+                      {state.snapshot?.profiles.find(
+                        (profile) => profile.id === id,
+                      )?.label ?? "Unavailable account"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {state.snapshot && (
+                <RunDataGrant
+                  snapshot={state.snapshot}
+                  run={run}
+                  disabled={state.busy || running}
+                  busy={state.busy}
+                  error={state.error}
+                  command={command}
+                />
+              )}
+              {native && state.snapshot && (
+                <NativeHandoff
+                  key={run.id}
+                  snapshot={state.snapshot}
+                  run={run}
+                  disabled={state.busy || running}
+                />
+              )}
+            </div>
+            {!!run.attempts.length && (
+              <details className="router-disclosure router-pane-history">
+                <summary>
+                  <History size={14} aria-hidden="true" /> Account history{" "}
+                  <span>{run.attempts.length}</span>
+                </summary>
+                <ol>
+                  {run.attempts.map((attempt) => (
+                    <li key={attempt.id}>
+                      <strong>
+                        {state.snapshot?.profiles.find(
+                          (profile) => profile.id === attempt.profileId,
+                        )?.label ?? "Unavailable account"}
+                      </strong>
+                      <span>
+                        {attempt.state.replaceAll("_", " ")}
+                        {attempt.reason && ` · ${attempt.reason}`}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
             {run.statusMessage && (
               <SettingsNotice>{run.statusMessage}</SettingsNotice>
             )}
-            {run.inputs.map((input) => (
-              <article key={input.id} className="cli-agent-turn">
-                <h3>Your message</h3>
-                <pre>{input.text}</pre>
-                {run.turns
-                  ?.filter((turn) => turn.inputId === input.id)
-                  .map((turn) => (
-                    <div key={turn.attemptId}>
-                      <h3>
-                        {turn.state === "completed"
-                          ? "CLI response"
-                          : turn.state === "rejected"
-                            ? "Attempt rejected before a response"
-                            : "Uncertain partial response"}
-                      </h3>
-                      {turn.state !== "completed" &&
-                        turn.state !== "rejected" && (
-                          <p className="settings-help">
-                            {native
-                              ? "This native attempt may have changed files. Resume requires a settled checkpoint; review its exact session in the original account terminal when observations are incomplete."
-                              : coding
-                                ? "This attempt did not complete. Continue uses fully recorded native history. Unknown dispatches or effects require recovery before another attempt."
-                                : "This attempt did not complete. Continuing the saved task explicitly approves carrying its partial text forward."}
-                          </p>
-                        )}
-                      <pre>{turn.text || "No saved response text."}</pre>
-                    </div>
-                  ))}
-              </article>
-            ))}
-            {run.legacyOutput && (
-              <article className="cli-agent-turn">
-                <h3>Earlier saved output</h3>
-                <p className="settings-help">
-                  This output has no recorded message boundaries.
-                </p>
-                <pre>{run.legacyOutput}</pre>
-              </article>
-            )}
-            {(running || (!run.turns?.length && !run.legacyOutput)) &&
-              run.output && (
+            <section
+              className="router-pane-transcript"
+              aria-label="Conversation"
+            >
+              {run.inputs.map((input) => (
+                <article key={input.id} className="cli-agent-turn">
+                  <h3 className="router-pane-actor">
+                    <MessageSquare size={12} aria-hidden="true" />
+                    You
+                  </h3>
+                  <pre>{input.text}</pre>
+                  {run.turns
+                    ?.filter((turn) => turn.inputId === input.id)
+                    .map((turn) => (
+                      <div key={turn.attemptId}>
+                        <h3 className="router-pane-actor">
+                          <Terminal size={12} aria-hidden="true" />
+                          {turn.state === "completed"
+                            ? "Agent"
+                            : turn.state === "rejected"
+                              ? "Rejected before response"
+                              : "Uncertain response"}
+                        </h3>
+                        {turn.state !== "completed" &&
+                          turn.state !== "rejected" && (
+                            <p className="settings-help">
+                              {native
+                                ? "Files may have changed. Review the original account before resuming."
+                                : coding
+                                  ? "Recover uncertain changes before continuing."
+                                  : "This partial response is retained as context."}
+                            </p>
+                          )}
+                        <pre>{turn.text || "No saved response text."}</pre>
+                      </div>
+                    ))}
+                </article>
+              ))}
+              {run.legacyOutput && (
                 <article className="cli-agent-turn">
-                  <h3>{running ? "Live cumulative output" : "Saved output"}</h3>
-                  <pre>{run.output}</pre>
+                  <h3>Earlier saved output</h3>
+                  <p className="settings-help">
+                    This output has no recorded message boundaries.
+                  </p>
+                  <pre>{run.legacyOutput}</pre>
                 </article>
               )}
-            <label>
-              Account for next attempt
-              <select
-                value={run.pinnedProfileId ?? ""}
-                disabled={state.busy || running}
-                onChange={(event) =>
-                  void command("cli_run_pin", {
-                    runId: run.id,
-                    profileId: event.target.value || null,
-                  })
-                }
-              >
-                <option value="">Router order</option>
-                {run.allowedProfileIds.map((id) => (
-                  <option key={id} value={id}>
-                    {state.snapshot?.profiles.find(
-                      (profile) => profile.id === id,
-                    )?.label ?? "Unavailable account"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {state.snapshot && (
-              <RunDataGrant
-                snapshot={state.snapshot}
-                run={run}
-                disabled={state.busy || running}
-                busy={state.busy}
-                error={state.error}
-                command={command}
-              />
-            )}
-            {native && state.snapshot && (
-              <NativeHandoff
-                key={run.id}
-                snapshot={state.snapshot}
-                run={run}
-                disabled={state.busy || running}
-              />
-            )}
+              {(running || (!run.turns?.length && !run.legacyOutput)) &&
+                run.output && (
+                  <article className="cli-agent-turn">
+                    <h3>{running ? "Live output" : "Saved output"}</h3>
+                    <pre>{run.output}</pre>
+                  </article>
+                )}
+            </section>
             {coding && <CodingApproval runId={run.id} />}
             {native && <NativeApproval runId={run.id} />}
             {canAcknowledge && (
@@ -241,10 +286,10 @@ export default function CliAgentPane({
               <>
                 <SettingsNotice>
                   {native
-                    ? "Resume uses a settled native checkpoint in its original account. If the result or tool effects are uncertain, review the exact saved session in that account's terminal. The original task is never automatically replayed."
+                    ? "Review uncertain file changes in the original account before resuming."
                     : coding
-                      ? "Continue retains native history and recorded tool results. It never resends the original task. Uncertain dispatches and file changes remain blocked until recovered. Acknowledge recorded completion returns a fully completed input to idle without launching a turn."
-                      : "Continue starts a fresh attempt using the saved task and approved text context. It can run on another eligible account."}
+                      ? "Recover uncertain changes before continuing with saved history and tool results."
+                      : "Review partial output before a new attempt with approved saved context."}
                 </SettingsNotice>
                 <button
                   className="button button-primary"
@@ -270,18 +315,19 @@ export default function CliAgentPane({
               </>
             ) : (
               <form
-                className="router-run-form"
+                className="router-run-form router-pane-composer"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void send(false);
                 }}
               >
                 <label>
-                  Message
+                  <span className="router-launch-visually-hidden">Message</span>
                   <textarea
                     value={state.draft}
                     maxLength={textLimit}
                     disabled={state.busy || !canSend}
+                    placeholder="What would you like to do?"
                     onChange={(event) => runtime.setDraft(event.target.value)}
                   />
                 </label>
@@ -299,7 +345,7 @@ export default function CliAgentPane({
                     !canSend
                   }
                 >
-                  Send
+                  <Send size={14} aria-hidden="true" /> Send
                 </button>
               </form>
             )}

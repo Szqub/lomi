@@ -2,6 +2,728 @@ import { expect, test, type Page, type Locator } from "@playwright/test";
 import { mockDesktop } from "./desktop";
 import { cliNames } from "../../src/cli-agents";
 
+async function chooseCli(page: Page, cli: string) {
+  const change = page.getByRole("button", { name: "Change CLI", exact: true });
+  const wizard = page.getByRole("dialog", { name: "New router", exact: true });
+  if (await change.isVisible()) await change.click();
+  else if (!(await wizard.isVisible()))
+    await page
+      .getByRole("button", { name: "New router", exact: true })
+      .first()
+      .click();
+  await page
+    .getByRole("searchbox", { name: "Search agents", exact: true })
+    .fill(cli);
+  const names = cliNames as Record<string, string>;
+  await page
+    .locator(".router-cli-option")
+    .filter({ hasText: names[cli] || cli })
+    .first()
+    .click();
+}
+
+async function routerWizardFixture(page: Page, empty = false) {
+  await mockDesktop(page, false, null);
+  await page.addInitScript(
+    ({ names, empty }) => {
+      const desktop = window as any;
+      const original = desktop.__TAURI_INTERNALS__.invoke;
+      const snapshot: any = {
+        revision: 1,
+        profiles: empty
+          ? []
+          : [
+              { id: "personal", cli: "codex", label: "Personal" },
+              { id: "work", cli: "codex", label: "Work" },
+              { id: "team", cli: "claude", label: "Team" },
+            ].map((profile) => ({
+              ...profile,
+              enabled: true,
+              revision: 1,
+              authState: "ready",
+              storageMode: "cli_managed",
+            })),
+        routers: empty
+          ? []
+          : [
+              {
+                id: "daily",
+                cli: "codex",
+                label: "Daily",
+                enabled: true,
+                orderedProfileIds: ["personal", "work"],
+                balanceRemainingQuota: false,
+                revision: 1,
+              },
+              {
+                id: "team-router",
+                cli: "claude",
+                label: "Team router",
+                enabled: false,
+                orderedProfileIds: ["team"],
+                balanceRemainingQuota: false,
+                revision: 1,
+              },
+            ],
+        quota: [],
+        runs: [],
+        capabilities: Object.entries(names).map(([cli, name]) => ({
+          cli,
+          name,
+          canCreateProfile: true,
+          canVerifyLogin: cli === "codex",
+          profileTerminal: true,
+          quotaRead: cli === "codex",
+          balance: cli === "codex",
+        })),
+      };
+      desktop.routerWizardCalls = [];
+      desktop.routerWizardSnapshot = () => structuredClone(snapshot);
+      desktop.changeWizardData = async (kind: string) => {
+        if (kind === "router") snapshot.routers[0].revision++;
+        if (kind === "missing")
+          snapshot.profiles = snapshot.profiles.filter(
+            (p: any) => p.id !== "work",
+          );
+        snapshot.revision++;
+        await desktop.__nativeTest.emitEvent("cli-router-changed", {
+          revision: snapshot.revision,
+        });
+      };
+      desktop.__TAURI_INTERNALS__.invoke = async (
+        command: string,
+        args: any,
+      ) => {
+        if (command === "cli_router_snapshot") return structuredClone(snapshot);
+        if (command === "cli_profile_native_report") return null;
+        if (command === "cli_router_mutate") {
+          const request = args.request;
+          desktop.routerWizardCalls.push(structuredClone(request));
+          if (request.expectedRevision !== snapshot.revision)
+            throw new Error("Stale revision");
+          const action = request.action;
+          if (action.type === "create_profile")
+            snapshot.profiles.push({
+              id: `profile-${snapshot.profiles.length + 1}`,
+              cli: action.cli,
+              label: action.label,
+              enabled: true,
+              authState: "disconnected",
+              storageMode: "cli_managed",
+              revision: 1,
+            });
+          if (action.type === "create_router") {
+            if (desktop.failCreate)
+              throw new Error(
+                "Verify two compatible accounts before enabling this router.",
+              );
+            snapshot.routers.push({
+              ...action,
+              id: "created",
+              enabled: action.enabled ?? false,
+              balanceRemainingQuota: action.balanceRemainingQuota ?? false,
+              revision: 1,
+            });
+          }
+          if (action.type === "update_router") {
+            const router = snapshot.routers.find(
+              (r: any) => r.id === action.routerId,
+            );
+            Object.assign(router, action, { revision: router.revision + 1 });
+          }
+          if (action.type === "remove_router") {
+            if (desktop.failRemove)
+              throw new Error("Stop active runs before removing this router.");
+            snapshot.routers = snapshot.routers.filter(
+              (r: any) => r.id !== action.routerId,
+            );
+          }
+          if (action.type === "remove_profile") {
+            if (desktop.pendingCleanup) {
+              const profile = snapshot.profiles.find(
+                (p: any) => p.id === action.profileId,
+              );
+              profile.authState = "pending_remove";
+              profile.enabled = false;
+              profile.revision += 2;
+              for (const router of snapshot.routers) {
+                router.orderedProfileIds = router.orderedProfileIds.filter(
+                  (id: string) => id !== action.profileId,
+                );
+                router.revision++;
+                if (!router.orderedProfileIds.length) router.enabled = false;
+              }
+              snapshot.revision++;
+              desktop.pendingCleanup = false;
+              throw new Error("API key removal is pending. Retry removal.");
+            }
+            snapshot.profiles = snapshot.profiles.filter(
+              (p: any) => p.id !== action.profileId,
+            );
+            for (const router of snapshot.routers) {
+              router.orderedProfileIds = router.orderedProfileIds.filter(
+                (id: string) => id !== action.profileId,
+              );
+              router.revision++;
+              if (!router.orderedProfileIds.length) router.enabled = false;
+            }
+            if (desktop.changeOnRemove) {
+              snapshot.routers[0].label = "Changed elsewhere";
+              snapshot.routers[0].revision++;
+            }
+          }
+          snapshot.revision++;
+          return structuredClone(snapshot);
+        }
+        if (
+          [
+            "cli_run_start",
+            "cli_run_send",
+            "cli_profile_open_terminal",
+            "cli_profile_verify",
+          ].includes(command)
+        ) {
+          desktop.routerWizardCalls.push({ command });
+          throw new Error("Router setup must not launch CLI work");
+        }
+        return original(command, args);
+      };
+    },
+    { names: cliNames, empty },
+  );
+  await page.goto("/?window=settings&page=agent-control");
+  await page.getByRole("tab", { name: "Router", exact: true }).click();
+}
+
+test("new router selects a CLI and saves all reviewed settings once", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await expect(
+    page.getByRole("button", { name: "Manage Daily", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Manage Team router", exact: true }),
+  ).toBeVisible();
+  await chooseCli(page, "codex");
+  const wizard = page.getByRole("dialog", { name: "New router", exact: true });
+  await wizard
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Coding");
+  await wizard
+    .getByRole("button", { name: "Move Work up", exact: true })
+    .click();
+  await wizard
+    .getByRole("switch", { name: "Enable router", exact: true })
+    .check();
+  await wizard.getByText("Advanced", { exact: true }).click();
+  await wizard
+    .getByRole("switch", {
+      name: "Balance remaining quota for Coding",
+      exact: true,
+    })
+    .check();
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual(
+    [],
+  );
+  await wizard
+    .getByRole("button", { name: "Create router", exact: true })
+    .click();
+  await expect(wizard).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Manage Coding", exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual([
+    expect.objectContaining({
+      expectedRevision: 1,
+      action: {
+        type: "create_router",
+        cli: "codex",
+        label: "Coding",
+        orderedProfileIds: ["work", "personal"],
+        enabled: true,
+        balanceRemainingQuota: true,
+      },
+    }),
+  ]);
+  await page.screenshot({ path: "test-results/router-created-dashboard.png" });
+});
+
+test("changing CLI resets account selections and cancellation discards the router draft", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await chooseCli(page, "codex");
+  const wizard = page.getByRole("dialog", { name: "New router", exact: true });
+  await wizard
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Draft");
+  await wizard.getByText("Advanced", { exact: true }).click();
+  await wizard
+    .getByRole("switch", {
+      name: "Balance remaining quota for Draft",
+      exact: true,
+    })
+    .check();
+  await chooseCli(page, "claude");
+  await expect(
+    wizard.getByRole("button", { name: "Manage Team", exact: true }),
+  ).toBeVisible();
+  await expect(
+    wizard.getByRole("button", { name: "Manage Work", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(wizard).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual(
+    [],
+  );
+  await chooseCli(page, "codex");
+  await expect(
+    wizard.getByRole("textbox", { name: "Router name", exact: true }),
+  ).not.toHaveValue("Draft");
+  await wizard
+    .getByRole("button", { name: "Create router", exact: true })
+    .click();
+  await expect(wizard).toHaveCount(0);
+  const action = await page.evaluate(
+    () => (window as any).routerWizardCalls[0].action,
+  );
+  expect(action.enabled).toBe(false);
+  expect(action.balanceRemainingQuota).toBe(false);
+  expect(action.orderedProfileIds).toEqual(["personal", "work"]);
+});
+
+test("nested account setup keeps the router draft and saves accounts independently", async ({
+  page,
+}) => {
+  await routerWizardFixture(page, true);
+  await chooseCli(page, "codex");
+  const wizard = page.getByRole("dialog", { name: "New router", exact: true });
+  await wizard
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Keep my draft");
+  await expect(
+    wizard.getByRole("button", { name: "Create router", exact: true }),
+  ).toBeDisabled();
+  await wizard
+    .getByRole("button", { name: "Add account", exact: true })
+    .click();
+  const add = page.getByRole("dialog", { name: "Add account", exact: true });
+  await add
+    .getByRole("textbox", { name: "Account name", exact: true })
+    .fill("Personal");
+  await add.getByRole("button", { name: "Add account", exact: true }).click();
+  const account = page.getByRole("dialog", { name: "Personal", exact: true });
+  await expect(account).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(account).toHaveCount(0);
+  await expect(wizard).toBeVisible();
+  await expect(
+    wizard.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("Keep my draft");
+  await expect(
+    wizard.getByRole("button", { name: "Create router", exact: true }),
+  ).toBeEnabled();
+  await wizard.getByRole("button", { name: "Cancel", exact: true }).click();
+  const saved = await page.evaluate(() =>
+    (window as any).routerWizardSnapshot(),
+  );
+  expect(saved.routers).toEqual([]);
+  expect(saved.profiles.map((p: any) => p.label)).toEqual(["Personal"]);
+  await chooseCli(page, "codex");
+  await expect(
+    wizard.getByRole("button", { name: "Manage Personal", exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual([
+    expect.objectContaining({
+      expectedRevision: 1,
+      action: { type: "create_profile", cli: "codex", label: "Personal" },
+    }),
+  ]);
+});
+
+test("failed router creation retains reviewed fields for retry", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await chooseCli(page, "codex");
+  const wizard = page.getByRole("dialog", { name: "New router", exact: true });
+  await wizard
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Retained draft");
+  await wizard
+    .getByRole("switch", { name: "Enable router", exact: true })
+    .check();
+  await page.evaluate(() => {
+    (window as any).failCreate = true;
+  });
+  await wizard
+    .getByRole("button", { name: "Create router", exact: true })
+    .click();
+  await expect(
+    wizard.getByText(
+      "Verify two compatible accounts before enabling this router.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    wizard.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("Retained draft");
+  expect(
+    (await page.evaluate(() => (window as any).routerWizardSnapshot())).routers,
+  ).toHaveLength(2);
+  await page.evaluate(() => {
+    (window as any).failCreate = false;
+  });
+  await wizard
+    .getByRole("switch", { name: "Enable router", exact: true })
+    .uncheck();
+  await wizard
+    .getByRole("button", { name: "Create router", exact: true })
+    .click();
+  await expect(wizard).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Manage Retained draft", exact: true }),
+  ).toBeVisible();
+});
+
+test("router editor blocks stale or missing-account saves", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await page.getByRole("button", { name: "Manage Daily", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit router", exact: true });
+  await editor
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("My edit");
+  await page.evaluate(() => (window as any).changeWizardData("router"));
+  await expect(
+    editor.getByRole("button", { name: "Save changes", exact: true }),
+  ).toBeDisabled();
+  await editor
+    .locator("form")
+    .evaluate((form) =>
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      ),
+    );
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual(
+    [],
+  );
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Manage Daily", exact: true }).click();
+  await page.evaluate(() => (window as any).changeWizardData("missing"));
+  await expect(
+    editor.getByRole("button", { name: "Save changes", exact: true }),
+  ).toBeDisabled();
+  await editor
+    .locator("form")
+    .evaluate((form) =>
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      ),
+    );
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual(
+    [],
+  );
+});
+
+test("router deletion keeps accounts and failed removal preserves the editor draft", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await page.getByRole("button", { name: "Manage Daily", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit router", exact: true });
+  await editor
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Keep my changes");
+  await editor
+    .getByRole("button", { name: "Remove router Keep my changes", exact: true })
+    .click();
+  const removal = page.getByRole("alertdialog", {
+    name: "Remove Keep my changes?",
+    exact: true,
+  });
+  await expect(
+    removal.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(removal).toHaveCount(0);
+  await expect(
+    editor.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("Keep my changes");
+  expect(await page.evaluate(() => (window as any).routerWizardCalls)).toEqual(
+    [],
+  );
+  await editor
+    .getByRole("button", { name: "Remove router Keep my changes", exact: true })
+    .click();
+  await page.evaluate(() => {
+    (window as any).failRemove = true;
+  });
+  await removal
+    .getByRole("button", { name: "Remove router", exact: true })
+    .click();
+  await expect(
+    removal.getByText("Stop active runs before removing this router.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    editor.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("Keep my changes");
+  await page.evaluate(() => {
+    (window as any).failRemove = false;
+  });
+  await editor
+    .getByRole("button", { name: "Remove router Keep my changes", exact: true })
+    .click();
+  await removal
+    .getByRole("button", { name: "Remove router", exact: true })
+    .click();
+  await expect(editor).toHaveCount(0);
+  const saved = await page.evaluate(() =>
+    (window as any).routerWizardSnapshot(),
+  );
+  expect(saved.routers.map((r: any) => r.id)).toEqual(["team-router"]);
+  expect(saved.profiles.map((p: any) => p.id)).toEqual([
+    "personal",
+    "work",
+    "team",
+  ]);
+});
+
+for (const editing of [false, true]) {
+  test(`successful nested account removal preserves ${editing ? "existing" : "new"} router settings`, async ({
+    page,
+  }) => {
+    await routerWizardFixture(page);
+    if (editing)
+      await page
+        .getByRole("button", { name: "Manage Daily", exact: true })
+        .click();
+    else await chooseCli(page, "codex");
+    const editor = page.getByRole("dialog", {
+      name: editing ? "Edit router" : "New router",
+      exact: true,
+    });
+    await editor
+      .getByRole("textbox", { name: "Router name", exact: true })
+      .fill("Keep my setup");
+    await editor
+      .getByRole("switch", { name: "Enable router", exact: true })
+      .uncheck();
+    await editor.getByText("Advanced", { exact: true }).click();
+    await editor
+      .getByRole("switch", {
+        name: "Balance remaining quota for Keep my setup",
+        exact: true,
+      })
+      .check();
+    await editor
+      .getByRole("button", { name: "Manage Work", exact: true })
+      .click();
+    const account = page.getByRole("dialog", { name: "Work", exact: true });
+    await account
+      .getByRole("button", { name: "Remove account Work", exact: true })
+      .click();
+    await page
+      .getByRole("alertdialog", { name: "Remove Work?", exact: true })
+      .getByRole("button", { name: "Remove account", exact: true })
+      .click();
+    await expect(account).toHaveCount(0);
+    await expect(
+      editor.getByRole("textbox", { name: "Router name", exact: true }),
+    ).toHaveValue("Keep my setup");
+    await expect(
+      editor.getByRole("switch", {
+        name: "Balance remaining quota for Keep my setup",
+        exact: true,
+      }),
+    ).toBeChecked();
+    const save = editor.getByRole("button", {
+      name: editing ? "Save changes" : "Create router",
+      exact: true,
+    });
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(editor).toHaveCount(0);
+    const calls = await page.evaluate(() => (window as any).routerWizardCalls);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(
+      expect.objectContaining({
+        expectedRevision: 2,
+        action: expect.objectContaining({
+          type: editing ? "update_router" : "create_router",
+          label: "Keep my setup",
+          orderedProfileIds: ["personal"],
+          enabled: false,
+          balanceRemainingQuota: true,
+        }),
+      }),
+    );
+  });
+}
+
+test("nested account removal does not accept unrelated router changes", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await page.getByRole("button", { name: "Manage Daily", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit router", exact: true });
+  await editor
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("My reviewed draft");
+  await editor
+    .getByRole("button", { name: "Manage Work", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Work", exact: true })
+    .getByRole("button", { name: "Remove account Work", exact: true })
+    .click();
+  await page.evaluate(() => {
+    (window as any).changeOnRemove = true;
+  });
+  await page
+    .getByRole("alertdialog", { name: "Remove Work?", exact: true })
+    .getByRole("button", { name: "Remove account", exact: true })
+    .click();
+  await expect(
+    editor.getByRole("button", { name: "Save changes", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    editor.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("My reviewed draft");
+  await editor
+    .locator("form")
+    .evaluate((form) =>
+      form.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      ),
+    );
+  expect(
+    await page.evaluate(() => (window as any).routerWizardCalls),
+  ).toHaveLength(1);
+});
+
+test("pending credential cleanup can be retried without discarding the router draft", async ({
+  page,
+}) => {
+  await routerWizardFixture(page);
+  await page.getByRole("button", { name: "Manage Daily", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit router", exact: true });
+  await editor
+    .getByRole("textbox", { name: "Router name", exact: true })
+    .fill("Keep my draft");
+  await editor
+    .getByRole("switch", { name: "Enable router", exact: true })
+    .uncheck();
+  await editor.getByText("Advanced", { exact: true }).click();
+  await editor
+    .getByRole("switch", {
+      name: "Balance remaining quota for Keep my draft",
+      exact: true,
+    })
+    .check();
+  await editor
+    .getByRole("button", { name: "Manage Work", exact: true })
+    .click();
+  const account = page.getByRole("dialog", { name: "Work", exact: true });
+  await account
+    .getByRole("button", { name: "Remove account Work", exact: true })
+    .click();
+  const removal = page.getByRole("alertdialog", {
+    name: "Remove Work?",
+    exact: true,
+  });
+  await page.evaluate(() => {
+    (window as any).pendingCleanup = true;
+  });
+  await removal
+    .getByRole("button", { name: "Remove account", exact: true })
+    .click();
+  await expect(
+    removal.getByText("API key removal is pending. Retry removal.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await removal.getByRole("button", { name: "Cancel", exact: true }).click();
+  await account
+    .getByRole("button", { name: "Remove account Work", exact: true })
+    .click();
+  await removal
+    .getByRole("button", { name: "Remove account", exact: true })
+    .click();
+  await expect(account).toHaveCount(0);
+  await expect(
+    editor.getByRole("textbox", { name: "Router name", exact: true }),
+  ).toHaveValue("Keep my draft");
+  await expect(
+    editor.getByRole("switch", {
+      name: "Balance remaining quota for Keep my draft",
+      exact: true,
+    }),
+  ).toBeChecked();
+  const save = editor.getByRole("button", {
+    name: "Save changes",
+    exact: true,
+  });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(editor).toHaveCount(0);
+  const calls = await page.evaluate(() => (window as any).routerWizardCalls);
+  expect(calls.map((call: any) => call.expectedRevision)).toEqual([1, 2, 3]);
+  expect(calls[2].action).toEqual(
+    expect.objectContaining({
+      type: "update_router",
+      routerId: "daily",
+      label: "Keep my draft",
+      orderedProfileIds: ["personal"],
+      enabled: false,
+      balanceRemainingQuota: true,
+    }),
+  );
+});
+async function chooseRoute(scope: Locator, id: string) {
+  await expect(scope).toBeVisible();
+  if (!(await scope.locator(".router-launch-heading").count()))
+    await scope
+      .getByRole("button", { name: "New run", exact: true })
+      .first()
+      .click();
+  await expect(scope.locator(".router-launch-heading")).toBeVisible();
+  while (
+    !(await scope
+      .getByRole("radiogroup", { name: "Router", exact: true })
+      .isVisible())
+  )
+    await scope.getByRole("button", { name: "Back", exact: true }).click();
+  await scope
+    .locator(`label:has(input[name="launch-router"][value="${id}"])`)
+    .click();
+  await scope.getByRole("button", { name: "Next", exact: true }).click();
+  const modes = scope.getByRole("radiogroup", {
+    name: "Execution mode",
+    exact: true,
+  });
+  if (
+    (await modes.isVisible()) &&
+    (await modes.locator("input:checked").count())
+  )
+    await scope.getByRole("button", { name: "Next", exact: true }).click();
+}
+async function chooseMode(scope: Locator, mode: string) {
+  const modes = scope.getByRole("radiogroup", {
+    name: "Execution mode",
+    exact: true,
+  });
+  if (!(await modes.isVisible()))
+    await scope.getByRole("button", { name: "Back", exact: true }).click();
+  await modes.locator(`label:has(input[value="${mode}"])`).click();
+  await scope.getByRole("button", { name: "Next", exact: true }).click();
+}
+
 test("saved history requires explicit account consent and rejects stale review", async ({
   page,
 }) => {
@@ -166,6 +888,9 @@ test("saved history requires explicit account consent and rejects stale review",
     pane.getByRole("button", { name: "Continue saved task", exact: true }),
   ).toBeVisible();
   const runDialog = await openNativeModelDialog(page);
+  await runDialog.getByRole("button", { name: /^History/ }).click();
+  if (await runDialog.getByText("All runs", { exact: true }).isVisible())
+    await runDialog.getByText("All runs", { exact: true }).click();
   await runDialog
     .getByRole("combobox", { name: "Run history", exact: true })
     .selectOption("grant-run");
@@ -181,7 +906,7 @@ test("saved history requires explicit account consent and rejects stale review",
   ).toHaveValue("grant-run");
 });
 
-test("router tab lists every CLI and saves account order with revision fencing", async ({
+test("router excludes removed CLIs and saves account order with revision fencing", async ({
   page,
 }) => {
   await mockDesktop(page, false, null);
@@ -190,15 +915,14 @@ test("router tab lists every CLI and saves account order with revision fencing",
     const original = desktop.__TAURI_INTERNALS__.invoke;
     const snapshot = {
       revision: 1,
-      capabilities: Object.entries(names).map(([cli]) => ({
+      capabilities: Object.entries(names).map(([cli, name]) => ({
         cli,
-        canCreateProfile: ["codex", "claude", "gemini", "pi", "goose"].includes(
-          cli,
-        ),
+        name,
+        canCreateProfile: ["codex", "claude", "gemini", "pi"].includes(cli),
         canVerifyLogin: cli === "codex" || cli === "claude",
-        canStart: ["codex", "claude", "gemini", "pi", "goose"].includes(cli),
+        canStart: ["codex", "claude", "gemini", "pi"].includes(cli),
         profileTerminal: ["codex", "claude", "gemini", "pi"].includes(cli),
-        managedTurns: ["claude", "gemini", "pi", "goose"].includes(cli),
+        managedTurns: ["claude", "gemini", "pi"].includes(cli),
         sameAccountResume: false,
         crossAccountResume: false,
         quotaRead: cli === "codex",
@@ -209,15 +933,17 @@ test("router tab lists every CLI and saves account order with revision fencing",
             ? "Separate account terminals and quota are available. Managed runs are unavailable."
             : "Separate accounts are not supported for this CLI yet.",
       })),
-      profiles: ["first", "second"].map((id) => ({
-        id,
-        cli: "codex",
-        label: id === "first" ? "Personal" : "Work",
-        enabled: true,
-        revision: 1,
-        authState: "ready",
-        storageMode: "cli_managed",
-      })),
+      profiles: [
+        ...["first", "second"].map((id) => ({
+          id,
+          cli: "codex",
+          label: id === "first" ? "Personal" : "Work",
+          enabled: true,
+          revision: 1,
+          authState: "ready",
+          storageMode: "cli_managed",
+        })),
+      ],
       routers: [
         {
           id: "pool",
@@ -254,82 +980,166 @@ test("router tab lists every CLI and saves account order with revision fencing",
   }, cliNames);
   await page.goto("/?window=settings&page=agent-control");
   await page.getByRole("tab", { name: "Router", exact: true }).click();
-  await expect(page.locator("#router-cli option")).toHaveCount(32);
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("aider");
+  await expect(page.locator(".router-cli-option")).toHaveCount(0);
   await expect(
-    page.getByText("Separate accounts are not supported for this CLI yet.", {
-      exact: true,
-    }),
+    page.getByRole("button", { name: "Manage Daily router", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: "test-results/router-ux-dashboard.png" });
+  await page.getByRole("button", { name: "New router", exact: true }).click();
+  await expect(
+    page.getByRole("searchbox", { name: "Search agents", exact: true }),
+  ).toBeFocused();
+  await expect(page.locator(".router-cli-option")).toHaveText([
+    "Codex",
+    "Antigravity CLI",
+    "Cursor CLI",
+    "Claude Code",
+    "Gemini CLI",
+    "GitHub Copilot CLI",
+    "OpenCode",
+    "OpenClaw",
+    "Hermes Agent",
+    "Pi Coding Agent",
+    "Kilo Code CLI",
+    "Qwen Code",
+    "Kiro CLI",
+    "Mistral Vibe",
+    "Kimi Code CLI",
+    "Grok Build",
+  ]);
+  await page.screenshot({ path: "test-results/router-cli-catalog.png" });
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+  await page.screenshot({
+    path: "test-results/router-cli-picker-compact-dark.png",
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.getByRole("searchbox", { name: "Search agents" }).fill("Aider");
+  await expect(page.locator(".router-cli-option")).toHaveCount(0);
+  await expect(
+    page.getByText("No matching CLI.", { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => (window as any).routerCalls)).toEqual([]);
+  await chooseCli(page, "cursor");
+  await expect(
+    page.getByText(
+      "Account routing is unavailable for this agent. See support details.",
+      {
+        exact: true,
+      },
+    ),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Add account", exact: true }),
-  ).toHaveCount(0);
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("codex");
-  await page.getByRole("button", { name: "Move Work up", exact: true }).click();
+  ).toBeDisabled();
+  await page
+    .getByRole("dialog", { name: "New router", exact: true })
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Manage Daily router", exact: true })
+    .click();
+  const route = page.getByRole("dialog", { name: "Edit router", exact: true });
+  await route
+    .getByRole("button", { name: "Move Work up", exact: true })
+    .click();
   await expect(
-    page
+    route
       .getByRole("list", { name: "Account order for Daily router" })
       .getByRole("listitem")
       .first(),
   ).toContainText("Work");
+  expect(await page.evaluate(() => (window as any).routerCalls)).toEqual([]);
+  await page.screenshot({ path: "test-results/router-ux-route-order.png" });
+  await route
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click();
   await expect
     .poll(() =>
       page.evaluate(() => (window as any).routerCalls[0]?.expectedRevision),
     )
     .toBe(1);
   await page
-    .getByRole("checkbox", {
+    .getByRole("button", { name: "Manage Daily router", exact: true })
+    .click();
+  await route.getByText("Advanced", { exact: true }).click();
+  await route
+    .getByRole("switch", {
       name: "Balance remaining quota for Daily router",
       exact: true,
     })
     .check();
-  await expect(
-    page.getByText(
-      "Fresh quota reports are unavailable. Runs use account order.",
-      { exact: true },
-    ),
-  ).toBeVisible();
+  await route
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click();
+  await expect(page.getByText("Account order", { exact: true })).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(() => (window as any).routerCalls[1]?.expectedRevision),
     )
     .toBe(2);
+  await page
+    .getByRole("button", { name: "Manage Daily router", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "CLI support details", exact: true })
+    .click();
+  const support = page.getByRole("dialog", { name: "Codex", exact: true });
   await expect(
-    page.getByText(
+    support.getByText(
       "Separate account terminals and quota are available. Managed runs are unavailable.",
       { exact: true },
     ),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
   await page
-    .getByRole("button", { name: "Remove", exact: true })
-    .first()
+    .getByRole("button", { name: "Manage Personal", exact: true })
+    .click();
+  const account = page.getByRole("dialog", { name: "Personal", exact: true });
+  await account
+    .getByRole("button", { name: "Remove account Personal", exact: true })
+    .click();
+  const removal = page.getByRole("alertdialog", {
+    name: "Remove Personal?",
+    exact: true,
+  });
+  await expect(
+    removal.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeFocused();
+  await removal
+    .getByRole("button", { name: "Remove account", exact: true })
     .click();
   await expect(
-    page.getByText("API key removal is pending. Retry removal.", {
+    removal.getByText("API key removal is pending. Retry removal.", {
       exact: true,
     }),
   ).toBeVisible();
+  await removal.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(
-    page.getByText("pending remove · Quota unknown", { exact: true }),
+    account.getByText("Removal pending", { exact: true }),
   ).toBeVisible();
-  const pending = page.locator(".router-profile-row").filter({
-    has: page.getByRole("checkbox", { name: "Enable Personal", exact: true }),
-  });
   await expect(
-    pending.getByRole("checkbox", { name: "Enable Personal", exact: true }),
+    account.getByRole("button", { name: "Sign in with CLI", exact: true }),
   ).toBeDisabled();
   await expect(
-    pending.getByRole("checkbox", { name: "Enable Personal", exact: true }),
-  ).not.toBeChecked();
-  await expect(
-    pending.getByRole("button", { name: "Open CLI to sign in", exact: true }),
+    account.getByRole("button", { name: "Verify", exact: true }),
   ).toBeDisabled();
   await expect(
-    pending.getByRole("button", { name: "Verify", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    pending.getByRole("button", { name: "Remove", exact: true }),
+    account.getByRole("button", {
+      name: "Remove account Personal",
+      exact: true,
+    }),
   ).toBeEnabled();
+  const enabled = page.getByRole("switch", {
+    name: "Enable Personal",
+    exact: true,
+  });
+  await expect(enabled).toBeDisabled();
+  await expect(enabled).not.toBeChecked();
+  await account.getByRole("button", { name: "Done", exact: true }).click();
+  await route.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.screenshot({ path: "test-results/router-settings.png" });
 });
 
@@ -436,22 +1246,12 @@ test("routed run requires a model and explicit recovery handoff", async ({
     .getByRole("dialog", { name: "Agents", exact: true })
     .getByRole("button", { name: "Open router", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Routed CLI runs",
-    exact: true,
-  });
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("pool");
+  const dialog = page.locator("dialog.router-launch-dialog");
+  await chooseRoute(dialog, "pool");
   await expect(
     dialog.getByRole("button", { name: "Start run", exact: true }),
   ).toBeDisabled();
-  await expect(
-    dialog.getByText(
-      "Text-only CLI run. Project files and tools are unavailable. Every turn starts a fresh conversation.",
-      { exact: true },
-    ),
-  ).toBeVisible();
+  await expect(dialog.getByText("Chat", { exact: true })).toBeVisible();
   await dialog.getByLabel("Model", { exact: true }).fill("gemini-2.5-pro");
   await dialog.getByRole("button", { name: "Start run", exact: true }).click();
   const pane = page.getByRole("region", { name: "CLI run", exact: true });
@@ -488,6 +1288,9 @@ test("routed run requires a model and explicit recovery handoff", async ({
     .getByRole("dialog", { name: "Agents", exact: true })
     .getByRole("button", { name: "Open router", exact: true })
     .click();
+  await dialog.getByRole("button", { name: /^History/ }).click();
+  if (await dialog.getByText("All runs", { exact: true }).isVisible())
+    await dialog.getByText("All runs", { exact: true }).click();
   await dialog
     .getByRole("combobox", { name: "Run history", exact: true })
     .selectOption(
@@ -517,7 +1320,7 @@ test("routed run requires a model and explicit recovery handoff", async ({
     dialog
       .getByRole("combobox", { name: "Run history", exact: true })
       .locator("option"),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
   const removed = await page.evaluate(() => (window as any).routerRunCalls[3]);
   expect(removed).toMatchObject({
     command: "cli_run_remove",
@@ -623,23 +1426,21 @@ test("Codex pool opens a routed terminal without starting a managed run", async 
     .getByRole("dialog", { name: "Agents", exact: true })
     .getByRole("button", { name: "Open router", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", {
-    name: "Routed CLI runs",
-    exact: true,
-  });
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("codex-pool");
+  const dialog = page.locator("dialog.router-launch-dialog");
+  await chooseRoute(dialog, "codex-pool");
   await expect(dialog.getByLabel("Model", { exact: true })).toHaveCount(0);
   await expect(
     dialog.getByRole("button", { name: "Start run", exact: true }),
   ).toHaveCount(0);
   await expect(
     dialog.getByText(
-      "Account order chooses a new terminal only. Running CLI sessions keep their accounts.",
+      "Uses the next routed account. Existing sessions keep their accounts.",
       { exact: false },
     ),
   ).toBeVisible();
+  expect(
+    await page.evaluate(() => (window as any).routerTerminalCalls),
+  ).toEqual([]);
   await page.screenshot({ path: "test-results/router-terminal.png" });
   await dialog
     .getByRole("button", { name: "Open routed terminal", exact: true })
@@ -907,27 +1708,15 @@ test("quota expires locally without polling native snapshots", async ({
   });
   await page.goto("/?window=settings&page=agent-control");
   await page.getByRole("tab", { name: "Router", exact: true }).click();
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("codex");
-  await expect(
-    page.getByText("ready · 40% remaining", { exact: true }),
-  ).toHaveCount(2);
-  await expect(
-    page.getByText(
-      "Fresh quota reports are unavailable. Runs use account order.",
-      { exact: true },
-    ),
-  ).toHaveCount(0);
+  await chooseCli(page, "codex");
+  await expect(page.getByLabel("40% remaining", { exact: true })).toHaveCount(
+    2,
+  );
+  await expect(page.getByText("Account order", { exact: true })).toHaveCount(0);
   const reads = await page.evaluate(() => (window as any).quotaSnapshotReads);
   await page.clock.fastForward(2001);
-  await expect(
-    page.getByText("ready · Quota stale", { exact: true }),
-  ).toHaveCount(2);
-  await expect(
-    page.getByText(
-      "Fresh quota reports are unavailable. Runs use account order.",
-      { exact: true },
-    ),
-  ).toBeVisible();
+  await expect(page.getByLabel("Quota stale", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("Account order", { exact: true })).toBeVisible();
   await page.clock.fastForward(60000);
   expect(await page.evaluate(() => (window as any).quotaSnapshotReads)).toBe(
     reads,
@@ -945,8 +1734,8 @@ test("API-only profiles require a key and never open a login terminal", async ({
       revision: 1,
       capabilities: [
         {
-          cli: "goose",
-          name: "Goose",
+          cli: "openclaw",
+          name: "OpenClaw",
           canCreateProfile: true,
           canVerifyLogin: false,
           profileTerminal: false,
@@ -964,7 +1753,7 @@ test("API-only profiles require a key and never open a login terminal", async ({
       profiles: [
         {
           id: "account",
-          cli: "goose",
+          cli: "openclaw",
           label: "API account",
           enabled: true,
           revision: 1,
@@ -998,20 +1787,31 @@ test("API-only profiles require a key and never open a login terminal", async ({
   });
   await page.goto("/?window=settings&page=agent-control");
   await page.getByRole("tab", { name: "Router", exact: true }).click();
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("goose");
-  const login = page.getByRole("button", { name: "Open CLI to sign in" });
-  await expect(login).toBeDisabled();
+  await chooseCli(page, "openclaw");
+  await page
+    .getByRole("button", { name: "Manage API account", exact: true })
+    .click();
+  const login = page.getByRole("button", { name: "Sign in with CLI" });
+  await expect(login).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Verify", exact: true }),
   ).toBeDisabled();
   const key = page.getByLabel("OpenAI API key", { exact: true });
   await key.fill("fixture-api-key-for-source-regression");
-  await page.getByRole("button", { name: "Save API key", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "API account", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Manage API account", exact: true })
+    .click();
   await expect(key).toHaveValue("");
   await expect(
     page.getByRole("button", { name: "Verify", exact: true }),
   ).toBeEnabled();
-  await expect(login).toBeDisabled();
+  await expect(login).toHaveCount(0);
   expect(
     await page.evaluate(() => (window as any).routerProfileCommands),
   ).toEqual(["cli_profile_set_api_key"]);
@@ -1292,8 +2092,8 @@ async function nativeModelFixture(page: Page) {
           models: [{ id: "gpt-4.1" }],
         },
         {
-          cli: "goose",
-          name: "Goose",
+          cli: "hermes",
+          name: "Hermes Agent",
           canCreateProfile: true,
           profileTerminal: false,
           canStart: true,
@@ -1312,7 +2112,7 @@ async function nativeModelFixture(page: Page) {
           storageMode: "cli_managed",
         },
       ],
-      routers: ["codex", "openclaw", "goose"].map((cli) => ({
+      routers: ["codex", "openclaw", "hermes"].map((cli) => ({
         id: `${cli}-pool`,
         cli,
         label: `${cli} router`,
@@ -1361,19 +2161,288 @@ async function openNativeModelDialog(page: Page) {
     .getByRole("dialog", { name: "Agents", exact: true })
     .getByRole("button", { name: "Open router", exact: true })
     .click();
-  return page.getByRole("dialog", { name: "Routed CLI runs", exact: true });
+  return page.locator("dialog.router-launch-dialog");
 }
+
+test("new run and history stay separate and optional setup stays collapsed", async ({
+  page,
+}) => {
+  await nativeModelFixture(page);
+  const dialog = await openNativeModelDialog(page);
+  await expect(dialog.getByRole("radio")).toHaveCount(3);
+  await expect(
+    dialog.getByRole("combobox", { name: "Run history", exact: true }),
+  ).toHaveCount(0);
+  await expect(runField(dialog, "Model")).toHaveCount(0);
+  await chooseRoute(dialog, "codex-pool");
+  await expect(runField(dialog, "Model")).toBeVisible();
+  await expect(
+    dialog.getByRole("textbox", { name: "Run name", exact: true }),
+  ).not.toBeVisible();
+  await dialog.getByText("Name this run", { exact: true }).click();
+  await expect(
+    dialog.getByRole("textbox", { name: "Run name", exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: /^History/ }).click();
+  if (await dialog.getByText("All runs", { exact: true }).isVisible())
+    await dialog.getByText("All runs", { exact: true }).click();
+  await expect(
+    dialog.getByText("No saved runs yet", { exact: true }),
+  ).toBeVisible();
+  await expect(runField(dialog, "Model")).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "New run", exact: true })
+    .first()
+    .click();
+  await chooseRoute(dialog, "codex-pool");
+  await expect(runField(dialog, "Model")).toBeVisible();
+  expect(
+    await page.evaluate(() => (window as any).nativeModelStartCalls),
+  ).toEqual([]);
+  await page.screenshot({ path: "test-results/router-ux-new-run.png" });
+  await page.setViewportSize({ width: 800, height: 600 });
+  await expect(
+    dialog.getByRole("button", { name: "Start run", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      dialog
+        .getByRole("button", { name: "Start run", exact: true })
+        .evaluate((button) => {
+          const bounds = button.getBoundingClientRect();
+          const modal = button.closest("dialog")!.getBoundingClientRect();
+          return bounds.bottom <= modal.bottom && bounds.top >= modal.top;
+        }),
+    )
+    .toBe(true);
+  await page.screenshot({ path: "test-results/router-ux-new-run-compact.png" });
+});
+
+test("account details open with the keyboard and setup never starts CLI work", async ({
+  page,
+}) => {
+  await nativeModelFixture(page);
+  await page.addInitScript(() => {
+    const desktop = window as any;
+    const original = desktop.__TAURI_INTERNALS__.invoke;
+    let created: any;
+    desktop.uxSetupCalls = [];
+    async function snapshot() {
+      const result = await original("cli_router_snapshot");
+      if (created) {
+        result.profiles.push(created);
+        result.revision = 2;
+      }
+      return result;
+    }
+    desktop.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      if (command === "cli_router_snapshot") return snapshot();
+      if (command === "cli_profile_native_report")
+        return args.profileId === "subscription"
+          ? {
+              profileId: "subscription",
+              profileRevision: 1,
+              observedAt: Date.now(),
+              expiresAt: Date.now() + 30000,
+              authenticated: true,
+              observation: {
+                source: "fixture",
+                identity: { displayLabel: "Personal account" },
+                windows: [
+                  {
+                    id: "hourly",
+                    name: "Hourly",
+                    nativeWindow: "5-hour window",
+                    remainingPercent: 80,
+                    disabled: false,
+                    resetAt: null,
+                  },
+                  {
+                    id: "weekly",
+                    name: "Weekly",
+                    nativeWindow: "Weekly window",
+                    remainingPercent: null,
+                    disabled: false,
+                    resetAt: null,
+                  },
+                ],
+              },
+            }
+          : null;
+      if (command === "cli_router_mutate") {
+        desktop.uxSetupCalls.push({ command, ...args.request });
+        if (
+          args.request.expectedRevision !== 1 ||
+          args.request.action.type !== "create_profile"
+        )
+          throw new Error("Unexpected setup mutation");
+        created = {
+          id: "new-account",
+          cli: "codex",
+          label: args.request.action.label,
+          enabled: true,
+          revision: 1,
+          authState: "disconnected",
+          storageMode: "cli_managed",
+        };
+        return snapshot();
+      }
+      if (
+        [
+          "cli_run_start",
+          "cli_run_send",
+          "cli_profile_open_terminal",
+          "cli_profile_verify",
+        ].includes(command)
+      ) {
+        desktop.uxSetupCalls.push({ command });
+        throw new Error("Setup must not start CLI work");
+      }
+      return original(command, args);
+    };
+  });
+  await page.goto("/?window=settings&page=agent-control");
+  await page.getByRole("tab", { name: "Router", exact: true }).click();
+  await chooseCli(page, "codex");
+  await expect(
+    page.getByRole("button", { name: "Sign in with CLI", exact: true }),
+  ).not.toBeVisible();
+  await expect(
+    page.getByText("Verified subscription text turns.", { exact: true }),
+  ).not.toBeVisible();
+  await page.screenshot({ path: "test-results/router-ux-settings.png" });
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  const detailsDialog = page.getByRole("dialog", {
+    name: "Subscription account",
+    exact: true,
+  });
+  const details = detailsDialog
+    .getByText("Account details", { exact: true })
+    .locator("..");
+  await expect(
+    detailsDialog.getByText("80.0% remaining", { exact: true }),
+  ).not.toBeVisible();
+  await details.focus();
+  await details.press("Enter");
+  await expect(
+    detailsDialog.getByText("80.0% remaining", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detailsDialog.getByText("Quota unknown", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/router-style-account-details-light.png",
+  });
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+  await expect
+    .poll(() =>
+      detailsDialog
+        .getByRole("button", { name: "Done", exact: true })
+        .evaluate((button) => {
+          const bounds = button.getBoundingClientRect();
+          const modal = button.closest("dialog")!.getBoundingClientRect();
+          return bounds.bottom <= modal.bottom && bounds.top >= modal.top;
+        }),
+    )
+    .toBe(true);
+  await page.screenshot({
+    path: "test-results/router-style-account-details-dark.png",
+  });
+  await details.press("Space");
+  await expect(
+    detailsDialog.getByText("80.0% remaining", { exact: true }),
+  ).not.toBeVisible();
+  expect(await page.evaluate(() => (window as any).uxSetupCalls)).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(detailsDialog).toHaveCount(0);
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: "Add account", exact: true }).click();
+  const add = page.getByRole("dialog", { name: "Add account", exact: true });
+  const name = add.getByRole("textbox", { name: "Account name", exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("Work");
+  await add.getByRole("button", { name: "Add account", exact: true }).click();
+  const account = page.getByRole("dialog", { name: "Work", exact: true });
+  await expect(
+    account.getByRole("button", { name: "Sign in with CLI", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: "test-results/router-ux-account.png" });
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+  await page.screenshot({
+    path: "test-results/router-ux-account-compact-dark.png",
+  });
+  await page.keyboard.press("Escape");
+  await expect(account).toHaveCount(0);
+  await page.screenshot({
+    path: "test-results/router-ux-settings-compact-dark.png",
+  });
+  expect(await page.evaluate(() => (window as any).uxSetupCalls)).toEqual([
+    expect.objectContaining({
+      command: "cli_router_mutate",
+      expectedRevision: 1,
+      action: { type: "create_profile", cli: "codex", label: "Work" },
+    }),
+  ]);
+});
+
+test("changing how a run works clears the previous model and thinking choice", async ({
+  page,
+}) => {
+  await nativeModelFixture(page);
+  await page.addInitScript(() => {
+    const desktop = window as any;
+    const original = desktop.__TAURI_INTERNALS__.invoke;
+    desktop.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      const result = await original(command, args);
+      if (result?.capabilities)
+        result.capabilities.find(
+          (item: any) => item.cli === "codex",
+        ).codingTurns = true;
+      return result;
+    };
+  });
+  const dialog = await openNativeModelDialog(page);
+  await chooseRoute(dialog, "codex-pool");
+  const mode = dialog.getByRole("radiogroup", {
+    name: "Execution mode",
+    exact: true,
+  });
+  const model = runField(dialog, "Model");
+  const effort = runField(dialog, "Reasoning effort");
+  await chooseMode(dialog, "coding");
+  await model.selectOption("gpt-6-sol");
+  await effort.selectOption("high");
+  await expect(
+    dialog.getByRole("button", { name: "Start run", exact: true }),
+  ).toBeEnabled();
+  await chooseMode(dialog, "text");
+  await expect(model).toHaveValue("");
+  await expect(effort).toHaveValue("");
+  await expect(
+    dialog.getByRole("button", { name: "Start run", exact: true }),
+  ).toBeDisabled();
+  expect(
+    await page.evaluate(() => (window as any).nativeModelStartCalls),
+  ).toEqual([]);
+});
 
 test("native model catalogs require explicit choices and fence efforts across CLI changes", async ({
   page,
 }) => {
   await nativeModelFixture(page);
   const dialog = await openNativeModelDialog(page);
-  const router = dialog.getByRole("combobox", { name: "Router", exact: true });
+
   const model = runField(dialog, "Model");
   const effort = runField(dialog, "Reasoning effort");
   const start = dialog.getByRole("button", { name: "Start run", exact: true });
-  await router.selectOption("codex-pool");
+  await chooseRoute(dialog, "codex-pool");
   await expect(model).toHaveValue("");
   await expect(model.locator("option")).toHaveText([
     "Choose a model",
@@ -1392,6 +2461,13 @@ test("native model catalogs require explicit choices and fence efforts across CL
   await expect(start).toBeDisabled();
   await effort.selectOption("high");
   await expect(start).toBeEnabled();
+  await dialog.getByRole("button", { name: "Back", exact: true }).click();
+  await dialog.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(model).toHaveValue("gpt-6-sol");
+  await expect(effort).toHaveValue("high");
+  expect(
+    await page.evaluate(() => (window as any).nativeModelStartCalls),
+  ).toEqual([]);
   await model.selectOption("gpt-6-luna");
   await expect(effort).toHaveValue("");
   await expect(effort.locator("option")).toHaveText([
@@ -1400,7 +2476,7 @@ test("native model catalogs require explicit choices and fence efforts across CL
   ]);
   await expect(start).toBeDisabled();
   await effort.selectOption("low");
-  await router.selectOption("openclaw-pool");
+  await chooseRoute(dialog, "openclaw-pool");
   await expect(model).toHaveValue("");
   await expect(model.locator("option")).toHaveText([
     "Choose a model",
@@ -1410,7 +2486,7 @@ test("native model catalogs require explicit choices and fence efforts across CL
   await expect(start).toBeDisabled();
   await model.selectOption("gpt-4.1");
   await expect(start).toBeEnabled();
-  await router.selectOption("codex-pool");
+  await chooseRoute(dialog, "codex-pool");
   await expect(model).toHaveValue("");
   await expect(effort).toHaveValue("");
   await expect(start).toBeDisabled();
@@ -1426,7 +2502,7 @@ test("native model catalogs require explicit choices and fence efforts across CL
         reasoningEffort: "medium",
       }),
     ]);
-  await router.selectOption("goose-pool");
+  await chooseRoute(dialog, "hermes-pool");
   await expect(model).toHaveValue("");
   expect(await model.evaluate((element) => element.tagName)).toBe("INPUT");
   await model.fill("provider-model-without-native-fixed-catalog");
@@ -1438,9 +2514,7 @@ test("updated native catalog rejects stale model and effort even on direct form 
 }) => {
   await nativeModelFixture(page);
   const dialog = await openNativeModelDialog(page);
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("codex-pool");
+  await chooseRoute(dialog, "codex-pool");
   const model = runField(dialog, "Model");
   const effort = runField(dialog, "Reasoning effort");
   const start = dialog.getByRole("button", { name: "Start run", exact: true });
@@ -1501,28 +2575,24 @@ test("managed Codex accounts show subscription guidance without an API key form"
   await nativeModelFixture(page);
   await page.goto("/?window=settings&page=agent-control");
   await page.getByRole("tab", { name: "Router", exact: true }).click();
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("codex");
+  await chooseCli(page, "codex");
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  const account = page.getByRole("dialog", {
+    name: "Subscription account",
+    exact: true,
+  });
   await expect(
-    page.getByText(
-      "Managed text turns require a verified subscription account and a current native quota report.",
-      { exact: false },
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Open CLI to sign in", exact: true }),
+    account.getByRole("button", { name: "Sign in with CLI", exact: true }),
   ).toBeEnabled();
   await expect(
-    page.getByRole("button", { name: "Verify", exact: true }),
+    account.getByRole("button", { name: "Verify", exact: true }),
   ).toBeEnabled();
   await expect(
-    page.getByRole("button", { name: "Save API key", exact: true }),
+    account.getByRole("textbox", { name: "API key", exact: true }),
   ).toHaveCount(0);
-  await expect(
-    page.locator('.router-profile-row input[type="password"]'),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText("Save your own API key", { exact: false }),
-  ).toHaveCount(0);
+  await expect(account.locator('input[type="password"]')).toHaveCount(0);
 });
 
 test("coding requires native capability and preserves exact model choices without auto-start", async ({
@@ -1553,22 +2623,20 @@ test("coding requires native capability and preserves exact model choices withou
     };
   });
   const dialog = await openNativeModelDialog(page);
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("codex-pool");
-  const mode = dialog.getByRole("combobox", {
+  await chooseRoute(dialog, "codex-pool");
+  const mode = dialog.getByRole("radiogroup", {
     name: "Execution mode",
     exact: true,
   });
   const model = runField(dialog, "Model");
   const effort = runField(dialog, "Reasoning effort");
   const start = dialog.getByRole("button", { name: "Start run", exact: true });
-  await expect(mode).toHaveValue("");
-  await mode.selectOption("coding");
+  await expect(mode.locator("input:checked")).toHaveCount(0);
+  await chooseMode(dialog, "coding");
   await expect(model).toHaveValue("");
   await expect(start).toBeDisabled();
-  await expect(dialog).toContainText(
-    "Every write or patch requires your explicit approval",
+  await expect(dialog.locator(".router-launch-selection")).toContainText(
+    "Edit files",
   );
   await model.selectOption("gpt-6-sol");
   await effort.selectOption("high");
@@ -1576,13 +2644,12 @@ test("coding requires native capability and preserves exact model choices withou
     await page.evaluate(() => (window as any).nativeModelStartCalls),
   ).toEqual([]);
   await page.evaluate(() => (window as any).setCodingAvailable(false));
-  await expect(mode.locator('option[value="coding"]')).toHaveCount(0);
-  await expect(mode).toHaveValue("text");
-  await expect(model).toHaveValue("");
-  await expect(effort).toHaveValue("");
-  await expect(start).toBeDisabled();
-  await start.evaluate((button) =>
-    button
+  await expect(mode.locator('input[value="coding"]')).toHaveCount(0);
+  await expect(mode.locator('input[value="text"]')).toBeChecked();
+  await expect(model).toHaveCount(0);
+  await expect(effort).toHaveCount(0);
+  await mode.evaluate((element) =>
+    element
       .closest("form")!
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
   );
@@ -1590,8 +2657,9 @@ test("coding requires native capability and preserves exact model choices withou
     await page.evaluate(() => (window as any).nativeModelStartCalls),
   ).toEqual([]);
   await page.evaluate(() => (window as any).setCodingAvailable(true));
-  await expect(mode).toHaveValue("");
-  await mode.selectOption("coding");
+  await expect(mode).toBeVisible();
+  await expect(mode.locator("input:checked")).toHaveCount(0);
+  await chooseMode(dialog, "coding");
   await expect(model).toHaveValue("");
   await expect(effort).toHaveValue("");
   await expect(start).toBeDisabled();
@@ -1607,15 +2675,13 @@ test("coding requires native capability and preserves exact model choices withou
         reasoningEffort: "high",
       }),
     ]);
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("openclaw-pool");
-  await expect(mode).toHaveValue("text");
-  await expect(mode.locator("option")).toHaveText([
-    "Choose an execution mode",
-    "Text",
-  ]);
+  await chooseRoute(dialog, "openclaw-pool");
   await expect(model).toHaveValue("");
+  await dialog.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(mode.getByRole("radio")).toHaveCount(1);
+  await expect(
+    mode.getByRole("radio", { name: "Chat", exact: true }),
+  ).toBeChecked();
 });
 
 test("coding pane acknowledgement never launches and UTF-8 overflow retains the draft", async ({
@@ -1761,12 +2827,8 @@ test("gateway creation requires an explicit mode and arbitrary model without rea
     };
   });
   const dialog = await openNativeModelDialog(page);
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("codex-pool");
-  await dialog
-    .getByRole("combobox", { name: "Execution mode", exact: true })
-    .selectOption("gateway");
+  await chooseRoute(dialog, "codex-pool");
+  await chooseMode(dialog, "gateway");
   const model = runField(dialog, "Model");
   expect(await model.evaluate((element) => element.tagName)).toBe("INPUT");
   await expect(model).toHaveValue("");
@@ -1856,6 +2918,13 @@ test("restored Gateway pane waits for explicit Start CLI and binds the saved she
       runs: [run],
     };
     desktop.gatewayCalls = [];
+    desktop.gatewayLongStatus = async () => {
+      run.statusMessage = "Temporary gateway failure. ".repeat(30);
+      snapshot.revision++;
+      await desktop.__nativeTest.emitEvent("cli-router-changed", {
+        revision: snapshot.revision,
+      });
+    };
     desktop.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
       if (command === "cli_router_snapshot") return structuredClone(snapshot);
       if (command === "start_terminal") {
@@ -1907,6 +2976,35 @@ test("restored Gateway pane waits for explicit Start CLI and binds the saved she
         }),
       }),
     ]);
+  await pane.evaluate((element) => {
+    Object.assign((element as HTMLElement).style, {
+      height: "300px",
+      flex: "none",
+    });
+  });
+  await page.evaluate(() => (window as any).gatewayLongStatus());
+  await expect(pane.locator(".router-gateway-content")).toContainText(
+    "Temporary gateway failure.",
+  );
+  await expect
+    .poll(() =>
+      pane.evaluate((element) => {
+        const parent = element.getBoundingClientRect();
+        const controls = element
+          .querySelector(".router-gateway-content")!
+          .getBoundingClientRect();
+        const terminal = element
+          .querySelector(".terminal-pane")!
+          .getBoundingClientRect();
+        return (
+          controls.bottom <= terminal.top + 1 &&
+          terminal.bottom <= parent.bottom + 1 &&
+          terminal.height > 60
+        );
+      }),
+    )
+    .toBe(true);
+  await page.screenshot({ path: "test-results/router-ux-gateway-short.png" });
   await pane.getByRole("button", { name: "Stop CLI", exact: true }).click();
   await expect(
     pane.getByRole("button", { name: "Resume CLI", exact: true }),
@@ -1993,45 +3091,55 @@ async function gatewaySettingsFixture(page: Page) {
   });
   await page.goto("/?window=settings&page=agent-control");
   await page.getByRole("tab", { name: "Router", exact: true }).click();
-  await page.getByLabel("CLI agent", { exact: true }).selectOption("codex");
+  await chooseCli(page, "codex");
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  await page.getByRole("button", { name: "API key", exact: true }).click();
 }
 
 test("gateway endpoint canonicalization enables key save and endpoint changes discard old key drafts", async ({
   page,
 }) => {
   await gatewaySettingsFixture(page);
-  const endpoint = page.getByLabel("Gateway API endpoint", {
+  const endpoint = page.getByLabel("API endpoint", {
     exact: true,
   });
   const saveEndpoint = page.getByRole("button", {
-    name: "Save gateway endpoint",
+    name: "Save endpoint",
     exact: true,
   });
-  await expect(page.getByLabel("Gateway API key", { exact: true })).toHaveCount(
-    0,
-  );
+  await page
+    .getByRole("dialog", { name: "Subscription account", exact: true })
+    .getByText("Advanced", { exact: true })
+    .click();
   await endpoint.fill("https://api.example.test/");
   await saveEndpoint.click();
   // The native snapshot owns the canonical endpoint; a stale slash-bearing
   // input draft must not prevent saving a key for that exact destination.
   await expect(endpoint).toHaveValue("https://api.example.test");
-  const key = page.getByLabel("Gateway API key", { exact: true });
+  const key = page.getByLabel("API key", { exact: true });
   const saveKey = page.getByRole("button", {
-    name: "Save API key",
+    name: "Save connection",
     exact: true,
   });
   await key.fill("owned-first-test-key");
   await expect(saveKey).toBeEnabled();
   await saveKey.click();
+  await expect(
+    page.getByRole("dialog", { name: "Subscription account", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Subscription account", exact: true })
+    .getByText("Advanced", { exact: true })
+    .click();
   await expect(key).toHaveValue("");
   await key.fill("draft-for-old-endpoint");
   await endpoint.fill("https://other.example.test/");
-  await expect(saveKey).toBeDisabled();
-  await saveKey.evaluate((button) =>
-    button
-      .closest("form")!
-      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-  );
+  // Endpoint-only save discards an existing key draft instead of binding it.
   await saveEndpoint.click();
   await expect(endpoint).toHaveValue("https://other.example.test");
   await expect(key).toHaveValue("");
@@ -2039,6 +3147,16 @@ test("gateway endpoint canonicalization enables key save and endpoint changes di
   await key.fill("owned-second-test-key");
   await expect(saveKey).toBeEnabled();
   await saveKey.click();
+  await expect(
+    page.getByRole("dialog", { name: "Subscription account", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Subscription account", exact: true })
+    .getByText("Advanced", { exact: true })
+    .click();
   const calls = await page.evaluate(() => (window as any).gatewaySettingsCalls);
   expect(calls.map((call: any) => call.command)).toEqual([
     "cli_router_mutate",
@@ -2114,26 +3232,29 @@ test("native creation is explicit and preserves the CLI model without dispatch o
     };
   });
   const dialog = await openNativeModelDialog(page);
-  await dialog
-    .getByRole("combobox", { name: "Router", exact: true })
-    .selectOption("claude-native");
-  const mode = dialog.getByRole("combobox", {
+  await chooseRoute(dialog, "claude-native");
+  const mode = dialog.getByRole("radiogroup", {
     name: "Execution mode",
     exact: true,
   });
-  await expect(mode.locator('option[value="native"]')).toHaveCount(1);
-  await expect(mode).toHaveValue("");
-  await mode.selectOption("native");
-  await expect(dialog).toContainText("Permission requests appear in Lomi");
-  const model = runField(dialog, "Model");
-  expect(await model.evaluate((element) => element.tagName)).toBe("INPUT");
-  await model.fill("claude-exact-native-model");
+  await expect(mode.locator('input[value="native"]')).toHaveCount(1);
+  await expect(mode.locator("input:checked")).toHaveCount(0);
+  await dialog.getByText("Open a terminal instead", { exact: true }).click();
   await expect(
     dialog.getByRole("button", {
       name: "Open native account terminal",
       exact: true,
     }),
   ).toBeVisible();
+  await chooseMode(dialog, "native");
+  await expect(dialog.locator(".router-launch-selection")).toContainText(
+    "CLI account",
+  );
+
+  const model = runField(dialog, "Model");
+  expect(await model.evaluate((element) => element.tagName)).toBe("INPUT");
+  await model.fill("claude-exact-native-model");
+
   expect(
     await page.evaluate(() => (window as any).nativeModelStartCalls),
   ).toEqual([]);
@@ -2884,10 +4005,10 @@ test("Pi native handoff invalidates changed identities and nested cancel preserv
     .getByRole("dialog", { name: "Agents", exact: true })
     .getByRole("button", { name: "Open router", exact: true })
     .click();
-  const outer = page.getByRole("dialog", {
-    name: "Routed CLI runs",
-    exact: true,
-  });
+  const outer = page.locator("dialog.router-launch-dialog");
+  await outer.getByRole("button", { name: /^History/ }).click();
+  if (await outer.getByText("All runs", { exact: true }).isVisible())
+    await outer.getByText("All runs", { exact: true }).click();
   await outer
     .getByRole("combobox", { name: "Run history", exact: true })
     .selectOption("pi-handoff-run");
@@ -2998,4 +4119,222 @@ test("Pi native handoff invalidates changed identities and nested cancel preserv
   expect(await page.evaluate(() => (window as any).piHandoffEffects)).toEqual(
     [],
   );
+});
+
+test("one connection save binds a key to the returned canonical endpoint revision", async ({
+  page,
+}) => {
+  await gatewaySettingsFixture(page);
+  await page
+    .getByLabel("API endpoint", { exact: true })
+    .fill("https://api.example.test/");
+  await page
+    .getByLabel("API key", { exact: true })
+    .fill("reviewed-destination-key");
+  await page
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Subscription account", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Manage Subscription account", exact: true })
+    .click();
+  await expect(page.getByLabel("API endpoint", { exact: true })).toHaveValue(
+    "https://api.example.test",
+  );
+  await expect(page.getByLabel("API key", { exact: true })).toHaveValue("");
+  const calls = await page.evaluate(() => (window as any).gatewaySettingsCalls);
+  expect(calls.map((call: any) => call.command)).toEqual([
+    "cli_router_mutate",
+    "cli_profile_set_api_key",
+  ]);
+  expect(calls[1]).toEqual(
+    expect.objectContaining({
+      profileId: "subscription",
+      expectedRevision: 2,
+      key: "reviewed-destination-key",
+    }),
+  );
+  expect(
+    await page.evaluate(() => (window as any).nativeModelStartCalls),
+  ).toEqual([]);
+  await page.screenshot({ path: "test-results/router-ux-api.png" });
+});
+
+test("a changed returned gateway destination blocks key binding and preserves its draft", async ({
+  page,
+}) => {
+  await gatewaySettingsFixture(page);
+  await page.evaluate(() => {
+    const desktop = window as any;
+    const original = desktop.__TAURI_INTERNALS__.invoke;
+    desktop.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      const result = await original(command, args);
+      if (
+        command === "cli_router_mutate" &&
+        args.request.action.type === "configure_gateway_account"
+      )
+        result.profiles[0].gatewayProvider.baseUrl =
+          "https://unreviewed.example.test";
+      return result;
+    };
+  });
+  await page
+    .getByLabel("API endpoint", { exact: true })
+    .fill("https://reviewed.example.test");
+  await page
+    .getByLabel("API key", { exact: true })
+    .fill("keep-unbound-key-draft");
+  await page
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "The account destination changed. Review it before saving a key.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByLabel("API key", { exact: true })).toHaveValue(
+    "keep-unbound-key-draft",
+  );
+  expect(
+    await page.evaluate(() =>
+      (window as any).gatewaySettingsCalls.map((call: any) => call.command),
+    ),
+  ).toEqual(["cli_router_mutate"]);
+});
+
+test("a managed API key stays direct until the user supplies a gateway endpoint", async ({
+  page,
+}) => {
+  await mockDesktop(page, false, null);
+  await page.addInitScript(() => {
+    const desktop = window as any;
+    const original = desktop.__TAURI_INTERNALS__.invoke;
+    const profile = {
+      id: "direct",
+      cli: "claude",
+      label: "Direct account",
+      enabled: true,
+      revision: 1,
+      authState: "disconnected",
+      storageMode: "cli_managed",
+      gatewayProvider: null,
+    };
+    const snapshot = {
+      revision: 1,
+      profiles: [profile],
+      routers: [],
+      quota: [],
+      runs: [],
+      capabilities: [
+        {
+          cli: "claude",
+          name: "Claude Code",
+          canCreateProfile: true,
+          canVerifyLogin: true,
+          profileTerminal: true,
+          managedTurns: true,
+          apiKeyLabel: "Anthropic API key",
+          gatewayTerminal: true,
+          gatewayProtocol: "anthropic",
+        },
+      ],
+    };
+    desktop.directApiCalls = [];
+    desktop.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      if (command === "cli_router_snapshot") return structuredClone(snapshot);
+      if (command === "cli_profile_native_report") return null;
+      if (command === "cli_profile_set_api_key") {
+        if (args.expectedRevision !== profile.revision)
+          throw new Error("Stale direct key review");
+        desktop.directApiCalls.push({ command, ...args });
+        profile.revision++;
+        profile.authState = "ready";
+        profile.storageMode = "api_key";
+        snapshot.revision++;
+        return structuredClone(snapshot);
+      }
+      if (
+        [
+          "cli_router_mutate",
+          "cli_profile_open_terminal",
+          "cli_run_start",
+          "start_terminal",
+        ].includes(command)
+      ) {
+        desktop.directApiCalls.push({ command });
+        throw new Error(
+          "A direct key must not configure a gateway or launch work",
+        );
+      }
+      return original(command, args);
+    };
+  });
+  await page.goto("/?window=settings&page=agent-control");
+  await page.getByRole("tab", { name: "Router", exact: true }).click();
+  await chooseCli(page, "claude");
+  await page
+    .getByRole("button", { name: "Manage Direct account", exact: true })
+    .click();
+  await page.getByRole("button", { name: "API key", exact: true }).click();
+  const endpoint = page.getByLabel("API endpoint", { exact: true });
+  await expect(endpoint).toHaveValue("");
+  await page
+    .getByLabel("Anthropic API key", { exact: true })
+    .fill("direct-provider-key");
+  await page
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Direct account", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Manage Direct account", exact: true })
+    .click();
+  expect(await page.evaluate(() => (window as any).directApiCalls)).toEqual([
+    {
+      command: "cli_profile_set_api_key",
+      profileId: "direct",
+      expectedRevision: 1,
+      key: "direct-provider-key",
+    },
+  ]);
+  await endpoint.fill("https://openai.example.test");
+  await page
+    .getByRole("dialog", { name: "Direct account", exact: true })
+    .getByText("Advanced", { exact: true })
+    .click();
+  const protocol = page.getByRole("combobox", {
+    name: "API protocol",
+    exact: true,
+  });
+  await protocol.focus();
+  await protocol.press("Space");
+  await expect(
+    page
+      .getByRole("dialog", { name: "Direct account", exact: true })
+      .getByRole("listbox"),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(protocol).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    page.getByRole("dialog", { name: "Direct account", exact: true }),
+  ).toBeVisible();
+  await expect(endpoint).toHaveValue("https://openai.example.test");
+  await protocol.press("Space");
+  await protocol.press("ArrowDown");
+  await protocol.press("Enter");
+  await expect(protocol).toHaveText("OpenAI Chat Completions");
+  expect(
+    await page.evaluate(() =>
+      (window as any).directApiCalls.map((call: any) => call.command),
+    ),
+  ).toEqual(["cli_profile_set_api_key"]);
+  await page.screenshot({ path: "test-results/router-style-api-advanced.png" });
+  await expect(page.getByLabel("API key", { exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel("Anthropic API key", { exact: true }),
+  ).toHaveCount(0);
 });

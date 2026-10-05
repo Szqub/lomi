@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api, errorMessage, getInfo } from "../api";
 import type { CliAgent } from "../cli-agents";
 import type { CliAgentTab } from "../model";
-import { X } from "../icons";
+import { Globe, X } from "../icons";
 import { IconButton } from "../ui";
 import { SettingsNotice } from "../settings-ui";
 import {
@@ -13,6 +13,8 @@ import {
 } from "../terminal-runtime";
 import type { CliRouterSnapshot, CliRun } from "./types";
 import RunDataGrant from "./RunDataGrant";
+import { runStateLabels } from "./presentation";
+import "./router-launch.css";
 const subscribeIdle = () => () => {};
 
 export default function GatewayCliPane({
@@ -143,59 +145,68 @@ export default function GatewayCliPane({
   }
   return (
     <section
-      className="cli-agent-pane"
+      className="cli-agent-pane router-saved-pane"
       aria-label={tab.customTitle ?? tab.title}
       onPointerDown={onFocus}
       onFocusCapture={onFocus}
     >
       <header className="cli-agent-header">
-        <strong>{tab.customTitle ?? run.title}</strong>
+        <div className="cli-agent-heading">
+          <strong>{tab.customTitle ?? run.title}</strong>
+          <span className="router-state" data-state={run.state}>
+            {runStateLabels[run.state]}
+          </span>
+        </div>
         <IconButton title="Close CLI Agent view" onClick={onClose}>
           <X size={14} />
         </IconButton>
       </header>
-      <div className="cli-agent-content">
+      <div className="cli-agent-content router-gateway-content">
         {(error || failure) && (
           <SettingsNotice tone="error">{failure || error}</SettingsNotice>
         )}
-        <p className="settings-help">
-          Gateway CLI terminal · {capability?.name ?? router?.cli} · {run.model}{" "}
-          · {run.state.replaceAll("_", " ")}
-        </p>
-        <SettingsNotice>
-          This mode sends the native CLI conversation and project context to
-          your approved API accounts. The CLI uses its own tools and permission
-          prompts. Lomi’s file approval broker does not apply to this mode.
-        </SettingsNotice>
+        <div className="router-pane-meta">
+          <Globe size={14} aria-hidden="true" />
+          <span>{capability?.name ?? router?.cli}</span>
+          <span title={run.model ?? undefined}>{run.model}</span>
+          <span>API terminal</span>
+        </div>
         {run.statusMessage && (
           <SettingsNotice>{run.statusMessage}</SettingsNotice>
         )}
-        <RunDataGrant
-          snapshot={snapshot}
-          run={run}
-          disabled={busy || starting || !!terminal}
-          busy={busy || starting}
-          error={error}
-          command={command}
-        />
+        <div className="router-inline-actions router-pane-toolbar">
+          <RunDataGrant
+            snapshot={snapshot}
+            run={run}
+            disabled={busy || starting || !!terminal}
+            busy={busy || starting}
+            error={error}
+            command={command}
+          />
+          {canPrepare && (
+            <button
+              className="button button-primary"
+              disabled={busy || starting || !capability?.gatewayTerminal}
+              onClick={() => void start()}
+            >
+              {starting
+                ? "Preparing CLI…"
+                : resumable
+                  ? "Resume CLI"
+                  : "Start CLI"}
+            </button>
+          )}
+        </div>
         {canPrepare && (
-          <button
-            className="button button-primary"
-            disabled={busy || starting || !capability?.gatewayTerminal}
-            onClick={() => void start()}
-          >
-            {starting
-              ? "Preparing CLI…"
-              : resumable
-                ? "Resume CLI"
-                : "Start CLI"}
-          </button>
+          <p className="settings-help">
+            Approved API accounts · CLI tools and permissions.
+          </p>
         )}
         {!initial && !terminal && (
           <p className="settings-help">
             {resumable
-              ? "Resume restores this CLI’s retained native history after checking its client and account bindings. No task is submitted automatically."
-              : "This session’s private native history is retained. Create a new Gateway run when native continuation is unavailable or a request remains uncertain."}
+              ? "Resume uses saved CLI history; no message is sent."
+              : "History saved. Create a new run if safe resume is unavailable."}
           </p>
         )}
         {((terminal && terminalStatus !== "exited") ||
@@ -232,15 +243,13 @@ function AttachedTerminal({
       data-pane-id={runtime.paneId}
       aria-label={`Gateway terminal ${runtime.profile.name}`}
       onFocusCapture={onFocus}
-      style={{ flex: 1, minHeight: 240 }}
+      style={{ flex: 1, minHeight: 0 }}
     >
       {state.error && (
         <SettingsNotice tone="error">{state.error}</SettingsNotice>
       )}
       {state.status === "exited" && (
-        <p role="status">
-          CLI session exited. Its native history remains retained.
-        </p>
+        <p role="status">CLI exited. Native history saved.</p>
       )}
       <div className="terminal-mount" ref={container} />
     </section>

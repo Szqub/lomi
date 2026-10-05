@@ -97,9 +97,6 @@ fn managed_home(
     if cli == TitleCli::Pi {
         return pi_home(&root);
     }
-    if cli == TitleCli::Goose {
-        return super::goose::home(&root);
-    }
     if cli == TitleCli::Openclaw {
         return super::openclaw::home(&root, super::openclaw::model(model)?);
     }
@@ -120,9 +117,6 @@ fn managed_home(
     }
     if cli == TitleCli::Hermes {
         return super::hermes::home(&root, super::hermes::model(model)?);
-    }
-    if cli == TitleCli::Crush {
-        return super::crush::home(&root, super::crush::model(model)?);
     }
     if cli == TitleCli::Gemini {
         let gemini = root.join(".gemini");
@@ -272,22 +266,16 @@ pub(super) fn verify_version(
         TitleCli::Claude => "2.1.287",
         TitleCli::Gemini => "0.42.0",
         TitleCli::Pi => PI_VERSION,
-        TitleCli::Goose => super::goose::VERSION,
         TitleCli::Openclaw => super::openclaw::VERSION,
         TitleCli::Opencode => super::opencode::VERSION,
         TitleCli::Qwen => super::qwen::VERSION,
         TitleCli::Kimi => super::kimi::VERSION,
         TitleCli::Hermes => super::hermes::VERSION,
-        TitleCli::Crush => super::crush::VERSION,
         _ => return Err("This CLI's managed tool restrictions have not been qualified.".into()),
     };
     let mut command = clean_command(program, cli, root, shell, &root.to_string_lossy())?;
     if cli == TitleCli::Pi {
         pi_environment(&mut command, root);
-    }
-    if cli == TitleCli::Goose {
-        super::goose::admit_system_config()?;
-        super::goose::environment(&mut command, root);
     }
     if cli == TitleCli::Openclaw {
         super::openclaw::environment(&mut command, root);
@@ -305,11 +293,6 @@ pub(super) fn verify_version(
     }
     if cli == TitleCli::Kimi {
         super::kimi::environment(&mut command, root, super::kimi::model(model)?);
-    }
-    if cli == TitleCli::Crush {
-        super::crush::admission(root)?;
-        super::crush::executable_admission(program)?;
-        super::crush::environment(&mut command, root);
     }
     if cli == TitleCli::Hermes {
         let controller = hermes.ok_or("Hermes controller is unavailable.")?;
@@ -360,19 +343,14 @@ pub(super) fn verify_version(
     let version = version_output.split_whitespace().next().unwrap_or_default();
     let matches = match cli {
         TitleCli::Codex => super::codex::version_matches(version_output),
-        TitleCli::Goose => super::goose::version_matches(version_output),
         TitleCli::Openclaw => super::openclaw::version_matches(version_output),
         TitleCli::Opencode => super::opencode::version_matches(version_output),
         TitleCli::Qwen => super::qwen::version_matches(version_output),
         TitleCli::Kimi => super::kimi::version_matches(version_output.as_bytes()),
         TitleCli::Hermes => super::hermes::version_matches(version_output),
-        TitleCli::Crush => super::crush::version_matches(version_output.as_bytes()),
         _ => version == expected,
     };
     if !status.success() || !matches {
-        if cli == TitleCli::Goose {
-            return Err(format!("Managed Goose requires goose {expected}. This installed version has not been qualified; no request was sent."));
-        }
         return Err(format!("Managed tool restrictions require {} {expected}. This installed version has not been qualified; use its normal terminal.", cli.name()));
     }
     Ok(())
@@ -807,7 +785,6 @@ struct Progress {
     failed: bool,
     has_delta: bool,
     pi: Option<PiProgress>,
-    goose: Option<super::goose::Progress>,
     openclaw: Option<super::openclaw::Progress>,
     opencode: Option<super::opencode::Progress>,
 }
@@ -913,27 +890,6 @@ impl Progress {
                     Err(PiRejection::Malformed) => self.malformed = true,
                     Err(PiRejection::Failed) => self.failed = true,
                     Err(PiRejection::Effect) => self.effects = true,
-                }
-            }
-            TitleCli::Goose => {
-                let result = self
-                    .goose
-                    .as_mut()
-                    .ok_or(super::goose::Rejection::Malformed)
-                    .and_then(|goose| goose.event(value));
-                match result {
-                    Ok((text, complete)) => {
-                        if let Some(text) = text {
-                            self.text(&text);
-                        }
-                        if complete {
-                            self.completed = true;
-                            self.terminal = true;
-                        }
-                    }
-                    Err(super::goose::Rejection::Malformed) => self.malformed = true,
-                    Err(super::goose::Rejection::Failed) => self.failed = true,
-                    Err(super::goose::Rejection::Effect) => self.effects = true,
                 }
             }
             TitleCli::Openclaw => {
@@ -1245,10 +1201,6 @@ fn execute_attempt(
                 if profile.storage_mode != StorageMode::ApiKey { return Err("Pi managed turns require an OpenAI API-key profile.".into()); }
                 pi_model(run.model.as_deref())?;
             }
-            if profile.cli == TitleCli::Goose {
-                if profile.storage_mode != StorageMode::ApiKey { return Err("Goose managed turns require an OpenAI API-key profile.".into()); }
-                super::goose::model(run.model.as_deref())?;
-            }
             if profile.cli == TitleCli::Openclaw {
                 if profile.storage_mode != StorageMode::ApiKey { return Err("OpenClaw managed turns require an OpenAI API-key profile.".into()); }
                 super::openclaw::model(run.model.as_deref())?;
@@ -1272,10 +1224,6 @@ fn execute_attempt(
             if profile.cli == TitleCli::Hermes {
                 if profile.storage_mode != StorageMode::ApiKey { return Err("Hermes managed turns require a native Anthropic API-key profile.".into()); }
                 super::hermes::model(run.model.as_deref())?;
-            }
-            if profile.cli == TitleCli::Crush {
-                if profile.storage_mode != StorageMode::ApiKey { return Err("Crush managed turns require a native Anthropic API-key profile.".into()); }
-                super::crush::model(run.model.as_deref())?;
             }
             let directory = if run.execution_mode == RunExecutionMode::Coding {
                 #[cfg(unix)] { if profile.cli != TitleCli::Codex { return Err("Persistent coding is unavailable for this CLI.".into()); } super::coding_runtime::home(owner, &run.id, super::codex::model(run.model.as_deref())?)? }
@@ -1342,24 +1290,12 @@ fn execute_attempt(
     };
     // Installation probing and credential access happen outside the scheduler
     // lock; all state is fenced again immediately before process dispatch.
-    let crush_controller = if profile.cli == TitleCli::Crush {
-        Some(super::crush::Controller::new(
-            &directory,
-            super::crush::model(run.model.as_deref())?,
-            &input,
-        )?)
-    } else {
-        None
-    };
     let shell = shell_profile(
         shells,
         run.shell_profile_id
             .as_deref()
             .ok_or("Choose a shell for the saved run before resuming.")?,
     )?;
-    if profile.cli == TitleCli::Goose {
-        super::goose::admit_system_config()?;
-    }
     let program = resolve(shells, shell, &run.cwd, profile.cli)?;
     let program = match profile.cli {
         TitleCli::Codex => super::codex::resolve_native(&program)?,
@@ -1373,13 +1309,6 @@ fn execute_attempt(
         controller.program()?.to_owned()
     } else {
         program
-    };
-    let crush_fingerprint = if profile.cli == TitleCli::Crush {
-        super::crush::admission(&directory)?;
-        super::crush::executable_admission(&program)?;
-        Some(super::crush::executable_fingerprint(&program)?)
-    } else {
-        None
     };
     if profile.cli != TitleCli::Vibe {
         verify_version(
@@ -1407,9 +1336,6 @@ fn execute_attempt(
         &directory.to_string_lossy(),
     )?;
     command.env("HOME", &directory);
-    if profile.cli == TitleCli::Goose {
-        super::goose::environment(&mut command, &directory);
-    }
     if profile.cli == TitleCli::Gemini {
         command.env(
             "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
@@ -1427,9 +1353,6 @@ fn execute_attempt(
             .ok_or("Hermes controller is unavailable.")?
             .configure(&mut command)?;
     }
-    if profile.cli == TitleCli::Crush {
-        super::crush::environment(&mut command, &directory);
-    }
     if profile.storage_mode == StorageMode::ApiKey {
         let key = super::credentials::get(&profile)?;
         if profile.cli == TitleCli::Hermes {
@@ -1440,9 +1363,7 @@ fn execute_attempt(
             TitleCli::Claude | TitleCli::Hermes => "ANTHROPIC_API_KEY",
             TitleCli::Gemini => "GEMINI_API_KEY",
             TitleCli::Kimi => "LOMI_KIMI_API_KEY",
-            TitleCli::Crush => "LOMI_CRUSH_API_KEY",
             TitleCli::Pi
-            | TitleCli::Goose
             | TitleCli::Openclaw
             | TitleCli::Vibe
             | TitleCli::Opencode
@@ -1484,13 +1405,6 @@ fn execute_attempt(
         TitleCli::Pi => {
             pi_arguments(&mut command, &directory, pi_model(run.model.as_deref())?);
         }
-        TitleCli::Goose => {
-            super::goose::arguments(
-                &mut command,
-                &directory,
-                super::goose::model(run.model.as_deref())?,
-            );
-        }
         TitleCli::Openclaw => super::openclaw::arguments(
             &mut command,
             &directory,
@@ -1522,12 +1436,6 @@ fn execute_attempt(
                     .ok_or("Kimi controller is unavailable.")?,
             );
         }
-        TitleCli::Crush => super::crush::arguments(
-            &mut command,
-            crush_controller
-                .as_ref()
-                .ok_or("Crush controller is unavailable.")?,
-        )?,
         TitleCli::Hermes => super::hermes::arguments(
             &mut command,
             &directory,
@@ -1571,14 +1479,8 @@ fn execute_attempt(
             }
             let chosen = policy::select(current_router, current_run, &current.profiles, &current.quota, now());
             if chosen.profile_id.as_deref() != Some(&profile.id) { return Err("Account selection changed before dispatch. Continue explicitly.".into()); }
-            if profile.cli == TitleCli::Goose { super::goose::admit_system_config()?; }
             if profile.cli == TitleCli::Codex { super::codex::ambient_policy()?; }
             if profile.cli == TitleCli::Opencode { super::opencode::admission(&directory)?; }
-            if let Some(fingerprint) = &crush_fingerprint {
-                super::crush::admission(&directory)?;
-                super::crush::executable_admission(&program)?;
-                if &super::crush::executable_fingerprint(&program)? != fingerprint { return Err("Crush executable changed before dispatch. No request was sent.".into()); }
-            }
             if let Some(controller) = hermes_controller.as_ref() { controller.ready()?; }
             let saved = owner.store.update(|snapshot| {
                 let run = snapshot.runs.iter_mut().find(|r| r.id == run_id).ok_or("Run no longer exists.")?;
@@ -1641,21 +1543,6 @@ fn execute_attempt(
         )?;
         return settle_rpc(state, app, &run, &profile, generation, outcome);
     }
-    if let Some(controller) = crush_controller {
-        let mut persisted = String::new();
-        let outcome = super::crush::drive(child, controller, cancelled, |output| {
-            checkpoint_output(state, app, run_id, generation, &mut persisted, output)
-        })?;
-        checkpoint_output(
-            state,
-            app,
-            run_id,
-            generation,
-            &mut persisted,
-            &outcome.output,
-        )?;
-        return settle_rpc(state, app, &run, &profile, generation, outcome);
-    }
     if let Some(controller) = hermes_controller {
         let mut persisted = String::new();
         let outcome = super::hermes::drive(child, controller, cancelled, |output| {
@@ -1674,11 +1561,6 @@ fn execute_attempt(
     let mut progress = Progress::default();
     if profile.cli == TitleCli::Pi {
         progress.pi = Some(PiProgress::new(pi_model(run.model.as_deref())?, &directory));
-    }
-    if profile.cli == TitleCli::Goose {
-        progress.goose = Some(super::goose::Progress::new(super::goose::model(
-            run.model.as_deref(),
-        )?));
     }
     if profile.cli == TitleCli::Openclaw {
         progress.openclaw = Some(super::openclaw::Progress::new(super::openclaw::model(
@@ -1699,7 +1581,6 @@ fn execute_attempt(
         result
     });
     let (sender, receiver) = mpsc::sync_channel::<Result<Value, ()>>(64);
-    let bounded_goose_wire = profile.cli == TitleCli::Goose;
     let bounded_opencode_wire = profile.cli == TitleCli::Opencode;
     let frame_limit = if bounded_opencode_wire {
         6 * MAX_OUTPUT + 8192
@@ -1730,10 +1611,8 @@ fn execute_attempt(
                 Ok(0) => break,
                 Ok(_) if bytes.len() <= frame_limit => {
                     total_bytes = total_bytes.saturating_add(bytes.len());
-                    if (bounded_goose_wire
-                        && (total_bytes > MAX_OUTPUT || bytes.last() != Some(&b'\n')))
-                        || (bounded_opencode_wire
-                            && (total_bytes > 8 * MAX_OUTPUT || bytes.last() != Some(&b'\n')))
+                    if bounded_opencode_wire
+                        && (total_bytes > 8 * MAX_OUTPUT || bytes.last() != Some(&b'\n'))
                     {
                         let _ = sender.send(Err(()));
                         break;
@@ -1789,10 +1668,7 @@ fn execute_attempt(
                 || started.elapsed() > TURN_TIMEOUT
                 || progress.malformed
                 || progress.effects
-                || (matches!(
-                    profile.cli,
-                    TitleCli::Pi | TitleCli::Goose | TitleCli::Openclaw
-                ) && progress.failed)
+                || (matches!(profile.cli, TitleCli::Pi | TitleCli::Openclaw) && progress.failed)
             {
                 break;
             }
@@ -1860,8 +1736,7 @@ fn execute_attempt(
     let status = status?;
     checkpoint?;
     let stopped = cancelled.load(Ordering::SeqCst);
-    let lifecycle_complete =
-        super::goose::clean_exit(exited, disconnected, input_written, status.success());
+    let lifecycle_complete = exited && disconnected && input_written && status.success();
     let success = !stopped
         && lifecycle_complete
         && output_read
@@ -2526,35 +2401,6 @@ mod tests {
         assert!(progress.malformed);
         assert!(progress.output.is_empty());
         assert!(!progress.confirmed_completion());
-    }
-
-    #[test]
-    fn goose_diagnostic_followed_by_complete_cannot_confirm_completion() {
-        for diagnostic in [
-            json!({"type":"error","error":"provider failed"}),
-            json!({"type":"notification","extension_id":"unexpected"}),
-            json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Maximum turns reached"}],"metadata":{"userVisible":true,"agentVisible":true}}}),
-        ] {
-            let mut progress = Progress {
-                goose: Some(super::super::goose::Progress::new("gpt-4.1")),
-                ..Progress::default()
-            };
-            progress.event(
-                TitleCli::Goose,
-                &json!({"type":"message","message":{
-                "id":"chunk","role":"assistant","created":1,
-                "metadata":{"userVisible":true,"agentVisible":true,
-                    "inference":{"provider":"openai","requestedModel":"gpt-4.1"}},
-                "content":[{"type":"text","text":"partial"}]}}),
-            );
-            progress.event(TitleCli::Goose, &diagnostic);
-            progress.event(
-                TitleCli::Goose,
-                &json!({"type":"complete","total_tokens":null}),
-            );
-            assert_eq!(progress.output, "partial");
-            assert!(!progress.confirmed_completion());
-        }
     }
 
     fn pi_events() -> Vec<Value> {

@@ -788,11 +788,11 @@ test("many provider summaries keep titlebar controls visible at minimum width", 
     "openclaw",
     "hermes",
     "pi",
-    "aider",
-    "goose",
-    "cline",
     "kilo",
     "qwen",
+    "kiro",
+    "vibe",
+    "kimi",
   ];
   const contexts = Object.fromEntries(
     providers.map((cli, index) => [
@@ -846,7 +846,7 @@ test("many provider summaries keep titlebar controls visible at minimum width", 
   expect(overflow).toBe(true);
   await trigger.focus();
   for (let step = 0; step < 20; step++) await page.keyboard.press("ArrowRight");
-  const lastSummary = providerSummary(trigger, "qwen");
+  const lastSummary = providerSummary(trigger, "kimi");
   await expect
     .poll(() =>
       lastSummary.evaluate((summary) => {

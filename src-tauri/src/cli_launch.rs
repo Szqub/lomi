@@ -35,12 +35,7 @@ struct CliSpec {
     argument: Option<&'static str>,
 }
 
-const SPECS: [CliSpec; 24] = [
-    CliSpec {
-        cli: TitleCli::Crush,
-        aliases: &["crush"],
-        argument: None,
-    },
+const SPECS: [CliSpec; 16] = [
     CliSpec {
         cli: TitleCli::Claude,
         aliases: &["claude"],
@@ -112,43 +107,8 @@ const SPECS: [CliSpec; 24] = [
         argument: None,
     },
     CliSpec {
-        cli: TitleCli::Aider,
-        aliases: &["aider"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Goose,
-        aliases: &["goose"],
-        argument: None,
-    },
-    CliSpec {
         cli: TitleCli::Pi,
         aliases: &["pi"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Cline,
-        aliases: &["cline"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Openhands,
-        aliases: &["openhands"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Interpreter,
-        aliases: &["interpreter"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Continue,
-        aliases: &["cn"],
-        argument: None,
-    },
-    CliSpec {
-        cli: TitleCli::Deepagents,
-        aliases: &["deepagents-code", "dcode"],
         argument: None,
     },
     CliSpec {
@@ -684,19 +644,7 @@ mod tests {
                 .len(),
             SPECS.len()
         );
-        for cli in [
-            TitleCli::Aider,
-            TitleCli::Goose,
-            TitleCli::Pi,
-            TitleCli::Cline,
-            TitleCli::Openhands,
-            TitleCli::Interpreter,
-            TitleCli::Continue,
-            TitleCli::Deepagents,
-            TitleCli::Crush,
-        ] {
-            assert!(spec(cli).is_some());
-        }
+        assert!(spec(TitleCli::Pi).is_some());
         assert_eq!(spec(TitleCli::Kiro).unwrap().argument, Some("chat"));
         assert_eq!(spec(TitleCli::Openclaw).unwrap().argument, Some("tui"));
     }

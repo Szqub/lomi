@@ -481,14 +481,14 @@ fn newer_authoritative_zero_updates_report_before_native_block_revision_advances
 #[test]
 fn all_catalog_clis_have_explicit_capabilities_without_resume_promises() {
     let entries = registry();
-    assert_eq!(entries.len(), 31);
+    assert_eq!(entries.len(), 16);
     assert_eq!(
         entries
             .iter()
             .map(|c| c.cli)
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        31
+        16
     );
     for entry in entries {
         assert!(!entry.reason.is_empty());

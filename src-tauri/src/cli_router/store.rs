@@ -2,7 +2,12 @@ use super::types::*;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs, path::Path, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+    time::Duration,
+};
 
 const SCHEMA_VERSION: i64 = 5;
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
@@ -28,7 +33,7 @@ fn request_records(
     connection: &Connection,
     version: i64,
     latest_revision: u64,
-) -> Result<Vec<RequestRecord>, String> {
+) -> Result<(Vec<RequestRecord>, bool), String> {
     let count: i64 = connection
         .query_row("SELECT count(*) FROM requests", [], |row| row.get(0))
         .map_err(error)?;
@@ -66,6 +71,7 @@ fn request_records(
         .map_err(error)?;
     let mut rows = statement.query([]).map_err(error)?;
     let mut records = Vec::new();
+    let mut retired_history = false;
     let mut ids = HashSet::new();
     while let Some(row) = rows.next().map_err(error)? {
         let id: String = row.get(0).map_err(error)?;
@@ -82,7 +88,9 @@ fn request_records(
             return Err(error("invalid request record"));
         }
         let revision = if version == 1 {
-            decode(&value)?.revision
+            let migration = decode_migrating(&value)?;
+            retired_history |= migration.changed();
+            migration.snapshot.revision
         } else {
             value.parse::<u64>().map_err(error)?
         };
@@ -95,7 +103,7 @@ fn request_records(
             revision,
         });
     }
-    Ok(records)
+    Ok((records, retired_history))
 }
 
 fn recover_interrupted(snapshot: &mut Snapshot) -> Result<(), String> {
@@ -143,7 +151,137 @@ fn decode(source: &str) -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
-fn read(connection: &Connection) -> Result<Snapshot, String> {
+struct CatalogMigration {
+    snapshot: Snapshot,
+    profiles: HashSet<String>,
+    routers: HashSet<String>,
+    removal_intents: Vec<(String, String)>,
+}
+
+impl CatalogMigration {
+    fn changed(&self) -> bool {
+        !self.profiles.is_empty() || !self.routers.is_empty()
+    }
+}
+
+fn decode_migrating(source: &str) -> Result<CatalogMigration, String> {
+    if source.len() > MAX_SNAPSHOT_BYTES {
+        return Err("Router history exceeds the qualified storage size".into());
+    }
+    let mut value: serde_json::Value = serde_json::from_str(source).map_err(error)?;
+    let mut profiles = HashSet::new();
+    let mut routers = HashSet::new();
+    let mut original_clis = HashMap::new();
+    let mut original_router_clis = HashMap::new();
+    for collection in ["profiles", "routers"] {
+        let records = value
+            .get_mut(collection)
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| error("invalid catalog"))?;
+        for record in records {
+            let id = record["id"]
+                .as_str()
+                .ok_or_else(|| error("invalid identifier"))?
+                .to_string();
+            let cli = record["cli"]
+                .as_str()
+                .ok_or_else(|| error("invalid CLI"))?
+                .to_string();
+            if collection == "profiles" {
+                original_clis.insert(id.clone(), cli.clone());
+            } else {
+                original_router_clis.insert(id.clone(), cli.clone());
+            }
+            if crate::cli_catalog::is_retired_id(&cli) {
+                if collection == "profiles" {
+                    profiles.insert(id);
+                } else {
+                    routers.insert(id);
+                }
+                // Validate the complete old schema and ledger before discarding
+                // records. This temporary value never enters native dispatch.
+                record["cli"] = serde_json::json!("codex");
+            }
+        }
+    }
+    // Surrogate enum values must not mask originally mismatched pool members.
+    for router in value["routers"]
+        .as_array()
+        .ok_or_else(|| error("invalid catalog"))?
+    {
+        let id = router["id"]
+            .as_str()
+            .ok_or_else(|| error("invalid identifier"))?;
+        let cli = original_router_clis
+            .get(id)
+            .ok_or_else(|| error("invalid CLI"))?;
+        for member in router["orderedProfileIds"]
+            .as_array()
+            .ok_or_else(|| error("invalid pool"))?
+        {
+            let member = member.as_str().ok_or_else(|| error("invalid pool"))?;
+            if original_clis.get(member) != Some(cli) {
+                return Err(error("mismatched pool"));
+            }
+        }
+    }
+    let mut snapshot: Snapshot = serde_json::from_value(value).map_err(error)?;
+    validate(&snapshot)?;
+    let mut removal_intents = Vec::new();
+    for profile in snapshot.profiles.iter().filter(|profile| {
+        profiles.contains(&profile.id) && profile.auth_state == AuthState::PendingRemove
+    }) {
+        if let Some(id) = profile.credential_ref.as_ref() {
+            super::credentials::valid(id)?;
+            removal_intents.push((id.clone(), profile.id.clone()));
+        }
+    }
+    snapshot
+        .profiles
+        .retain(|profile| !profiles.contains(&profile.id));
+    snapshot
+        .routers
+        .retain(|router| !routers.contains(&router.id));
+    snapshot
+        .quota
+        .retain(|quota| !profiles.contains(&quota.profile_id));
+    snapshot.runs.retain(|run| {
+        !routers.contains(&run.router_id)
+            && !run
+                .pinned_profile_id
+                .as_ref()
+                .is_some_and(|id| profiles.contains(id))
+            && !run
+                .active_profile_id
+                .as_ref()
+                .is_some_and(|id| profiles.contains(id))
+            && !run
+                .allowed_profile_ids
+                .iter()
+                .any(|id| profiles.contains(id))
+            && !run
+                .attempted_profile_ids
+                .iter()
+                .any(|id| profiles.contains(id))
+            && !run
+                .attempts
+                .iter()
+                .any(|attempt| profiles.contains(&attempt.profile_id))
+            && !run
+                .turns
+                .iter()
+                .any(|turn| profiles.contains(&turn.profile_id))
+    });
+    validate(&snapshot)?;
+    Ok(CatalogMigration {
+        snapshot,
+        profiles,
+        routers,
+        removal_intents,
+    })
+}
+
+fn read_source(connection: &Connection) -> Result<String, String> {
     let bytes: i64 = connection
         .query_row(
             "SELECT length(CAST(data AS BLOB)) FROM snapshot WHERE id = 1",
@@ -159,7 +297,44 @@ fn read(connection: &Connection) -> Result<Snapshot, String> {
             row.get(0)
         })
         .map_err(error)?;
-    decode(&source)
+    Ok(source)
+}
+
+fn read(connection: &Connection) -> Result<Snapshot, String> {
+    decode(&read_source(connection)?)
+}
+
+fn backup_before_catalog_removal(connection: &Connection, directory: &Path) -> Result<(), String> {
+    let path = directory.join(format!(
+        "router-before-cli-removal-{}.sqlite",
+        super::new_id()?
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(&path).map_err(error)?;
+    // SQLite backup includes committed WAL pages, unlike copying the main file.
+    connection
+        .backup(rusqlite::MAIN_DB, &path, None)
+        .map_err(error)?;
+    file.sync_all().map_err(error)?;
+    fs::File::open(directory)
+        .and_then(|parent| parent.sync_all())
+        .map_err(error)
+}
+
+fn preserve_removal_intents(
+    connection: &Connection,
+    intents: &[(String, String)],
+) -> Result<(), String> {
+    for (credential, profile) in intents {
+        connection.execute("INSERT OR IGNORE INTO credential_journal (id, profile_id, status) VALUES (?1, ?2, 'remove')", params![credential, profile]).map_err(error)?;
+    }
+    Ok(())
 }
 
 fn write(connection: &Connection, snapshot: &Snapshot) -> Result<(), String> {
@@ -355,6 +530,7 @@ impl Store {
         let existing = path.exists();
         let mut legacy_requests = None;
         let mut legacy_snapshot = None;
+        let mut removal_intents = Vec::new();
         if existing {
             // Validate before changing journal mode or performing recovery writes.
             let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -374,12 +550,22 @@ impl Store {
             if integrity != "ok" {
                 return Err(error(integrity));
             }
-            let snapshot = read(&connection)?;
-            let requests = request_records(&connection, version, snapshot.revision)?;
+            let migration = decode_migrating(&read_source(&connection)?)?;
+            let (requests, retired_history) =
+                request_records(&connection, version, migration.snapshot.revision)?;
+            let removed = migration.changed();
+            if removed || retired_history {
+                backup_before_catalog_removal(&connection, directory)?;
+            }
+            let mut snapshot = migration.snapshot;
+            removal_intents = migration.removal_intents;
+            if removed {
+                snapshot.revision = next(snapshot.revision)?;
+            }
             if version == 1 {
                 legacy_requests = Some(requests);
             }
-            if version < SCHEMA_VERSION {
+            if version < SCHEMA_VERSION || removed {
                 legacy_snapshot = Some(snapshot);
             }
             #[cfg(unix)]
@@ -436,6 +622,9 @@ impl Store {
             if let Some(snapshot) = legacy_snapshot.as_ref() {
                 write(&transaction, snapshot)?;
             }
+            // A removal can be committed before its key-store journal exists.
+            // Preserve that obligation atomically with retirement of its profile.
+            preserve_removal_intents(&transaction, &removal_intents)?;
             transaction
                 .pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(error)?;
@@ -445,6 +634,7 @@ impl Store {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
             write(&transaction, &snapshot)?;
+            preserve_removal_intents(&transaction, &removal_intents)?;
             transaction
                 .pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(error)?;
@@ -664,5 +854,239 @@ impl Store {
             snapshot,
             replayed: false,
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod catalog_migration_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn raw_run(id: &str, router: &str, profile: &str) -> Value {
+        json!({
+            "id": id, "routerId": router, "cwd": "/project", "title": "Saved task",
+            "state": "idle", "model": "gpt-6-sol", "pinnedProfileId": null,
+            "allowedProfileIds": [profile], "activeProfileId": null,
+            "generation": 1, "revision": 1, "inputs": [], "attempts": [],
+            "output": "kept output", "statusMessage": "", "attemptedProfileIds": []
+        })
+    }
+
+    fn raw_snapshot(cli: &str) -> Value {
+        json!({
+            "revision": 7,
+            "profiles": [
+                {"id":"kept", "cli":"codex", "label":"Keep", "enabled":true,
+                 "revision":1, "authState":"ready", "storageMode":"cli_managed"},
+                {"id":"retired", "cli":cli, "label":"Retire", "enabled":true,
+                 "revision":1, "authState":"ready", "storageMode":"api_key"}
+            ],
+            "routers": [
+                {"id":"kept-pool", "cli":"codex", "label":"Keep", "enabled":true,
+                 "orderedProfileIds":["kept"], "balanceRemainingQuota":false, "revision":1},
+                {"id":"retired-pool", "cli":cli, "label":"Retire", "enabled":true,
+                 "orderedProfileIds":["retired"], "balanceRemainingQuota":false, "revision":1}
+            ],
+            "quota": [{"profileId":"retired", "status":"stale", "windows":[],
+                "observedAt":0, "expiresAt":0, "epoch":0, "blockRevision":0}],
+            "runs": [raw_run("kept-run", "kept-pool", "kept"), raw_run("retired-run", "retired-pool", "retired")]
+        })
+    }
+
+    fn backups(directory: &Path) -> Vec<std::path::PathBuf> {
+        fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("router-before-cli-removal-")
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension == "sqlite")
+            })
+            .collect()
+    }
+
+    fn seed(path: &Path, value: &Value) -> Connection {
+        drop(Store::open(path).unwrap());
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute("UPDATE snapshot SET data = ?1", [value.to_string()])
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn every_retired_identifier_migrates_but_is_rejected_by_live_enum() {
+        for cli in [
+            "aider",
+            "cline",
+            "goose",
+            "droid",
+            "openhands",
+            "continue",
+            "amp",
+            "auggie",
+            "crush",
+            "interpreter",
+            "junie",
+            "freebuff",
+            "sweagent",
+            "deepagents",
+            "trae",
+        ] {
+            assert!(serde_json::from_value::<crate::cli_catalog::TitleCli>(json!(cli)).is_err());
+            let migration = decode_migrating(&raw_snapshot(cli).to_string()).unwrap();
+            assert!(migration.changed());
+            assert_eq!(migration.snapshot.profiles.len(), 1);
+            assert_eq!(migration.snapshot.routers.len(), 1);
+            assert_eq!(migration.snapshot.runs[0].id, "kept-run");
+            assert_eq!(migration.snapshot.runs.len(), 1);
+            assert!(migration.snapshot.quota.is_empty());
+        }
+    }
+
+    #[test]
+    fn migration_backs_up_wal_and_credential_journal_before_atomic_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("router.sqlite");
+        let original = raw_snapshot("goose");
+        // Keep the writer open so committed state can remain in the WAL.
+        let connection = seed(&path, &original);
+        connection
+            .execute(
+                "INSERT INTO credential_journal VALUES ('retired-key', 'retired', 'remove')",
+                [],
+            )
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.revision, 8);
+        assert_eq!(snapshot.profiles[0].id, "kept");
+        assert_eq!(snapshot.runs[0].output, "kept output");
+        assert_eq!(store.credential_journal().unwrap().len(), 1);
+        let saved = backups(directory.path());
+        assert_eq!(saved.len(), 1);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&saved[0]).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let backup =
+            Connection::open_with_flags(&saved[0], OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let data: String = backup
+            .query_row("SELECT data FROM snapshot", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&data).unwrap(), original);
+        let count: i64 = backup
+            .query_row("SELECT count(*) FROM credential_journal", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.snapshot().unwrap(), snapshot);
+        assert_eq!(backups(directory.path()).len(), 1);
+        drop(connection);
+    }
+
+    #[test]
+    fn retired_profile_references_remove_affected_runs_without_expanding_grants() {
+        for field in [
+            "pinnedProfileId",
+            "activeProfileId",
+            "allowedProfileIds",
+            "attemptedProfileIds",
+            "attempts",
+            "turns",
+        ] {
+            let mut source = raw_snapshot("goose");
+            let mut affected = raw_run("affected", "kept-pool", "kept");
+            match field {
+                "pinnedProfileId" | "activeProfileId" => affected[field] = json!("retired"),
+                "allowedProfileIds" | "attemptedProfileIds" => affected[field] = json!(["retired"]),
+                "attempts" | "turns" => {
+                    affected["inputs"] = json!([{"id":"input", "text":"saved question"}]);
+                    affected["attempts"] = json!([{"id":"attempt", "inputId":"input", "profileId":"retired", "generation":1, "state":"completed", "reason":""}]);
+                    if field == "turns" {
+                        affected["turns"] = json!([{"inputId":"input", "attemptId":"attempt", "profileId":"retired", "generation":1, "state":"completed", "text":"kept output"}]);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            source["runs"].as_array_mut().unwrap().push(affected);
+            let migrated = decode_migrating(&source.to_string()).unwrap().snapshot;
+            assert_eq!(migrated.runs.len(), 1, "{field}");
+            assert_eq!(migrated.runs[0].allowed_profile_ids, ["kept"]);
+        }
+    }
+
+    #[test]
+    fn unknown_cli_and_malformed_retired_data_fail_before_backup_or_writes() {
+        for case in ["unknown", "malformed", "mismatched"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("router.sqlite");
+            let mut source = raw_snapshot("goose");
+            match case {
+                "unknown" => source["profiles"][1]["cli"] = json!("unknown-cli"),
+                "malformed" => source["profiles"][1]["unexpected"] = json!(true),
+                "mismatched" => source["routers"][1]["cli"] = json!("aider"),
+                _ => unreachable!(),
+            }
+            drop(seed(&path, &source));
+            assert!(Store::open(&path).is_err(), "{case}");
+            let connection = Connection::open(&path).unwrap();
+            let saved: String = connection
+                .query_row("SELECT data FROM snapshot", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), source);
+            assert!(backups(directory.path()).is_empty());
+        }
+    }
+
+    #[test]
+    fn schema_one_retired_archives_keep_request_tombstones_and_original_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("router.sqlite");
+        let mut archive = raw_snapshot("goose");
+        archive["revision"] = json!(6);
+        let mut current = decode_migrating(&archive.to_string()).unwrap().snapshot;
+        current.revision = 7;
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE snapshot (id INTEGER PRIMARY KEY, data TEXT NOT NULL); CREATE TABLE requests (id TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL);").unwrap();
+        connection
+            .execute(
+                "INSERT INTO snapshot VALUES (1, ?1)",
+                [serde_json::to_string(&current).unwrap()],
+            )
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(b"\"input\""));
+        connection
+            .execute(
+                "INSERT INTO requests VALUES ('legacy:request', ?1, ?2)",
+                params![digest, archive.to_string()],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        let replay = store
+            .mutate("legacy:request", &"input", |_| {
+                panic!("must not replay retired task")
+            })
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.snapshot, current);
+        let saved = backups(directory.path());
+        assert_eq!(saved.len(), 1);
+        let backup =
+            Connection::open_with_flags(&saved[0], OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let result: String = backup
+            .query_row("SELECT result FROM requests", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), archive);
     }
 }
