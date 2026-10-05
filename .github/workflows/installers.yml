@@ -7,11 +7,6 @@ on:
         description: "Reuse test installers from this repository's qualification run (empty builds new packages)"
         type: string
         default: ""
-  push:
-    branches: ["codex/custom-api-*"]
-    paths:
-      - ".github/workflows/installers.yml"
-      - "scripts/qualify-installers*"
 
 permissions:
   contents: read

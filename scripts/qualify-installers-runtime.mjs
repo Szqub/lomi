@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
-const [executable, resources, label] = process.argv.slice(2);
+const [executable, resources, label, originalNode] = process.argv.slice(2);
 assert.ok(executable && resources && /^[a-z-]+$/.test(label));
 const binary = resolve(executable);
 const node = join(
@@ -45,9 +45,85 @@ for (const directory of [ai, join(resolve(resources), "remote-terminal")]) {
   );
 }
 assert.ok((await readFile(join(ai, "NODE-LICENSE"))).length > 100);
-// Ad-hoc signing legitimately changes Mach-O bytes after preparation.
-if (process.platform !== "darwin")
+function elfSections(bytes) {
+  assert.deepEqual(bytes.subarray(0, 6), Buffer.from([127, 69, 76, 70, 2, 1]));
+  assert.equal(bytes.readUInt16LE(18), 62, "Expected x86_64 ELF");
+  const offset = Number(bytes.readBigUInt64LE(40));
+  const stride = bytes.readUInt16LE(58);
+  const count = bytes.readUInt16LE(60);
+  const sections = Array.from({ length: count }, (_, index) => {
+    const header = offset + index * stride;
+    return {
+      nameOffset: bytes.readUInt32LE(header),
+      type: bytes.readUInt32LE(header + 4),
+      flags: bytes.readBigUInt64LE(header + 8),
+      offset: Number(bytes.readBigUInt64LE(header + 24)),
+      size: Number(bytes.readBigUInt64LE(header + 32)),
+    };
+  });
+  const names = sections[bytes.readUInt16LE(62)];
+  return new Map(
+    sections.map((section) => {
+      const start = names.offset + section.nameOffset;
+      const name = bytes.toString("utf8", start, bytes.indexOf(0, start));
+      return [
+        name,
+        {
+          type: section.type,
+          flags: section.flags,
+          size: section.size,
+          // SHT_NOBITS has a memory size but no bytes in the file.
+          bytes:
+            section.type === 8
+              ? Buffer.alloc(0)
+              : bytes.subarray(section.offset, section.offset + section.size),
+        },
+      ];
+    }),
+  );
+}
+
+if (originalNode) {
+  assert.equal(process.platform, "linux");
+  assert.equal(label, "appimage-extracted");
+  const original = await readFile(originalNode);
+  assert.equal(digest(original), metadata.sha256, "Reference Node integrity");
+  const expected = elfSections(original);
+  const actual = elfSections(await readFile(node));
+  assert.deepEqual([...actual.keys()].sort(), [...expected.keys()].sort());
+  // linuxdeploy relocates ELF linking/symbol metadata when adding RUNPATH.
+  // All other sections, including every code and data section, stay identical.
+  for (const [name, section] of expected) {
+    assert.equal(actual.get(name).type, section.type, name);
+    assert.equal(actual.get(name).flags, section.flags, name);
+    if ([".dynamic", ".dynstr"].includes(name)) continue;
+    assert.equal(actual.get(name).size, section.size, name);
+    if ([".symtab", ".dynsym"].includes(name)) continue;
+    assert.equal(digest(actual.get(name).bytes), digest(section.bytes), name);
+  }
+  assert.deepEqual(
+    actual.get(".dynstr").bytes,
+    Buffer.concat([
+      expected.get(".dynstr").bytes,
+      Buffer.from("$ORIGIN/../lib\0"),
+    ]),
+  );
+  assert.equal(
+    execFileSync("patchelf", ["--print-rpath", node], {
+      encoding: "utf8",
+    }).trim(),
+    "$ORIGIN/../lib",
+  );
+  assert.equal(
+    execFileSync("patchelf", ["--print-needed", node], { encoding: "utf8" }),
+    execFileSync("patchelf", ["--print-needed", originalNode], {
+      encoding: "utf8",
+    }),
+  );
+} else if (process.platform !== "darwin") {
+  // Ad-hoc signing legitimately changes Mach-O bytes after preparation.
   assert.equal(digest(await readFile(node)), metadata.sha256);
+}
 const env = Object.fromEntries(
   ["SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG"]
     .filter((key) => process.env[key])

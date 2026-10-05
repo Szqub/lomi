@@ -27,6 +27,10 @@ requires a size tag omitted by Tauri's RPM writer. AppImage runs its native
 helper through the extract-and-run launcher and its extracted runtime is checked.
 This does not test the AppImage FUSE launcher or the Fedora GUI. Every payload must
 include the verified AI and remote-terminal bundles, notices and pinned Node.
+AppImage's Node has a packaging-added ELF RUNPATH. Qualification checks its
+unchanged code/data sections against the checksum-verified Node from the RPM,
+and checks the added path, string table and unchanged library dependencies;
+relocated symbol/linking metadata is excluded from byte comparison.
 The packaged Node runs without system PATH and streams all three Custom API
 formats through a loopback fixture, with and without a test key. No paid API is
 used. The scripts never enable native probe features in production builds.
