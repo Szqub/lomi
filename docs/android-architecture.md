@@ -128,11 +128,11 @@ remain closed. Read, Stop and recovery stay available.
 
 ## Native qualification
 
-The [Windows preflight on 2026-09-19](android-windows-qualification.md) is NO-GO:
-the Windows 10 x64 host reports unavailable WHPX. It records independent
-regression checks and portability corrections, not emulator qualification.
-Windows remains gated until native lifecycle, image, input and resource tests
-pass on an accelerated host.
+Follow the [Windows preflight guide](../tests/native/ANDROID.md#windows-preflight)
+to check host acceleration and pinned artifacts without downloading tools.
+Windows remains gated until native lifecycle, process ownership, cleanup,
+image, input and resource tests pass on an accelerated host. Preflight alone
+does not qualify the product.
 
 Results below were obtained on Apple M3 / macOS 27.0 ARM64, Host GPU, cold boot.
 They are not evidence for other hosts, all catalog images, or Quick Boot.

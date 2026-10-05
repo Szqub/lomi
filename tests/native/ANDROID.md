@@ -30,8 +30,9 @@ When WHPX is unavailable, an administrator must enable **Windows Hypervisor
 Platform** in Windows Features and restart Windows before repeating preflight.
 See [Google's acceleration instructions](https://developer.android.com/studio/run/emulator-acceleration).
 Do not remove the platform guards or reuse the macOS product runner as Windows
-evidence. The [Windows trial report](../../docs/android-windows-qualification.md)
-records the current blockers and independent checks.
+evidence. Native product qualification remains limited to the recorded macOS
+ARM64 host; retain preflight evidence outside Git and separately qualify Windows
+process ownership, cleanup, rendering and input before enabling that platform.
 
 The selected transport is authenticated emulator gRPC → Rust → binary Tauri
 Channel → retained WebGL Canvas, with source scaling and a 720 × 1280 ceiling.

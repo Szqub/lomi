@@ -86,9 +86,11 @@ or acronym.
   Native terminal events govern completion; SDK UI-only EOF requires resubscribe
   with epoch/watermark and active block IDs, without aborting or sending again.
 - `src/router/` and `src-tauri/src/cli_router/` own CLI profile/pool management,
-  new-terminal account selection and retained logical text turns. See
-  `docs/cli-router.md` for exact version gates and unfinished full coding-task
-  qualification. Codex text failover requires typed terminal exhaustion, empty
+  new-terminal account selection and retained logical text turns. Native
+  `cli_router/adapters.rs` and `cli_router/gateway_profiles.rs` define capability
+  and exact-version gates; `scripts/router-cli-installations.json` pins prepared
+  runtimes. Source support does not qualify real accounts, full coding-task
+  failover or cross-account native continuity. Codex text failover requires typed terminal exhaustion, empty
   output and confirmed process drain. Final-view closing fences survive all
   Chat/Android guards until domain removal or explicit cancellation. A catalog
   entry never implies managed execution support; restoration never starts inference.
@@ -310,9 +312,11 @@ or acronym.
   open intents and Start on the toolchain qualification flag. Read, Stop and
   recovery remain available. In particular, Windows' launcher spawns a separate
   QEMU child; qualify both process identities and cleanup before enabling it.
-  The Windows preflight in `docs/android-windows-qualification.md` is NO-GO
-  because WHPX is unavailable. `tests/native/android-windows-preflight.ps1`
-  records read-only host and artifact checks; it does not qualify the product.
+  Only the recorded macOS ARM64 host is natively qualified. See
+  `tests/native/ANDROID.md` for isolated fixture setup. On Windows,
+  `tests/native/android-windows-preflight.ps1` records read-only host, WHPX
+  availability and artifact checks before any download. A successful preflight
+  does not qualify native Android on Windows or enable its platform guards.
   `tests/native/android-*` and `run-android-product.mjs` are
   isolated opt-in fixtures behind `android-probe`/`native-smoke`; never distribute
   those features. Default builds include the lazy production backend and bindings.

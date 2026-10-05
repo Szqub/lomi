@@ -1,15 +1,10 @@
 # Local MCP setup and usage
 
-The selected MCP source implementation is complete and verified on macOS with
-Apple Silicon. It exposes 74 tools for the authorized terminal, native browser,
-managed Android, files/editor, Git, layout, Settings and Chat workflows.
-The [acceptance record](ACCEPTANCE.md) lists the executed tests, versions and
-limitations; [implementation status](IMPLEMENTATION-STATUS.md) records P0–P6.
-Windows, Linux and macOS Intel remain unqualified.
-
-This delivery excludes further theme/plugin MCP work, application lifecycle MCP
-tools and distribution/installers. It consists of ordinary source commits on
-origin/main, without tags or releases. Build and pair locally as follows.
+Lomi exposes 74 tools for authorized terminal, native browser, managed Android,
+files/editor, Git, layout, Settings and Chat workflows. Native qualification is
+limited to the recorded macOS Apple Silicon host; Windows, Linux and macOS Intel
+remain unqualified. See [CLI integrations](../cli-agents.md) for supported clients
+and [MCP fixtures](../../tests/mcp/README.md) for local verification.
 
 ## Run and pair
 
@@ -293,7 +288,7 @@ is not overwritten. Keep recovery records until their contents are reconciled.
 | `STALE_GENERATION`                            | Inspect the current resource generation before any new mutation.                               |
 | `REVISION_CONFLICT`                           | Inspect the operation's effect state, then refresh the relevant domain or buffer revision.     |
 | `CONTROL_REVOKED`                             | Re-establish explicitly approved control if still wanted.                                      |
-| `HOST_UNQUALIFIED` / `UNSUPPORTED_CAPABILITY` | Consult the qualification matrix; another successful tool does not qualify this path.          |
+| `HOST_UNQUALIFIED` / `UNSUPPORTED_CAPABILITY` | Check the platform limits in this guide; another successful tool does not qualify this path.   |
 | `outcome_unknown`                             | Preserve the receipt and inspect actual resources. Do not automatically replay the effect.     |
 
 ## Local verification
@@ -485,8 +480,7 @@ conflict, read the new snapshot and use a new request key. Retrying the original
 request returns its original receipt, including unknown outcomes. It never writes
 again. This permission does not include credentials, approval policy or shell
 profile code. Terminal fields and keyboard shortcut writes have passed native
-qualification on macOS ARM64. Further theme/plugin MCP work is excluded from
-this delivery; already implemented builtin theme choices retain their existing
+qualification on macOS ARM64. Builtin theme choices retain their existing
 native approvals.
 
 Terminal preference requests use `{"type":"terminal_field","field":"appearance.fontSize","value":18}` with the `terminal` snapshot revision. The field enum is closed and includes appearance, colors, behavior and the existing data-only choices. `value` is required; explicit `null` restores theme inheritance for appearance leaves, for example `appearance.colors.red`. Other terminal fields do not accept null. Existing native ranges, color and string validators apply. A lower `behavior.scrollback` can trim older displayed lines, which the approval explains. Selecting the fixed Windows shell preference does not execute or edit a shell profile.
