@@ -39,6 +39,12 @@ These checks do not qualify Developer ID, notarization, Gatekeeper,
 Authenticode, updater replacement or installation over an existing user profile.
 Run the separate signed-release qualification before publishing.
 
+The 2026-10-05 [qualification run](https://github.com/Szqub/lomi/actions/runs/37247364014)
+passed on all four native runners, including Fedora 44 RPM installation in a
+container. It rechecked the seven package payloads built from `592d3fe` using
+qualification scripts at `006678b`, with 42 successful Custom API streams in
+total. The scope and signing limitations above apply to these test artifacts.
+
 ### Publishing
 
 `.github/workflows/release.yml` is the only release workflow. It is
