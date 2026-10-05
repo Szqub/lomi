@@ -31,13 +31,13 @@ test("usage targets include every supported CLI in hidden and background termina
   contexts.invalid = context("unknown-cli", 51);
   contexts.invalidPid = context("codex", 0);
 
-  assert.equal(Object.keys(cliNames).length, 31);
-  assert.equal(agentUsageTargets(contexts).length, 31);
+  assert.equal(Object.keys(cliNames).length, 16);
+  assert.equal(agentUsageTargets(contexts).length, 16);
   assert.deepEqual(
     new Set(agentUsageTargets(contexts).map((target) => target.process.cli)),
     new Set(Object.keys(cliNames)),
   );
-  assert.equal(isCliAgent("sweagent"), true);
+  assert.equal(isCliAgent("sweagent"), false);
   assert.equal(isCliAgent("unknown-cli"), false);
 });
 

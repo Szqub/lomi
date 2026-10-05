@@ -1,4 +1,4 @@
-use super::{owned, Registration, TitleCli};
+use super::{owned, Registration};
 use serde_json::{json, Value};
 
 fn document(source: Option<&str>) -> Result<Value, String> {
@@ -25,51 +25,22 @@ fn document(source: Option<&str>) -> Result<Value, String> {
     Ok(value)
 }
 
-fn key(cli: TitleCli) -> &'static str {
-    match cli {
-        TitleCli::Goose => "extensions",
-        TitleCli::Continue => "mcpServers",
-        _ => "mcp_servers",
-    }
-}
-fn command_key(cli: TitleCli) -> &'static str {
-    if cli == TitleCli::Goose {
-        "cmd"
-    } else {
-        "command"
-    }
-}
-
-fn entry(cli: TitleCli, doc: &Value) -> Result<Option<&Value>, String> {
-    let Some(servers) = doc.get(key(cli)) else {
+fn entry(doc: &Value) -> Result<Option<&Value>, String> {
+    let Some(servers) = doc.get("mcp_servers") else {
         return Ok(None);
     };
-    if cli == TitleCli::Continue {
-        let entries = servers
-            .as_array()
-            .ok_or("Continue mcpServers must be a list.")?
-            .iter()
-            .filter(|entry| entry.get("name").and_then(Value::as_str) == Some("lomi"))
-            .collect::<Vec<_>>();
-        if entries.len() > 1 {
-            return Err("Multiple MCP servers are named lomi. The file was left intact.".into());
-        }
-        Ok(entries.first().copied())
-    } else {
-        Ok(servers
-            .as_object()
-            .ok_or("CLI MCP settings must be a mapping.")?
-            .get("lomi"))
-    }
+    Ok(servers
+        .as_object()
+        .ok_or("CLI MCP settings must be a mapping.")?
+        .get("lomi"))
 }
 
 pub(super) fn configured(
-    cli: TitleCli,
     source: Option<&str>,
     expected: Option<&Registration>,
 ) -> Result<bool, String> {
     let doc = document(source)?;
-    let Some(entry) = entry(cli, &doc)? else {
+    let Some(entry) = entry(&doc)? else {
         return Ok(false);
     };
     if !entry.is_object() {
@@ -78,25 +49,20 @@ pub(super) fn configured(
     let Some(expected) = expected else {
         return Ok(false);
     };
-    Ok(entry[command_key(cli)] == expected.command
+    Ok(entry["command"] == expected.command
         && entry["args"] == json!(expected.args)
         && entry.get("url").is_none()
         && entry.get("uri").is_none()
         && entry["disabled"] != true
-        && entry["enabled"] != false
-        && (cli != TitleCli::Goose || entry["type"] == "stdio" && entry["enabled"] == true))
+        && entry["enabled"] != false)
 }
 
-pub(super) fn updated(
-    cli: TitleCli,
-    source: Option<&str>,
-    expected: &Registration,
-) -> Result<String, String> {
+pub(super) fn updated(source: Option<&str>, expected: &Registration) -> Result<String, String> {
     let mut doc = document(source)?;
-    let existing = entry(cli, &doc)?;
+    let existing = entry(&doc)?;
     if existing.is_some_and(|entry| {
         !owned(
-            entry.get(command_key(cli)).and_then(Value::as_str),
+            entry.get("command").and_then(Value::as_str),
             entry
                 .get("args")
                 .and_then(Value::as_array)
@@ -110,7 +76,7 @@ pub(super) fn updated(
     let server = value
         .as_object_mut()
         .ok_or("Lomi MCP settings must be a mapping.")?;
-    server.insert(command_key(cli).into(), json!(expected.command));
+    server.insert("command".into(), json!(expected.command));
     server.insert("args".into(), json!(expected.args));
     server.remove("url");
     server.remove("uri");
@@ -120,50 +86,23 @@ pub(super) fn updated(
     if server.contains_key("enabled") {
         server.insert("enabled".into(), json!(true));
     }
-    if cli == TitleCli::Goose {
-        server.insert("type".into(), json!("stdio"));
-        server.insert("name".into(), json!("Lomi"));
-        server.insert("enabled".into(), json!(true));
-        server.entry("envs").or_insert_with(|| json!({}));
-        server.entry("env_keys").or_insert_with(|| json!([]));
-    }
-    let object = doc.as_object_mut().unwrap();
-    if cli == TitleCli::Continue {
-        server.insert("name".into(), json!("lomi"));
-        // Continue validates metadata even when only adding a server to a new local config.
-        object
-            .entry("name")
-            .or_insert_with(|| json!("Local configuration"));
-        object.entry("version").or_insert_with(|| json!("1.0.0"));
-        object.entry("schema").or_insert_with(|| json!("v1"));
-        let servers = object
-            .entry(key(cli))
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or("Continue mcpServers must be a list.")?;
-        if let Some(index) = servers.iter().position(|entry| entry["name"] == "lomi") {
-            servers[index] = value;
-        } else {
-            servers.push(value);
-        }
-    } else {
-        object
-            .entry(key(cli))
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .ok_or("CLI MCP settings must be a mapping.")?
-            .insert("lomi".into(), value);
-    }
+    doc.as_object_mut()
+        .unwrap()
+        .entry("mcp_servers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("CLI MCP settings must be a mapping.")?
+        .insert("lomi".into(), value);
     serde_saphyr::to_string(&doc).map_err(|_| "Cannot serialize CLI YAML configuration.".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli_config;
+    use crate::{cli_catalog::TitleCli, cli_config};
 
     #[test]
-    fn yaml_clients_preserve_settings_and_servers_and_do_not_reinstall() {
+    fn hermes_preserves_settings_and_servers_and_does_not_reinstall() {
         let registration = Registration {
             command: "/Applications/Lomi.app/Contents/MacOS/lomi".into(),
             args: vec![
@@ -172,26 +111,41 @@ mod tests {
                 "/private/lomi/discovery.json".into(),
             ],
         };
-        for (cli, source) in [
-            (TitleCli::Hermes, "# retained in backup\nmodel: test\nmcp_servers:\n  other:\n    command: keep\n"),
-            (TitleCli::Goose, "# retained in backup\nGOOSE_MODEL: test\nextensions:\n  other:\n    cmd: keep\n    enabled: false\n"),
-            (TitleCli::Continue, "# retained in backup\nname: test\nversion: 1.0.0\nschema: v1\nmodels: []\nmcpServers:\n  - name: other\n    command: keep\n"),
-        ] {
-            let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("config.yaml");
-            std::fs::write(&path, source).unwrap();
-            super::super::enable(cli, &path, cli_config::revision(Some(source)).as_deref(), &registration).unwrap();
-            let output = std::fs::read_to_string(&path).unwrap();
-            assert!(configured(cli, Some(&output), Some(&registration)).unwrap());
-            let parsed = document(Some(&output)).unwrap();
-            let previous = document(Some(source)).unwrap();
-            for (name, value) in previous.as_object().unwrap() { if name != key(cli) { assert_eq!(parsed[name], *value); } }
-            if cli == TitleCli::Continue { assert_eq!(parsed["mcpServers"][0]["command"], "keep"); }
-            else { assert_eq!(parsed[key(cli)]["other"], previous[key(cli)]["other"]); }
-            super::super::enable(cli, &path, cli_config::revision(Some(&output)).as_deref(), &registration).unwrap();
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), output);
-            let backup = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok).find(|entry| entry.file_name().to_string_lossy().contains("lomi-backup")).unwrap();
-            assert_eq!(std::fs::read_to_string(backup.path()).unwrap(), source);
-        }
+        let source =
+            "# retained in backup\nmodel: test\nmcp_servers:\n  other:\n    command: keep\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, source).unwrap();
+        super::super::enable(
+            TitleCli::Hermes,
+            &path,
+            cli_config::revision(Some(source)).as_deref(),
+            &registration,
+        )
+        .unwrap();
+        let output = std::fs::read_to_string(&path).unwrap();
+        assert!(configured(Some(&output), Some(&registration)).unwrap());
+        let parsed = document(Some(&output)).unwrap();
+        let previous = document(Some(source)).unwrap();
+        assert_eq!(parsed["model"], previous["model"]);
+        assert_eq!(
+            parsed["mcp_servers"]["other"],
+            previous["mcp_servers"]["other"]
+        );
+        super::super::enable(
+            TitleCli::Hermes,
+            &path,
+            cli_config::revision(Some(&output)).as_deref(),
+            &registration,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), output);
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().contains("lomi-backup"))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(backup.path()).unwrap(), source);
     }
 
     #[test]
@@ -200,27 +154,23 @@ mod tests {
             command: "/bin/lomi".into(),
             args: vec!["--mcp".into()],
         };
-        for (cli, source) in [
-            (TitleCli::Hermes, "mcp_servers:\n  lomi: {}"),
-            (TitleCli::Goose, "extensions: []"),
-            (
-                TitleCli::Continue,
-                "mcpServers:\n - name: lomi\n - name: lomi",
-            ),
-            (TitleCli::Hermes, "model: a\nmodel: b"),
-            (TitleCli::Hermes, "model: &a [one]\nother: *a"),
-            (TitleCli::Hermes, "model: !include private.yaml"),
-            (TitleCli::Hermes, "---\nmodel: a\n---\nmodel: b"),
+        for source in [
+            "mcp_servers:\n  lomi: {}",
+            "mcp_servers: []",
+            "model: a\nmodel: b",
+            "model: &a [one]\nother: *a",
+            "model: !include private.yaml",
+            "---\nmodel: a\n---\nmodel: b",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.yaml");
             std::fs::write(&path, source).unwrap();
             assert!(
                 super::super::enable(
-                    cli,
+                    TitleCli::Hermes,
                     &path,
                     cli_config::revision(Some(source)).as_deref(),
-                    &registration
+                    &registration,
                 )
                 .is_err(),
                 "{source}"

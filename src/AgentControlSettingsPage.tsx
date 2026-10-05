@@ -774,29 +774,37 @@ export default function AgentControlSettingsPage() {
   return (
     <SettingsPage
       title="Agent control"
-      description="Let coding agents work with Lomi over MCP."
+      description={
+        activeTab === "router"
+          ? undefined
+          : "Let coding agents work with Lomi over MCP."
+      }
       className="agent-control-page"
       status={status}
       actions={
-        <>
-          <span
-            className="agent-control-badge"
-            data-state={serverState}
-            aria-live="polite"
-          >
-            {serverStatus}
-          </span>
-          <button
-            type="button"
-            className="button"
-            disabled={!native || !state?.supported || busy}
-            onClick={() =>
-              void run(() => api("agent_control_enable", { enabled: !broker }))
-            }
-          >
-            {broker ? "Turn off server" : "Start server"}
-          </button>
-        </>
+        activeTab !== "router" && (
+          <>
+            <span
+              className="agent-control-badge"
+              data-state={serverState}
+              aria-live="polite"
+            >
+              {serverStatus}
+            </span>
+            <button
+              type="button"
+              className="button"
+              disabled={!native || !state?.supported || busy}
+              onClick={() =>
+                void run(() =>
+                  api("agent_control_enable", { enabled: !broker }),
+                )
+              }
+            >
+              {broker ? "Turn off server" : "Start server"}
+            </button>
+          </>
+        )
       }
     >
       {startupState?.yoloMode && (
@@ -816,7 +824,7 @@ export default function AgentControlSettingsPage() {
         </SettingsNotice>
       )}
       {error && <SettingsNotice tone="error">{error}</SettingsNotice>}
-      {state && !state.supported && (
+      {activeTab !== "router" && state && !state.supported && (
         <SettingsNotice tone="warning">
           Agent control isn’t available on this computer yet.
         </SettingsNotice>

@@ -101,13 +101,12 @@ enum Format {
 fn format(cli: TitleCli) -> Option<Format> {
     use TitleCli::*;
     Some(match cli {
-        Codex | Interpreter | Grok => Format::Toml,
+        Codex | Grok => Format::Toml,
         Vibe => Format::TomlArray,
-        Hermes | Goose | Continue => Format::Yaml,
-        Opencode | Kilo | Amp | Qwen | Gemini => Format::Jsonc,
+        Hermes => Format::Yaml,
+        Opencode | Kilo | Qwen | Gemini => Format::Jsonc,
         Openclaw => Format::Json5,
-        Claude | Cursor | Agy | Copilot | Kiro | Droid | Openhands | Auggie | Kimi | Junie
-        | Deepagents | Freebuff | Cline => Format::Json,
+        Claude | Cursor | Agy | Copilot | Kiro | Kimi => Format::Json,
         _ => return None,
     })
 }
@@ -120,10 +119,6 @@ pub(crate) fn manual_reason(cli: TitleCli) -> Option<&'static str> {
     use TitleCli::*;
     match cli {
         Pi => Some("MCP requires a Pi extension; install and configure that extension in Pi."),
-        Aider => Some("Aider does not provide a native MCP client. Terminal use is available."),
-        Crush => Some("Configure MCP in Crush's crushrc; executable shell configuration is not edited by Lomi."),
-        Trae => Some("Add mcp_servers.lomi to the selected trae_config.yaml and include lomi in allow_mcp_servers."),
-        Sweagent => Some("SWE-agent has no documented native MCP client. Terminal use is available."),
         _ => None,
     }
 }
@@ -198,45 +193,9 @@ pub(crate) fn configuration_path(cli: TitleCli, entries: &[&[u8]]) -> Result<Pat
                     .join("openclaw.json")
             })
         }
-        Cline => {
-            let current = env("CLINE_DATA_DIR=")
-                .unwrap_or_else(|| home.join(".cline/data"))
-                .join("settings/cline_mcp_settings.json");
-            let legacy = home.join(".cline/mcp.json");
-            if env("CLINE_DATA_DIR=").is_some() {
-                return resolve(&current);
-            }
-            if current.try_exists().map_err(|e| e.to_string())?
-                && !legacy.try_exists().map_err(|e| e.to_string())?
-            {
-                current
-            } else if legacy.try_exists().map_err(|e| e.to_string())?
-                && !current.try_exists().map_err(|e| e.to_string())?
-            {
-                legacy
-            } else {
-                return Err("Cline's active MCP file is ambiguous. Open cline mcp to initialize its configuration, then refresh.".into());
-            }
-        }
-        Junie => {
-            if env("JUNIE_CONFIG_LOCATION=").is_some() {
-                return Err("Junie uses a custom configuration location. Register Lomi in that configuration.".into());
-            }
-            env("JUNIE_HOME=")
-                .unwrap_or_else(|| home.join(".junie"))
-                .join("mcp/mcp.json")
-        }
-        Deepagents => env("DEEPAGENTS_HOME=")
-            .unwrap_or_else(|| home.join(".deepagents"))
-            .join(".mcp.json"),
-        Freebuff => home.join(".agents/mcp.json"),
         Hermes => env("HERMES_HOME=")
             .unwrap_or_else(|| home.join(".hermes"))
             .join("config.yaml"),
-        Goose => env("GOOSE_PATH_ROOT=")
-            .map(|root| root.join("config/config.yaml"))
-            .unwrap_or_else(|| xdg.join("goose/config.yaml")),
-        Continue => home.join(".continue/config.yaml"),
         Qwen => {
             let directory = env("QWEN_HOME=").unwrap_or_else(|| home.join(".qwen"));
             let directory = directory
@@ -248,10 +207,6 @@ pub(crate) fn configuration_path(cli: TitleCli, entries: &[&[u8]]) -> Result<Pat
         Kiro => env("KIRO_HOME=")
             .unwrap_or_else(|| home.join(".kiro"))
             .join("settings/mcp.json"),
-        Droid => home.join(".factory/mcp.json"),
-        Openhands => home.join(".openhands/mcp.json"),
-        Amp => prefer_jsonc(xdg.join("amp"), "settings")?,
-        Auggie => home.join(".augment/settings.json"),
         Vibe => {
             if entries.iter().any(|entry| *entry == b"VIBE_CLI=rust") {
                 return Err("Use Vibe's Python CLI for stdio MCP configuration.".into());
@@ -263,9 +218,6 @@ pub(crate) fn configuration_path(cli: TitleCli, entries: &[&[u8]]) -> Result<Pat
         Kimi => env("KIMI_CODE_HOME=")
             .unwrap_or_else(|| home.join(".kimi-code"))
             .join("mcp.json"),
-        Interpreter => env("INTERPRETER_HOME=")
-            .unwrap_or_else(|| home.join(".openinterpreter"))
-            .join("config.toml"),
         Grok => env("GROK_HOME=")
             .unwrap_or_else(|| home.join(".grok"))
             .join("config.toml"),
@@ -350,7 +302,6 @@ fn json_keys(cli: TitleCli) -> &'static [&'static str] {
     match cli {
         TitleCli::Opencode | TitleCli::Openclaw => &["mcp", "servers"],
         TitleCli::Kilo => &["mcp"],
-        TitleCli::Amp => &["amp.mcpServers"],
         _ => &["mcpServers"],
     }
 }
@@ -514,7 +465,7 @@ pub(crate) fn configured(
 ) -> Result<bool, String> {
     let format = format(cli).ok_or("Automatic MCP configuration is not available for this CLI.")?;
     if format == Format::Yaml {
-        return yaml::configured(cli, source, expected);
+        return yaml::configured(source, expected);
     }
     if matches!(format, Format::Toml | Format::TomlArray) {
         let doc = document(source)?;
@@ -576,7 +527,7 @@ pub(crate) fn configured(
     };
     let required_type = match cli {
         TitleCli::Copilot | TitleCli::Opencode | TitleCli::Kilo => Some("local"),
-        TitleCli::Claude | TitleCli::Cursor | TitleCli::Droid | TitleCli::Freebuff => Some("stdio"),
+        TitleCli::Claude | TitleCli::Cursor => Some("stdio"),
         _ => None,
     };
     Ok(command_matches
@@ -616,7 +567,7 @@ pub(crate) fn enable(
     let conflict = "A different MCP server is already named lomi. Rename that entry in the CLI configuration before installing Lomi MCP.";
     let format = format(cli).ok_or("Automatic MCP configuration is not available for this CLI.")?;
     let output = if format == Format::Yaml {
-        yaml::updated(cli, source.as_deref(), expected)?
+        yaml::updated(source.as_deref(), expected)?
     } else if matches!(format, Format::Toml | Format::TomlArray) {
         let mut doc = document(source.as_deref())?;
         let existing: Option<&dyn toml_edit::TableLike> = if format == Format::TomlArray {
@@ -735,9 +686,7 @@ pub(crate) fn enable(
         }
         let kind = match cli {
             TitleCli::Opencode | TitleCli::Kilo | TitleCli::Copilot => Some("local"),
-            TitleCli::Claude | TitleCli::Cursor | TitleCli::Droid | TitleCli::Freebuff => {
-                Some("stdio")
-            }
+            TitleCli::Claude | TitleCli::Cursor => Some("stdio"),
             _ => None,
         };
         if let Some(kind) = kind {
@@ -1042,27 +991,14 @@ mod tests {
                 true,
             ),
             (
-                TitleCli::Amp,
-                "{ // keep this comment\n\"theme\": \"dark\",\n}",
-                "/amp.mcpServers/lomi",
-                false,
-            ),
-            (
                 TitleCli::Openclaw,
                 "{ // keep this comment\n theme: 'dark', mcp: {servers: {}}, }",
                 "/mcp/servers/lomi",
                 false,
             ),
-            (TitleCli::Cline, "{}", "/mcpServers/lomi", false),
             (TitleCli::Qwen, "{}", "/mcpServers/lomi", false),
             (TitleCli::Kiro, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Droid, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Openhands, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Auggie, "{}", "/mcpServers/lomi", false),
             (TitleCli::Kimi, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Junie, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Deepagents, "{}", "/mcpServers/lomi", false),
-            (TitleCli::Freebuff, "{}", "/mcpServers/lomi", false),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config");
@@ -1124,7 +1060,7 @@ mod tests {
 
     #[test]
     fn extended_toml_adapters_preserve_existing_servers_and_reject_collisions() {
-        for cli in [TitleCli::Interpreter, TitleCli::Grok, TitleCli::Vibe] {
+        for cli in [TitleCli::Grok, TitleCli::Vibe] {
             let source = if cli == TitleCli::Vibe {
                 "# keep\nmodel = 'test'\n[[mcp_servers]]\nname = 'other'\ncommand = 'keep'\n"
             } else {
@@ -1177,7 +1113,6 @@ mod tests {
         for (cli, source) in [
             (TitleCli::Opencode, r#"{"mcp":{"servers":[]}}"#),
             (TitleCli::Kilo, r#"{"mcp":{"lomi":{}}}"#),
-            (TitleCli::Amp, r#"{"amp.mcpServers":1}"#),
             (TitleCli::Gemini, r#"{"mcpServers":{},"mcpServers":{}}"#),
             (
                 TitleCli::Vibe,
@@ -1213,21 +1148,11 @@ mod tests {
             (TitleCli::Openclaw, ".openclaw/openclaw.json"),
             (TitleCli::Kilo, ".config/kilo/kilo.jsonc"),
             (TitleCli::Hermes, ".hermes/config.yaml"),
-            (TitleCli::Goose, ".config/goose/config.yaml"),
-            (TitleCli::Continue, ".continue/config.yaml"),
             (TitleCli::Qwen, ".qwen/settings.json"),
             (TitleCli::Kiro, ".kiro/settings/mcp.json"),
-            (TitleCli::Droid, ".factory/mcp.json"),
-            (TitleCli::Openhands, ".openhands/mcp.json"),
-            (TitleCli::Amp, ".config/amp/settings.json"),
-            (TitleCli::Auggie, ".augment/settings.json"),
             (TitleCli::Vibe, ".vibe/config.toml"),
             (TitleCli::Kimi, ".kimi-code/mcp.json"),
-            (TitleCli::Interpreter, ".openinterpreter/config.toml"),
             (TitleCli::Grok, ".grok/config.toml"),
-            (TitleCli::Junie, ".junie/mcp/mcp.json"),
-            (TitleCli::Deepagents, ".deepagents/.mcp.json"),
-            (TitleCli::Freebuff, ".agents/mcp.json"),
         ] {
             assert_eq!(
                 configuration_path(cli, &[home_entry.as_bytes()]).unwrap(),
@@ -1242,11 +1167,8 @@ mod tests {
             (TitleCli::Qwen, "QWEN_HOME", "settings.json"),
             (TitleCli::Vibe, "VIBE_HOME", "config.toml"),
             (TitleCli::Hermes, "HERMES_HOME", "config.yaml"),
-            (TitleCli::Goose, "GOOSE_PATH_ROOT", "config/config.yaml"),
-            (TitleCli::Goose, "XDG_CONFIG_HOME", "goose/config.yaml"),
             (TitleCli::Kimi, "KIMI_CODE_HOME", "mcp.json"),
             (TitleCli::Grok, "GROK_HOME", "config.toml"),
-            (TitleCli::Deepagents, "DEEPAGENTS_HOME", ".mcp.json"),
         ] {
             let custom = format!("{variable}={}/custom", home.display());
             assert_eq!(
@@ -1258,7 +1180,6 @@ mod tests {
                 configuration_path(cli, &[home_entry.as_bytes(), relative.as_bytes()]).is_err()
             );
         }
-        assert!(configuration_path(TitleCli::Cline, &[home_entry.as_bytes()]).is_err());
         assert!(configuration_path(
             TitleCli::Opencode,
             &[home_entry.as_bytes(), b"OPENCODE_CONFIG_CONTENT={}"]

@@ -245,9 +245,6 @@ fn ambient(cli: TitleCli, cwd: &Path) -> Result<(), String> {
     if cli == TitleCli::Codex {
         super::codex::ambient_policy()?;
     }
-    if cli == TitleCli::Goose {
-        super::goose::admit_system_config()?;
-    }
     if cfg!(target_os = "macos")
         && matches!(cli, TitleCli::Claude | TitleCli::Opencode | TitleCli::Kilo)
     {

@@ -1,6 +1,24 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { cliNames, type CliAgent } from "../cli-agents";
-import { useEffect, useState } from "react";
+import { CliAgentIcon } from "../CliAgentIcon";
+import {
+  ArrowLeft,
+  ArrowUp,
+  ArrowDown,
+  Check,
+  ChevronRight,
+  Info,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  Terminal,
+  Trash2,
+} from "../icons";
 import { SettingRow, SettingsNotice, SettingsSection } from "../settings-ui";
+import { DisclosureSummary, IconButton, Modal } from "../ui";
+import Select from "../Select";
 import {
   moveAccount,
   quotaLabel,
@@ -8,10 +26,11 @@ import {
   hasComparableQuota,
   gatewayProtocolsForCli,
 } from "./model";
-import type { GatewayProtocol } from "./types";
-import { invoke } from "@tauri-apps/api/core";
+import type { CliProfile, CliRouter, GatewayProtocol } from "./types";
 import { useRouterSnapshot } from "./useRouterSnapshot";
 import "./router.css";
+import "./router-settings.css";
+
 interface NativeReport {
   profileId: string;
   profileRevision: number;
@@ -24,7 +43,6 @@ interface NativeReport {
     windows: {
       id: string;
       name: string;
-      nativeId?: string | null;
       nativeWindow?: string | null;
       remainingPercent?: number | null;
       remainingAmount?: number | null;
@@ -35,35 +53,144 @@ interface NativeReport {
   };
   error?: string;
 }
+const authLabels = {
+  disconnected: "Not signed in",
+  connecting: "Signing in…",
+  verifying: "Verifying…",
+  ready: "Verified",
+  refreshing: "Refreshing…",
+  reauth_required: "Sign in again",
+  disabled: "Disabled",
+  pending_remove: "Removal pending",
+  identity_mismatch: "Account changed",
+  error: "Needs attention",
+  unverified: "Not verified",
+};
+const featuredClis: CliAgent[] = [
+  "claude",
+  "codex",
+  "grok",
+  "kimi",
+  "kilo",
+  "opencode",
+  "pi",
+  "agy",
+];
+type RouteDraft = {
+  id?: string;
+  revision?: number;
+  label: string;
+  ids: string[];
+  balance: boolean;
+  cli: string;
+  enabled: boolean;
+};
+function canonicalUrl(value: string) {
+  try {
+    return new URL(value).toString().replace(/\/+$/, "");
+  } catch {
+    return value;
+  }
+}
+function NativeAccountReport({
+  report,
+  now,
+}: {
+  report: NativeReport;
+  now: number;
+}) {
+  return (
+    <div className="router-account-diagnostics">
+      <p className="setting-value">
+        {report.authenticated ? "Signed in" : "Not verified"}
+        {report.observation.identity?.displayLabel &&
+          ` · ${report.observation.identity.displayLabel}`}
+        {report.expiresAt <= now && " · Out of date"}
+      </p>
+      {report.error && (
+        <SettingsNotice tone="error">{report.error}</SettingsNotice>
+      )}
+      <div className="router-account-limits">
+        {report.observation.windows.map((window) => (
+          <SettingRow
+            key={window.id}
+            label={window.name}
+            description={`${window.nativeWindow || "Scope unknown"}${window.resetAt != null ? ` · Resets ${new Date(window.resetAt).toLocaleString()}` : ""}`}
+          >
+            <span className="setting-value">
+              {window.disabled
+                ? "Disabled"
+                : window.remainingPercent != null &&
+                    Number.isFinite(window.remainingPercent)
+                  ? `${window.remainingPercent.toFixed(1)}% remaining`
+                  : window.remainingAmount != null &&
+                      Number.isFinite(window.remainingAmount)
+                    ? `${window.remainingAmount} ${window.unit || "(unit unknown)"} remaining`
+                    : "Quota unknown"}
+            </span>
+          </SettingRow>
+        ))}
+      </div>
+      <p className="settings-help">{`Updated ${new Date(report.observedAt).toLocaleTimeString()}. Reported limits; model scope is unverified for balancing.`}</p>
+    </div>
+  );
+}
 export default function RouterSettings() {
-  const { snapshot, error, busy, mutate, command } = useRouterSnapshot();
+  const { snapshot, error, busy, mutate, command, clearError, readSnapshot } =
+    useRouterSnapshot();
   const [now, setNow] = useState(Date.now);
-  useEffect(() => setNow(Date.now()), [snapshot]);
-  const hasFreshReports =
-    snapshot?.quota.some((quota) => isQuotaFresh(quota, now)) ?? false;
-  useEffect(() => {
-    if (!hasFreshReports) return;
-    const clock = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(clock);
-  }, [hasFreshReports]);
   const [search, setSearch] = useState("");
-  const [cli, setCli] = useState("");
+  const [choosingCli, setChoosingCli] = useState(false);
+  const [support, setSupport] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [accountLabel, setAccountLabel] = useState("");
-  const [poolLabel, setPoolLabel] = useState("");
+  const [accountId, setAccountId] = useState<string>();
+  const [connection, setConnection] = useState<"cli" | "api">("cli");
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [endpoints, setEndpoints] = useState<Record<string, string>>({});
   const [protocols, setProtocols] = useState<Record<string, GatewayProtocol>>(
     {},
   );
+  const [routeDraft, setRouteDraft] = useState<RouteDraft>();
+  const [removing, setRemoving] = useState<CliProfile>();
+  const [removingRouter, setRemovingRouter] = useState(false);
   const [nativeReports, setNativeReports] = useState<
     Record<string, NativeReport>
   >({});
   const [nativeBusy, setNativeBusy] = useState<string>();
-  const [nativeError, setNativeError] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const connectionLock = useRef(false);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const routerNameInput = useRef<HTMLInputElement>(null);
+  const agentSearch = useRef<HTMLInputElement>(null);
+  const cancelRemove = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!routeDraft) return;
+    if (choosingCli) agentSearch.current?.focus();
+    else routerNameInput.current?.focus();
+  }, [choosingCli, routeDraft?.cli, routeDraft?.id]);
+  const cli = routeDraft?.cli ?? "";
   const capabilities = snapshot?.capabilities ?? [];
   const selected = capabilities.find((item) => item.cli === cli);
   const profiles = snapshot?.profiles.filter((item) => item.cli === cli) ?? [];
-  const routers = snapshot?.routers.filter((item) => item.cli === cli) ?? [];
+  const routers = snapshot?.routers ?? [];
+  const account = profiles.find((item) => item.id === accountId);
+  const locked = busy || connecting || !!nativeBusy;
+  const apiSupported =
+    !!(selected?.gatewayTerminal && selected.gatewayProtocol) ||
+    !!(selected?.managedTurns && selected.apiKeyLabel);
+  const cliSupported = selected?.profileTerminal !== false;
+  const directApiSupported = !!(selected?.managedTurns && selected.apiKeyLabel);
+  const hasFreshReports =
+    !!snapshot?.quota.some((quota) => isQuotaFresh(quota, now)) ||
+    Object.values(nativeReports).some((report) => report.expiresAt > now);
+  useEffect(() => setNow(Date.now()), [snapshot]);
+  useEffect(() => {
+    if (!hasFreshReports) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasFreshReports]);
   const nativeBindings = profiles
     .filter((profile) => profile.storageMode === "cli_managed")
     .map((profile) => `${profile.id}:${profile.revision}`)
@@ -85,23 +212,23 @@ export default function RouterSettings() {
         }
       }),
     ).then((reports) => {
-      if (!live) return;
-      setNativeReports(
-        Object.fromEntries(
-          reports
-            .filter((report): report is NativeReport => !!report)
-            .map((report) => [report.profileId, report]),
-        ),
-      );
+      if (live)
+        setNativeReports(
+          Object.fromEntries(
+            reports
+              .filter((report): report is NativeReport => !!report)
+              .map((report) => [report.profileId, report]),
+          ),
+        );
     });
     return () => {
       live = false;
     };
   }, [nativeBindings]);
   async function refreshNative(profileId: string) {
-    if (nativeBusy) return;
+    if (locked) return;
     setNativeBusy(profileId);
-    setNativeError("");
+    setLocalError("");
     try {
       const report = await invoke<NativeReport>("cli_profile_refresh_native", {
         profileId,
@@ -109,707 +236,1326 @@ export default function RouterSettings() {
       setNativeReports((current) => ({ ...current, [profileId]: report }));
       await command("cli_router_snapshot", {});
     } catch (failure) {
-      setNativeError(String(failure));
+      setLocalError(String(failure));
     } finally {
       setNativeBusy(undefined);
     }
   }
+  function openAccount(profile: CliProfile) {
+    clearError();
+    setConnection(
+      profile.gatewayProvider ||
+        profile.storageMode === "api_key" ||
+        !cliSupported
+        ? "api"
+        : "cli",
+    );
+    setLocalError("");
+    setAccountId(profile.id);
+  }
+  function clearConnectionDraft(profileId: string) {
+    setKeys((current) => ({ ...current, [profileId]: "" }));
+    setEndpoints((current) => {
+      const next = { ...current };
+      delete next[profileId];
+      return next;
+    });
+    setProtocols((current) => {
+      const next = { ...current };
+      delete next[profileId];
+      return next;
+    });
+  }
+  const endpoint = account
+    ? (endpoints[account.id] ?? account.gatewayProvider?.baseUrl ?? "")
+    : "";
+  const protocol = (
+    account?.cli === "codex"
+      ? "openai_responses"
+      : account &&
+        (protocols[account.id] ??
+          account.gatewayProvider?.protocol ??
+          selected?.gatewayProtocol)
+  ) as GatewayProtocol | undefined;
+  async function saveConnection(endpointOnly = false) {
+    if (
+      !account ||
+      locked ||
+      connectionLock.current ||
+      account.authState === "pending_remove"
+    )
+      return;
+    const reviewed = account;
+    const key = keys[reviewed.id]?.trim();
+    const destination = endpoint.trim();
+    if (!endpointOnly && !key) return;
+    const gatewayDestination =
+      !!selected?.gatewayTerminal &&
+      (!!destination || !!reviewed.gatewayProvider || !directApiSupported);
+    if (gatewayDestination && (!destination || !protocol)) return;
+    connectionLock.current = true;
+    setConnecting(true);
+    setLocalError("");
+    try {
+      let binding = reviewed;
+      if (
+        gatewayDestination &&
+        protocol &&
+        (endpointOnly ||
+          reviewed.gatewayProvider?.protocol !== protocol ||
+          reviewed.gatewayProvider?.baseUrl !== destination)
+      ) {
+        const next = await mutate({
+          type: "configure_gateway_account",
+          profileId: reviewed.id,
+          provider: { protocol, baseUrl: destination },
+        });
+        if (!next) return;
+        const updated = next.profiles.find(
+          (profile) => profile.id === reviewed.id,
+        );
+        // The key is bound to the destination returned by the reviewed mutation.
+        if (
+          !updated ||
+          updated.gatewayProvider?.protocol !== protocol ||
+          canonicalUrl(updated.gatewayProvider.baseUrl) !==
+            canonicalUrl(destination) ||
+          updated.authState === "pending_remove"
+        ) {
+          setLocalError(
+            "The account destination changed. Review it before saving a key.",
+          );
+          return;
+        }
+        binding = updated;
+        if (endpointOnly) {
+          clearConnectionDraft(reviewed.id);
+          return;
+        }
+      }
+      if (
+        key &&
+        (await command("cli_profile_set_api_key", {
+          profileId: binding.id,
+          expectedRevision: binding.revision,
+          key,
+        }))
+      ) {
+        clearConnectionDraft(binding.id);
+        setAccountId(undefined);
+      }
+    } finally {
+      connectionLock.current = false;
+      setConnecting(false);
+    }
+  }
+  function clearDraftError() {
+    setLocalError("");
+    clearError();
+  }
+  function closeRoute() {
+    setRouteDraft(undefined);
+    setChoosingCli(false);
+    setSearch("");
+    clearDraftError();
+  }
+  function openRoute(router?: CliRouter) {
+    clearDraftError();
+    setSearch("");
+    setChoosingCli(!router);
+    setRouteDraft(
+      router
+        ? {
+            id: router.id,
+            revision: router.revision,
+            cli: router.cli,
+            enabled: router.enabled,
+            label: router.label,
+            ids: [...router.orderedProfileIds],
+            balance: router.balanceRemainingQuota,
+          }
+        : { cli: "", enabled: false, label: "", ids: [], balance: false },
+    );
+  }
+  function chooseCli(nextCli: string) {
+    const capability = capabilities.find((item) => item.cli === nextCli);
+    const previousDefault = `${selected?.name || cliNames[cli as CliAgent] || cli} router`;
+    setRouteDraft((draft) =>
+      draft && !draft.id
+        ? {
+            ...draft,
+            cli: nextCli,
+            label:
+              (draft.label !== previousDefault && draft.label) ||
+              `${capability?.name || cliNames[nextCli as CliAgent] || nextCli} router`,
+            ids:
+              snapshot?.profiles
+                .filter(
+                  (profile) =>
+                    profile.cli === nextCli &&
+                    profile.authState !== "pending_remove",
+                )
+                .map((profile) => profile.id) ?? [],
+            balance: false,
+            enabled: false,
+          }
+        : draft,
+    );
+    setChoosingCli(false);
+    setSearch("");
+    clearDraftError();
+  }
+  function addAccount() {
+    setAccountLabel("");
+    setAdding(true);
+    setConnection(cliSupported ? "cli" : "api");
+    clearDraftError();
+  }
+  const routeChanged =
+    !!routeDraft?.id &&
+    routers.find((router) => router.id === routeDraft.id)?.revision !==
+      routeDraft.revision;
+  const routeMissingAccount = !!routeDraft?.ids.some(
+    (id) => !profiles.some((profile) => profile.id === id),
+  );
+  const modalError = error || localError;
   return (
-    <div className="router-settings" aria-busy={busy}>
-      {error && <SettingsNotice tone="error">{error}</SettingsNotice>}
-      {nativeError && (
-        <SettingsNotice tone="error">{nativeError}</SettingsNotice>
+    <div className="router-settings" aria-busy={locked}>
+      {!account && !adding && !routeDraft && !removing && modalError && (
+        <SettingsNotice tone="error">{modalError}</SettingsNotice>
       )}
       {!snapshot && !error && <p role="status">Loading routers…</p>}
-      <SettingsSection
-        title="CLI routers"
-        description="Keep separate CLI accounts and choose their order for routed runs."
-      >
-        <SettingRow label="Search CLI agents" htmlFor="router-search">
-          <input
-            id="router-search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </SettingRow>
-        <SettingRow label="CLI agent" htmlFor="router-cli">
-          <select
-            id="router-cli"
-            value={cli}
-            onChange={(event) => setCli(event.target.value)}
-          >
-            <option value="">Choose a CLI agent</option>
-            {capabilities
-              .filter((item) =>
-                `${item.name || cliNames[item.cli as CliAgent] || item.cli} ${item.cli}`
-                  .toLowerCase()
-                  .includes(search.toLowerCase()),
-              )
-              .map((item) => (
-                <option key={item.cli} value={item.cli}>
-                  {item.name || cliNames[item.cli as CliAgent] || item.cli}
-                </option>
-              ))}
-          </select>
-        </SettingRow>
-        {!cli && (
-          <p className="settings-help">
-            Choose an agent to see account and routing support.
-          </p>
-        )}
-        {selected && (
-          <SettingsNotice>
-            {selected.reason ||
-              "Separate accounts are not supported for this CLI yet."}
-          </SettingsNotice>
-        )}
-        {selected?.canCreateProfile && (
-          <>
-            <form
-              className="router-create"
-              onSubmit={async (event) => {
-                event.preventDefault();
-                if (
-                  accountLabel.trim() &&
-                  (await mutate({
-                    type: "create_profile",
-                    cli,
-                    label: accountLabel.trim(),
-                  }))
-                )
-                  setAccountLabel("");
-              }}
+      {snapshot && (
+        <SettingsSection
+          title="Saved routers"
+          count={routers.length || undefined}
+          actions={
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={locked}
+              onClick={() => openRoute()}
             >
-              <label htmlFor="router-account-label">Account name</label>
-              <input
-                id="router-account-label"
-                required
-                value={accountLabel}
-                onChange={(event) => setAccountLabel(event.target.value)}
-                maxLength={120}
-              />
+              <Plus size={14} aria-hidden="true" /> New router
+            </button>
+          }
+        >
+          {!routers.length ? (
+            <div className="router-dashboard-empty">
+              <p>No routers yet</p>
+              <span className="settings-help">
+                Create a router to choose an agent and its accounts.
+              </span>
+            </div>
+          ) : (
+            <div className="router-compact-list">
+              {routers.map((router) => {
+                const capability = capabilities.find(
+                  (item) => item.cli === router.cli,
+                );
+                const fallback =
+                  router.balanceRemainingQuota &&
+                  (!capability?.quotaRead ||
+                    !hasComparableQuota(
+                      router,
+                      snapshot.profiles,
+                      snapshot.quota,
+                      now,
+                    ));
+                return (
+                  <div className="router-compact-row" key={router.id}>
+                    <button
+                      type="button"
+                      className="router-row-content"
+                      disabled={locked}
+                      aria-label={`Manage ${router.label}`}
+                      onClick={() => openRoute(router)}
+                    >
+                      <CliAgentIcon cli={router.cli as CliAgent} />
+                      <span className="router-row-name">
+                        {router.label}
+                        <small>
+                          {capability?.name ||
+                            cliNames[router.cli as CliAgent] ||
+                            router.cli}{" "}
+                          · {router.orderedProfileIds.length}{" "}
+                          {router.orderedProfileIds.length === 1
+                            ? "account"
+                            : "accounts"}
+                        </small>
+                      </span>
+                      {fallback && (
+                        <span
+                          className="router-fallback"
+                          title="No comparable fresh quota. Account order applies."
+                        >
+                          Account order
+                        </span>
+                      )}
+                      <Settings size={15} aria-hidden="true" />
+                    </button>
+                    <input
+                      className="settings-switch"
+                      type="checkbox"
+                      role="switch"
+                      aria-label={`Enable ${router.label}`}
+                      checked={router.enabled}
+                      disabled={locked}
+                      onChange={(event) =>
+                        void mutate({
+                          type: "update_router",
+                          routerId: router.id,
+                          enabled: event.target.checked,
+                        })
+                      }
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </SettingsSection>
+      )}
+      {support && selected && (
+        <Modal
+          title={selected.name}
+          className="router-settings-dialog"
+          onClose={() => setSupport(false)}
+        >
+          <div className="router-setup-body">
+            <p>
+              {selected.reason ||
+                "Separate accounts are unavailable for this CLI."}
+            </p>
+            {selected.gatewayTerminal && (
+              <p>
+                API keys use the system keyring. Subscription login stays in the
+                CLI. Native CLI permission prompts apply.
+              </p>
+            )}
+            {selected.gatewayTerminal && (
+              <p>
+                {selected.cli === "codex"
+                  ? "API endpoints must support OpenAI Responses to preserve native context."
+                  : "Protocol conversion supports text and function tools. Unsupported native features or context are rejected before sending."}
+              </p>
+            )}
+            <p>
+              Enable a router after configuring two distinct, compatible
+              accounts. Separate API keys may share a billing budget.
+            </p>
+          </div>
+        </Modal>
+      )}
+      {adding && selected && (
+        <Modal
+          title="Add account"
+          className="router-settings-dialog"
+          initialFocus={nameInput}
+          closeDisabled={locked}
+          onClose={() => setAdding(false)}
+        >
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (locked || !accountLabel.trim()) return;
+              const draftAtCreation = routeDraft;
+              const next = await mutate({
+                type: "create_profile",
+                cli,
+                label: accountLabel.trim(),
+              });
+              const created = next?.profiles.find(
+                (profile) =>
+                  profile.cli === cli &&
+                  !profiles.some((item) => item.id === profile.id),
+              );
+              if (created) {
+                setRouteDraft((draft) =>
+                  draft &&
+                  draft === draftAtCreation &&
+                  draft.cli === created.cli
+                    ? { ...draft, ids: [...draft.ids, created.id] }
+                    : draft,
+                );
+                setAdding(false);
+                setAccountId(created.id);
+              }
+            }}
+          >
+            <div className="router-setup-body">
+              {modalError && (
+                <SettingsNotice tone="error">{modalError}</SettingsNotice>
+              )}
+              <label className="router-setup-field">
+                Account name
+                <input
+                  ref={nameInput}
+                  required
+                  maxLength={120}
+                  value={accountLabel}
+                  disabled={locked}
+                  placeholder="Personal, work…"
+                  onChange={(event) => setAccountLabel(event.target.value)}
+                />
+              </label>
+              <p className="settings-help">
+                Accounts are saved separately and can be reused by other
+                routers.
+              </p>
+              {apiSupported && cliSupported && (
+                <div
+                  className="router-connection-choices"
+                  role="group"
+                  aria-label="Connection type"
+                >
+                  <button
+                    type="button"
+                    className="button"
+                    aria-pressed={connection === "cli"}
+                    disabled={locked}
+                    onClick={() => setConnection("cli")}
+                  >
+                    <Terminal size={16} aria-hidden="true" />
+                    CLI login
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    aria-pressed={connection === "api"}
+                    disabled={locked}
+                    onClick={() => setConnection("api")}
+                  >
+                    <Plus size={16} aria-hidden="true" />
+                    API key
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="router-setup-footer">
               <button
+                type="button"
                 className="button"
-                disabled={busy || !accountLabel.trim()}
+                disabled={locked}
+                onClick={() => setAdding(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button button-primary"
+                disabled={locked || !accountLabel.trim()}
               >
                 Add account
               </button>
-            </form>
-            <p className="settings-help">
-              {selected.profileTerminal === false
-                ? "Configure an API key for this CLI. Its ordinary login terminal is unavailable for router profiles. "
-                : selected.canVerifyLogin
-                  ? "Open the CLI and sign in using its own login flow, then verify the account. "
-                  : "This CLI has no supported login check. Its isolated terminal remains available. "}
-              {selected.gatewayTerminal &&
-                "For Gateway CLI terminals, save the protocol endpoint first, then save its API key. Native CLI tools and permission prompts apply. "}
-              {selected.managedTurns &&
-                selected.apiKeyLabel &&
-                "Save your own API key in the system keyring to use routed text turns. Verification checks local key presence. Every turn starts a fresh conversation."}
-              {selected.cli === "codex" &&
-                "Managed text turns require a verified subscription account and a current native quota report. Verify the account, then refresh quota before starting a run."}
-            </p>
-            <p className="settings-help">
-              Removing an account deletes Lomi’s saved API key when cleanup
-              completes. CLI login files remain.
-              {selected.profileTerminal !== false &&
-                " To sign out, use the account’s own CLI terminal first."}
-            </p>
-            {profiles.map((profile) => (
-              <SettingRow
-                key={profile.id}
-                stacked
-                className="router-profile-row"
-                label={profile.label}
-                description={`${profile.authState.replaceAll("_", " ")} · ${
-                  profile.storageMode === "api_key"
-                    ? "Own API key"
-                    : quotaLabel(
-                        snapshot?.quota.find(
-                          (item) => item.profileId === profile.id,
-                        ),
-                        now,
-                      )
-                }`}
+            </div>
+          </form>
+        </Modal>
+      )}
+      {account && selected && (
+        <Modal
+          title={account.label}
+          className="router-settings-dialog"
+          closeDisabled={locked}
+          onClose={() => {
+            setAccountId(undefined);
+            setLocalError("");
+          }}
+        >
+          <div className="router-setup-body">
+            {modalError && (
+              <SettingsNotice tone="error">{modalError}</SettingsNotice>
+            )}
+            <SettingRow label="Enable account" htmlFor="router-account-enabled">
+              <input
+                id="router-account-enabled"
+                className="settings-switch"
+                type="checkbox"
+                role="switch"
+                aria-label={`Enable ${account.label}`}
+                checked={account.enabled}
+                disabled={locked || account.authState === "pending_remove"}
+                onChange={(event) =>
+                  void mutate({
+                    type: "update_profile",
+                    profileId: account.id,
+                    enabled: event.target.checked,
+                  })
+                }
+              />
+            </SettingRow>
+            {apiSupported && cliSupported && (
+              <div
+                className="router-connection-choices"
+                role="group"
+                aria-label="Connection type"
               >
-                <label>
-                  <input
-                    type="checkbox"
-                    aria-label={`Enable ${profile.label}`}
-                    checked={profile.enabled}
-                    disabled={busy || profile.authState === "pending_remove"}
-                    onChange={(event) =>
-                      void mutate({
-                        type: "update_profile",
-                        profileId: profile.id,
-                        enabled: event.target.checked,
-                      })
-                    }
-                  />{" "}
-                  Enabled
-                </label>
                 <button
                   type="button"
                   className="button"
+                  aria-pressed={connection === "cli"}
+                  disabled={locked}
+                  onClick={() => setConnection("cli")}
+                >
+                  CLI login
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  aria-pressed={connection === "api"}
+                  disabled={locked}
+                  onClick={() => setConnection("api")}
+                >
+                  API key
+                </button>
+              </div>
+            )}
+            {connection === "cli" ? (
+              <>
+                <div className="router-login-status">
+                  <Terminal size={28} aria-hidden="true" />
+                  <span>{authLabels[account.authState]}</span>
+                </div>
+                <button
+                  type="button"
+                  className="button button-primary router-login-action"
                   disabled={
-                    busy ||
-                    profile.authState === "pending_remove" ||
-                    profile.storageMode === "api_key" ||
-                    selected.profileTerminal === false
+                    locked ||
+                    account.authState === "pending_remove" ||
+                    account.storageMode === "api_key" ||
+                    !cliSupported
                   }
                   onClick={() =>
                     void command("cli_profile_open_terminal", {
-                      profileId: profile.id,
+                      profileId: account.id,
                     })
                   }
                 >
-                  Open CLI to sign in
+                  Sign in with CLI
                 </button>
-                <button
-                  type="button"
-                  className="button"
-                  disabled={
-                    busy ||
-                    profile.authState === "pending_remove" ||
-                    (!selected.canVerifyLogin &&
-                      profile.storageMode !== "api_key")
-                  }
-                  title={
-                    selected.canVerifyLogin || profile.storageMode === "api_key"
-                      ? undefined
-                      : "This CLI does not provide a supported login check."
-                  }
-                  onClick={() =>
-                    void command("cli_profile_verify", {
-                      profileId: profile.id,
-                    })
-                  }
-                >
-                  Verify
-                </button>
-                {profile.storageMode === "cli_managed" &&
-                  [
-                    "claude",
-                    "codex",
-                    "grok",
-                    "kimi",
-                    "kilo",
-                    "opencode",
-                    "pi",
-                    "agy",
-                  ].includes(profile.cli) && (
-                    <>
+                <div className="router-inline-actions">
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={
+                      locked ||
+                      account.authState === "pending_remove" ||
+                      !selected.canVerifyLogin
+                    }
+                    onClick={() =>
+                      void command("cli_profile_verify", {
+                        profileId: account.id,
+                      })
+                    }
+                  >
+                    <Check size={14} aria-hidden="true" />
+                    Verify
+                  </button>
+                  {account.storageMode === "cli_managed" &&
+                    featuredClis.includes(cli as CliAgent) && (
                       <button
                         type="button"
                         className="button"
                         disabled={
-                          busy ||
-                          !!nativeBusy ||
-                          profile.authState === "pending_remove"
+                          locked || account.authState === "pending_remove"
                         }
-                        onClick={() => void refreshNative(profile.id)}
+                        onClick={() => void refreshNative(account.id)}
                       >
-                        {nativeBusy === profile.id
-                          ? "Reading native account…"
-                          : "Refresh native account"}
+                        <RefreshCw size={14} aria-hidden="true" />
+                        Refresh account status
                       </button>
-                      {nativeReports[profile.id] && (
-                        <div className="settings-help" role="status">
-                          <p>
-                            Recorded native account:{" "}
-                            {nativeReports[profile.id].authenticated
-                              ? "authenticated"
-                              : "unverified"}
-                            {nativeReports[profile.id].observation.identity
-                              ?.displayLabel
-                              ? ` · ${nativeReports[profile.id].observation.identity!.displayLabel}`
-                              : ""}
-                            . Observed{" "}
-                            {new Date(
-                              nativeReports[profile.id].observedAt,
-                            ).toLocaleTimeString()}
-                            .
-                          </p>
-                          {nativeReports[profile.id].observation.windows.map(
-                            (window) => (
-                              <p key={window.id}>
-                                {window.name}:{" "}
-                                {window.disabled
-                                  ? "disabled"
-                                  : window.remainingPercent != null
-                                    ? `${window.remainingPercent.toFixed(1)}% remaining`
-                                    : window.remainingAmount != null
-                                      ? `${window.remainingAmount}${window.unit ? ` ${window.unit}` : ""} remaining`
-                                      : "unknown"}
-                                {window.nativeWindow
-                                  ? ` · ${window.nativeWindow}`
-                                  : ""}
-                                {window.resetAt != null
-                                  ? ` · resets ${new Date(window.resetAt).toLocaleString()}`
-                                  : ""}
-                              </p>
-                            ),
-                          )}
-                          <p>
-                            {nativeReports[profile.id].error ??
-                              "Native limits are shown as reported. Model scope is not qualified for percentage balancing."}
-                          </p>
-                        </div>
-                      )}
-                    </>
-                  )}
-                <button
-                  type="button"
-                  className="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate({
-                      type: "remove_profile",
-                      profileId: profile.id,
-                    })
-                  }
-                >
-                  Remove
-                </button>
-                {selected.gatewayTerminal && selected.gatewayProtocol && (
-                  <form
-                    className="router-create"
-                    onSubmit={async (event) => {
-                      event.preventDefault();
-                      if (profile.authState === "pending_remove") return;
-                      const baseUrl = (
-                        endpoints[profile.id] ??
-                        profile.gatewayProvider?.baseUrl ??
-                        ""
-                      ).trim();
-                      if (!baseUrl || !selected.gatewayProtocol) return;
-                      if (
-                        await mutate({
-                          type: "configure_gateway_account",
-                          profileId: profile.id,
-                          provider: {
-                            protocol:
-                              profile.cli === "codex"
-                                ? "openai_responses"
-                                : (protocols[profile.id] ??
-                                  profile.gatewayProvider?.protocol ??
-                                  selected.gatewayProtocol),
-                            baseUrl,
-                          },
-                        })
-                      ) {
-                        setKeys((current) => ({
-                          ...current,
-                          [profile.id]: "",
-                        }));
-                        setEndpoints((current) => {
-                          const next = { ...current };
-                          delete next[profile.id];
-                          return next;
-                        });
-                        setProtocols((current) => {
-                          const next = { ...current };
-                          delete next[profile.id];
-                          return next;
-                        });
-                      }
-                    }}
-                  >
-                    <label htmlFor={`router-protocol-${profile.id}`}>
-                      Provider API protocol
-                    </label>
-                    <select
-                      id={`router-protocol-${profile.id}`}
-                      value={
-                        profile.cli === "codex"
-                          ? "openai_responses"
-                          : (protocols[profile.id] ??
-                            profile.gatewayProvider?.protocol ??
-                            selected.gatewayProtocol)
-                      }
-                      disabled={busy || profile.authState === "pending_remove"}
-                      onChange={(event) =>
-                        setProtocols((current) => ({
-                          ...current,
-                          [profile.id]: event.target.value as GatewayProtocol,
-                        }))
-                      }
-                    >
-                      {gatewayProtocolsForCli(profile.cli).map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                    <label htmlFor={`router-endpoint-${profile.id}`}>
-                      Gateway API endpoint
-                    </label>
+                    )}
+                </div>
+                {nativeReports[account.id]?.profileRevision ===
+                  account.revision && (
+                  <details className="settings-disclosure">
+                    <DisclosureSummary>Account details</DisclosureSummary>
+                    <div className="settings-disclosure-body">
+                      <NativeAccountReport
+                        report={nativeReports[account.id]}
+                        now={now}
+                      />
+                    </div>
+                  </details>
+                )}
+              </>
+            ) : (
+              <form
+                id="router-api-connection"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveConnection();
+                }}
+              >
+                {selected.gatewayTerminal && (
+                  <label className="router-setup-field">
+                    API endpoint
+                    {directApiSupported &&
+                      !account.gatewayProvider &&
+                      " (optional)"}
                     <input
-                      id={`router-endpoint-${profile.id}`}
+                      aria-label="API endpoint"
                       type="url"
-                      required
-                      maxLength={2048}
-                      value={
-                        endpoints[profile.id] ??
-                        profile.gatewayProvider?.baseUrl ??
-                        ""
+                      required={
+                        !directApiSupported || !!account.gatewayProvider
                       }
-                      disabled={busy || profile.authState === "pending_remove"}
+                      maxLength={2048}
+                      placeholder="https://api.example.com"
+                      value={endpoint}
+                      disabled={
+                        locked || account.authState === "pending_remove"
+                      }
                       onChange={(event) =>
                         setEndpoints((current) => ({
                           ...current,
-                          [profile.id]: event.target.value,
+                          [account.id]: event.target.value,
                         }))
                       }
-                      placeholder="https://api.example.com"
                     />
-                    <button
-                      className="button"
-                      disabled={
-                        busy ||
-                        profile.authState === "pending_remove" ||
-                        !(
-                          endpoints[profile.id] ??
-                          profile.gatewayProvider?.baseUrl ??
-                          ""
-                        ).trim()
-                      }
-                    >
-                      Save gateway endpoint
-                    </button>
-                    {profile.gatewayProvider && (
+                  </label>
+                )}
+                {selected.gatewayTerminal &&
+                  directApiSupported &&
+                  !account.gatewayProvider && (
+                    <p className="settings-help">
+                      Leave the endpoint blank to use this CLI’s default
+                      provider.
+                    </p>
+                  )}
+                <label className="router-setup-field">
+                  {account.gatewayProvider || endpoint.trim()
+                    ? "API key"
+                    : selected.apiKeyLabel || "API key"}
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={keys[account.id] ?? ""}
+                    disabled={locked || account.authState === "pending_remove"}
+                    onChange={(event) =>
+                      setKeys((current) => ({
+                        ...current,
+                        [account.id]: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                {account.gatewayProvider &&
+                  (endpoint.trim() !== account.gatewayProvider.baseUrl ||
+                    protocol !== account.gatewayProvider.protocol) && (
+                    <p className="settings-help">
+                      Changing the endpoint revokes this account’s saved run
+                      grants.
+                    </p>
+                  )}
+                {selected.gatewayTerminal && (
+                  <details className="settings-disclosure">
+                    <DisclosureSummary>Advanced</DisclosureSummary>
+                    <div className="settings-disclosure-body router-setup-options">
+                      <div className="router-setup-field">
+                        <label htmlFor="router-api-protocol">
+                          API protocol
+                        </label>
+                        <Select
+                          id="router-api-protocol"
+                          aria-label="API protocol"
+                          value={protocol ?? ""}
+                          disabled={
+                            locked || account.authState === "pending_remove"
+                          }
+                          onChange={(value) =>
+                            setProtocols((current) => ({
+                              ...current,
+                              [account.id]: value as GatewayProtocol,
+                            }))
+                          }
+                          options={gatewayProtocolsForCli(cli).map((item) => ({
+                            value: item.id,
+                            label: item.label,
+                          }))}
+                        />
+                      </div>
+                      <div className="router-inline-actions">
+                        <button
+                          type="button"
+                          className="button"
+                          disabled={
+                            locked ||
+                            account.authState === "pending_remove" ||
+                            !endpoint.trim()
+                          }
+                          onClick={() => void saveConnection(true)}
+                        >
+                          Save endpoint
+                        </button>
+                        {account.gatewayProvider && (
+                          <button
+                            type="button"
+                            className="button"
+                            disabled={
+                              locked || account.authState === "pending_remove"
+                            }
+                            onClick={async () => {
+                              if (
+                                await mutate({
+                                  type: "configure_gateway_account",
+                                  profileId: account.id,
+                                  provider: null,
+                                })
+                              ) {
+                                clearConnectionDraft(account.id);
+                                setEndpoints((current) => ({
+                                  ...current,
+                                  [account.id]: "",
+                                }));
+                              }
+                            }}
+                          >
+                            Remove endpoint
+                          </button>
+                        )}
+                      </div>
+                      <p className="settings-help">
+                        Saving or removing an endpoint revokes account grants
+                        and clears the key draft. API keys and subscription
+                        logins are separate.
+                      </p>
+                    </div>
+                  </details>
+                )}
+              </form>
+            )}
+          </div>
+          <div className="router-setup-footer">
+            <IconButton
+              title={`Remove account ${account.label}`}
+              disabled={locked}
+              onClick={() => setRemoving(account)}
+            >
+              <Trash2 size={16} />
+            </IconButton>
+            <span className="router-footer-spacer" />
+            {connection === "api" && (
+              <button
+                type="button"
+                className="button"
+                disabled={
+                  locked ||
+                  account.authState === "pending_remove" ||
+                  (!selected.canVerifyLogin &&
+                    account.storageMode !== "api_key")
+                }
+                onClick={() =>
+                  void command("cli_profile_verify", { profileId: account.id })
+                }
+              >
+                Verify
+              </button>
+            )}
+            {connection === "api" ? (
+              <button
+                type="submit"
+                form="router-api-connection"
+                className="button button-primary"
+                disabled={
+                  locked ||
+                  account.authState === "pending_remove" ||
+                  !keys[account.id]?.trim() ||
+                  (!!selected.gatewayTerminal &&
+                    (!directApiSupported || !!account.gatewayProvider) &&
+                    !endpoint.trim())
+                }
+              >
+                {connecting ? "Connecting…" : "Save connection"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="button"
+                disabled={locked}
+                onClick={() => setAccountId(undefined)}
+              >
+                Done
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+      {routeDraft && (
+        <Modal
+          title={routeDraft.id ? "Edit router" : "New router"}
+          className="router-settings-dialog"
+          initialFocus={choosingCli ? agentSearch : routerNameInput}
+          closeDisabled={locked}
+          onClose={closeRoute}
+        >
+          {choosingCli ? (
+            <>
+              <div className="router-setup-body router-cli-picker">
+                {modalError && (
+                  <SettingsNotice tone="error">{modalError}</SettingsNotice>
+                )}
+                <div className="agent-client-search-field">
+                  <Search size={16} aria-hidden="true" />
+                  <input
+                    ref={agentSearch}
+                    type="search"
+                    aria-label="Search agents"
+                    placeholder="Find a CLI…"
+                    value={search}
+                    disabled={locked}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </div>
+                <div className="router-cli-list" aria-label="CLI agents">
+                  {capabilities
+                    .filter((item) =>
+                      `${item.name || cliNames[item.cli as CliAgent]} ${item.cli}`
+                        .toLowerCase()
+                        .includes(search.trim().toLowerCase()),
+                    )
+                    .map((item) => (
                       <button
                         type="button"
-                        className="button"
-                        disabled={
-                          busy || profile.authState === "pending_remove"
+                        className="router-cli-option"
+                        key={item.cli}
+                        aria-label={
+                          item.name ||
+                          cliNames[item.cli as CliAgent] ||
+                          item.cli
                         }
-                        onClick={async () => {
-                          if (
-                            await mutate({
-                              type: "configure_gateway_account",
-                              profileId: profile.id,
-                              provider: null,
-                            })
-                          ) {
-                            setEndpoints((current) => ({
-                              ...current,
-                              [profile.id]: "",
-                            }));
-                            setKeys((current) => ({
-                              ...current,
-                              [profile.id]: "",
-                            }));
-                            setProtocols((current) => {
-                              const next = { ...current };
-                              delete next[profile.id];
-                              return next;
-                            });
-                          }
-                        }}
+                        disabled={locked}
+                        onClick={() => chooseCli(item.cli)}
                       >
-                        Remove gateway endpoint
+                        <CliAgentIcon cli={item.cli as CliAgent} />
+                        <span className="router-cli-name">
+                          {item.name ||
+                            cliNames[item.cli as CliAgent] ||
+                            item.cli}
+                        </span>
+                        <ChevronRight size={14} aria-hidden="true" />
                       </button>
-                    )}
-                    <p className="settings-help">
-                      Saving or removing an endpoint revokes prior account
-                      grants. Save a key for the reviewed endpoint before using
-                      this account.{" "}
-                      {profile.cli === "codex"
-                        ? "Codex requires a Responses endpoint to preserve its opaque native reasoning and conversation context."
-                        : `The CLI uses ${selected.gatewayProtocol}. Other protocols support text and function tool conversion; unsupported native features or context are rejected before sending to preserve history.`}
-                    </p>
-                  </form>
-                )}
-                {((selected.managedTurns && selected.apiKeyLabel) ||
-                  profile.gatewayProvider) && (
-                  <form
-                    className="router-create"
-                    onSubmit={async (event) => {
-                      event.preventDefault();
-                      if (profile.authState === "pending_remove") return;
-                      if (
-                        (profile.gatewayProvider &&
-                          (
-                            endpoints[profile.id] ??
-                            profile.gatewayProvider.baseUrl
-                          ).trim() !== profile.gatewayProvider.baseUrl) ||
-                        (profile.gatewayProvider &&
-                          (protocols[profile.id] ??
-                            profile.gatewayProvider.protocol) !==
-                            profile.gatewayProvider.protocol)
-                      )
-                        return;
-                      const key = keys[profile.id]?.trim();
-                      if (
-                        key &&
-                        (await command("cli_profile_set_api_key", {
-                          profileId: profile.id,
-                          expectedRevision: profile.revision,
-                          key,
-                        }))
-                      )
-                        setKeys((current) => ({
-                          ...current,
-                          [profile.id]: "",
-                        }));
-                    }}
-                  >
-                    <label htmlFor={`router-key-${profile.id}`}>
-                      {profile.gatewayProvider
-                        ? "Gateway API key"
-                        : selected.apiKeyLabel || "API key"}
-                      {!profile.gatewayProvider &&
-                        selected.profileTerminal !== false &&
-                        " (optional)"}
-                    </label>
-                    <input
-                      id={`router-key-${profile.id}`}
-                      type="password"
-                      autoComplete="off"
-                      disabled={busy || profile.authState === "pending_remove"}
-                      value={keys[profile.id] ?? ""}
-                      onChange={(event) =>
-                        setKeys((current) => ({
-                          ...current,
-                          [profile.id]: event.target.value,
-                        }))
-                      }
-                    />
-                    <button
-                      className="button"
-                      disabled={
-                        busy ||
-                        profile.authState === "pending_remove" ||
-                        !keys[profile.id]?.trim() ||
-                        (!!profile.gatewayProvider &&
-                          (protocols[profile.id] ??
-                            profile.gatewayProvider.protocol) !==
-                            profile.gatewayProvider.protocol) ||
-                        (!!profile.gatewayProvider &&
-                          (
-                            endpoints[profile.id] ??
-                            profile.gatewayProvider.baseUrl
-                          ).trim() !== profile.gatewayProvider.baseUrl)
-                      }
-                    >
-                      Save API key
-                    </button>
-                  </form>
-                )}
-              </SettingRow>
-            ))}
-            {!profiles.length && (
-              <p className="settings-help">No accounts yet.</p>
-            )}
+                    ))}
+                </div>
+                {!capabilities.some((item) =>
+                  `${item.name || cliNames[item.cli as CliAgent]} ${item.cli}`
+                    .toLowerCase()
+                    .includes(search.trim().toLowerCase()),
+                ) && <p className="settings-help">No matching CLI.</p>}
+              </div>
+              <div className="router-setup-footer">
+                <button
+                  type="button"
+                  className="button"
+                  disabled={locked}
+                  onClick={closeRoute}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
             <form
-              className="router-create"
               onSubmit={async (event) => {
                 event.preventDefault();
                 if (
-                  poolLabel.trim() &&
-                  (await mutate({
-                    type: "create_router",
-                    cli,
-                    label: poolLabel.trim(),
-                    orderedProfileIds: profiles.map((item) => item.id),
-                  }))
+                  locked ||
+                  routeChanged ||
+                  routeMissingAccount ||
+                  !routeDraft.label.trim() ||
+                  !routeDraft.ids.length ||
+                  !selected
                 )
-                  setPoolLabel("");
+                  return;
+                const next = await mutate(
+                  routeDraft.id
+                    ? {
+                        type: "update_router",
+                        routerId: routeDraft.id,
+                        label: routeDraft.label.trim(),
+                        enabled: routeDraft.enabled,
+                        orderedProfileIds: routeDraft.ids,
+                        balanceRemainingQuota: routeDraft.balance,
+                      }
+                    : {
+                        type: "create_router",
+                        cli: routeDraft.cli,
+                        label: routeDraft.label.trim(),
+                        enabled: routeDraft.enabled,
+                        orderedProfileIds: routeDraft.ids,
+                        balanceRemainingQuota: routeDraft.balance,
+                      },
+                );
+                if (next) closeRoute();
               }}
             >
-              <label htmlFor="router-pool-label">Router name</label>
-              <input
-                id="router-pool-label"
-                required
-                maxLength={120}
-                value={poolLabel}
-                onChange={(event) => setPoolLabel(event.target.value)}
-              />
-              <button
-                className="button"
-                disabled={busy || !poolLabel.trim() || !profiles.length}
-              >
-                Create router
-              </button>
+              <div className="router-setup-body">
+                <div className="router-draft-agent">
+                  <CliAgentIcon cli={routeDraft.cli as CliAgent} />
+                  <span>
+                    {selected?.name ||
+                      cliNames[routeDraft.cli as CliAgent] ||
+                      routeDraft.cli}
+                  </span>
+                  <IconButton
+                    title="CLI support details"
+                    disabled={!selected}
+                    onClick={() => setSupport(true)}
+                  >
+                    <Info size={16} />
+                  </IconButton>
+                  {!routeDraft.id && (
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={locked}
+                      onClick={() => {
+                        setChoosingCli(true);
+                        setSearch("");
+                        clearDraftError();
+                      }}
+                    >
+                      <ArrowLeft size={14} aria-hidden="true" /> Change CLI
+                    </button>
+                  )}
+                </div>
+                {modalError &&
+                  !adding &&
+                  !account &&
+                  !support &&
+                  !removingRouter && (
+                    <SettingsNotice tone="error">{modalError}</SettingsNotice>
+                  )}
+                {(routeChanged || routeMissingAccount) && (
+                  <SettingsNotice tone="warning">
+                    This router changed. Close and reopen it before saving.
+                  </SettingsNotice>
+                )}
+                <label className="router-setup-field">
+                  Router name
+                  <input
+                    ref={routerNameInput}
+                    required
+                    maxLength={120}
+                    value={routeDraft.label}
+                    disabled={locked}
+                    onChange={(event) =>
+                      setRouteDraft({
+                        ...routeDraft,
+                        label: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <div className="router-accounts-heading">
+                  <h3>Accounts</h3>
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={locked || !selected?.canCreateProfile}
+                    onClick={addAccount}
+                  >
+                    <Plus size={14} aria-hidden="true" /> Add account
+                  </button>
+                </div>
+                {!profiles.length && (
+                  <p className="settings-help">
+                    {selected?.canCreateProfile
+                      ? "Add an account to configure this router."
+                      : "Account routing is unavailable for this agent. See support details."}
+                  </p>
+                )}
+                <ol
+                  className="router-route-accounts"
+                  aria-label={`Account order for ${routeDraft.label}`}
+                >
+                  {[
+                    ...routeDraft.ids,
+                    ...profiles
+                      .map((profile) => profile.id)
+                      .filter((id) => !routeDraft.ids.includes(id)),
+                  ].map((id) => {
+                    const profile = profiles.find((item) => item.id === id);
+                    const index = routeDraft.ids.indexOf(id);
+                    const quota = snapshot?.quota.find(
+                      (item) => item.profileId === id,
+                    );
+                    const remaining = isQuotaFresh(quota, now)
+                      ? Math.min(
+                          ...quota.windows.map(
+                            (window) => window.remainingPercent!,
+                          ),
+                        )
+                      : undefined;
+                    return (
+                      <li key={id}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            aria-label={`Include ${profile?.label || "Unavailable account"}`}
+                            checked={index >= 0}
+                            disabled={
+                              locked ||
+                              !profile ||
+                              profile.authState === "pending_remove"
+                            }
+                            onChange={(event) =>
+                              setRouteDraft({
+                                ...routeDraft,
+                                ids: event.target.checked
+                                  ? [...routeDraft.ids, id]
+                                  : routeDraft.ids.filter(
+                                      (item) => item !== id,
+                                    ),
+                              })
+                            }
+                          />
+                          <span className="router-row-name">
+                            {profile?.label || "Unavailable account"}
+                            {profile && (
+                              <small>
+                                {profile.gatewayProvider ||
+                                profile.storageMode === "api_key"
+                                  ? "API"
+                                  : "CLI"}{" "}
+                                ·{" "}
+                                {profile.enabled
+                                  ? authLabels[profile.authState]
+                                  : "Disabled"}
+                              </small>
+                            )}
+                          </span>
+                        </label>
+                        {profile && (
+                          <span
+                            className="router-quota"
+                            aria-label={quotaLabel(quota, now)}
+                            title={quotaLabel(quota, now)}
+                          >
+                            {remaining == null ? "—" : `${remaining}%`}
+                          </span>
+                        )}
+                        {index >= 0 && (
+                          <div className="router-order-actions">
+                            <IconButton
+                              title={`Move ${profile?.label || "account"} up`}
+                              disabled={locked || index === 0}
+                              onClick={() =>
+                                setRouteDraft({
+                                  ...routeDraft,
+                                  ids: moveAccount(routeDraft.ids, id, -1),
+                                })
+                              }
+                            >
+                              <ArrowUp size={14} />
+                            </IconButton>
+                            <IconButton
+                              title={`Move ${profile?.label || "account"} down`}
+                              disabled={
+                                locked || index === routeDraft.ids.length - 1
+                              }
+                              onClick={() =>
+                                setRouteDraft({
+                                  ...routeDraft,
+                                  ids: moveAccount(routeDraft.ids, id, 1),
+                                })
+                              }
+                            >
+                              <ArrowDown size={14} />
+                            </IconButton>
+                          </div>
+                        )}
+                        {profile && (
+                          <IconButton
+                            title={`Manage ${profile.label}`}
+                            disabled={locked}
+                            onClick={() => openAccount(profile)}
+                          >
+                            <Settings size={15} />
+                          </IconButton>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+                {!!profiles.length && (
+                  <p className="settings-help">
+                    Accounts are tried from top to bottom.
+                  </p>
+                )}
+                <SettingRow
+                  label="Enable router"
+                  htmlFor="router-draft-enabled"
+                >
+                  <input
+                    id="router-draft-enabled"
+                    className="settings-switch"
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Enable router"
+                    checked={routeDraft.enabled}
+                    disabled={locked}
+                    onChange={(event) =>
+                      setRouteDraft({
+                        ...routeDraft,
+                        enabled: event.target.checked,
+                      })
+                    }
+                  />
+                </SettingRow>
+                <details className="settings-disclosure">
+                  <DisclosureSummary>Advanced</DisclosureSummary>
+                  <div className="settings-disclosure-body router-setup-options">
+                    <SettingRow
+                      label="Balance remaining quota"
+                      htmlFor="router-balance-quota"
+                    >
+                      <input
+                        id="router-balance-quota"
+                        className="settings-switch"
+                        type="checkbox"
+                        role="switch"
+                        aria-label={`Balance remaining quota for ${routeDraft.label}`}
+                        checked={routeDraft.balance}
+                        disabled={locked || !selected?.balance}
+                        onChange={(event) =>
+                          setRouteDraft({
+                            ...routeDraft,
+                            balance: event.target.checked,
+                          })
+                        }
+                      />
+                    </SettingRow>
+                    {routeDraft.balance && (
+                      <p className="settings-help">
+                        Uses comparable fresh reports; otherwise follows account
+                        order.
+                      </p>
+                    )}
+                    {routeDraft.id && (
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={locked || !selected?.quotaRead}
+                        onClick={() =>
+                          void command("cli_router_refresh_quota", {
+                            routerId: routeDraft.id,
+                          })
+                        }
+                      >
+                        <RefreshCw size={14} aria-hidden="true" /> Refresh quota
+                      </button>
+                    )}
+                  </div>
+                </details>
+              </div>
+              <div className="router-setup-footer">
+                {routeDraft.id && (
+                  <IconButton
+                    title={`Remove router ${routeDraft.label}`}
+                    disabled={locked || routeChanged}
+                    onClick={() => {
+                      clearDraftError();
+                      setRemovingRouter(true);
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </IconButton>
+                )}
+                <span className="router-footer-spacer" />
+                <button
+                  type="button"
+                  className="button"
+                  disabled={locked}
+                  onClick={closeRoute}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button button-primary"
+                  disabled={
+                    locked ||
+                    routeChanged ||
+                    routeMissingAccount ||
+                    !routeDraft.label.trim() ||
+                    !routeDraft.ids.length ||
+                    !selected
+                  }
+                >
+                  {routeDraft.id ? "Save changes" : "Create router"}
+                </button>
+              </div>
             </form>
-          </>
-        )}
-      </SettingsSection>
-      {selected?.canCreateProfile && (
-        <SettingsNotice>
-          {selected.gatewayTerminal
-            ? "Configure compatible API endpoints and distinct API key bindings for your approved Gateway account pool. Codex requires Responses endpoints. Separate keys do not prove separate billing budgets. Subscription credentials are not Gateway API keys."
-            : cli === "codex"
-              ? "Before enabling a router, refresh quota for at least two verified accounts with distinct authenticated identities."
-              : "Before enabling a router, configure at least two distinct API key bindings. Separate keys do not prove separate billing budgets."}
-        </SettingsNotice>
+          )}
+        </Modal>
       )}
-      {routers.map((router) => (
-        <SettingsSection
-          key={router.id}
-          title={router.label}
-          description="Accounts are selected by order at each new launch. Fresh quota balancing can adjust selection. Managed failures require explicit continuation."
+      {removingRouter && routeDraft?.id && (
+        <Modal
+          title={`Remove ${routeDraft.label}?`}
+          className="router-settings-dialog"
+          role="alertdialog"
+          tone="danger"
+          protectTheme
+          initialFocus={cancelRemove}
+          closeDisabled={locked}
+          onClose={() => {
+            setRemovingRouter(false);
+            clearDraftError();
+          }}
         >
-          <SettingRow label="Router enabled">
-            <input
-              aria-label={`Enable ${router.label}`}
-              type="checkbox"
-              checked={router.enabled}
-              disabled={busy}
-              onChange={(event) =>
-                void mutate({
-                  type: "update_router",
-                  routerId: router.id,
-                  enabled: event.target.checked,
-                })
-              }
-            />
-          </SettingRow>
-          <SettingRow
-            label="Balance remaining quota"
-            description="Use fresh quota reports when available. Otherwise, keep account order."
-          >
-            <input
-              aria-label={`Balance remaining quota for ${router.label}`}
-              type="checkbox"
-              checked={router.balanceRemainingQuota}
-              disabled={busy || !selected?.balance}
-              onChange={(event) =>
-                void mutate({
-                  type: "update_router",
-                  routerId: router.id,
-                  balanceRemainingQuota: event.target.checked,
-                })
-              }
-            />
-          </SettingRow>
-          {router.balanceRemainingQuota &&
-            (!selected?.quotaRead ||
-              !hasComparableQuota(
-                router,
-                profiles,
-                snapshot?.quota ?? [],
-                now,
-              )) && (
-              <SettingsNotice>
-                Fresh quota reports are unavailable. Runs use account order.
+          <div className="router-setup-body">
+            {modalError && (
+              <SettingsNotice tone="error">{modalError}</SettingsNotice>
+            )}
+            <p>Remove this router? Accounts and run history will stay.</p>
+            {routeChanged && (
+              <SettingsNotice tone="warning">
+                This router changed. Close and review it again.
               </SettingsNotice>
             )}
-          <ol
-            className="router-account-order"
-            aria-label={`Account order for ${router.label}`}
-          >
-            {router.orderedProfileIds.map((profileId, index) => {
-              const profile = profiles.find((item) => item.id === profileId);
-              return (
-                <li key={profileId}>
-                  <span>{profile?.label ?? "Unavailable account"}</span>
-                  <div className="router-inline-actions">
-                    <button
-                      className="button"
-                      disabled={busy || index === 0}
-                      aria-label={`Move ${profile?.label ?? "account"} up`}
-                      onClick={() =>
-                        void mutate({
-                          type: "update_router",
-                          routerId: router.id,
-                          orderedProfileIds: moveAccount(
-                            router.orderedProfileIds,
-                            profileId,
-                            -1,
-                          ),
-                        })
-                      }
-                    >
-                      Up
-                    </button>
-                    <button
-                      className="button"
-                      disabled={
-                        busy || index === router.orderedProfileIds.length - 1
-                      }
-                      aria-label={`Move ${profile?.label ?? "account"} down`}
-                      onClick={() =>
-                        void mutate({
-                          type: "update_router",
-                          routerId: router.id,
-                          orderedProfileIds: moveAccount(
-                            router.orderedProfileIds,
-                            profileId,
-                            1,
-                          ),
-                        })
-                      }
-                    >
-                      Down
-                    </button>
-                    <button
-                      className="button"
-                      disabled={busy}
-                      aria-label={`Remove ${profile?.label ?? "account"} from ${router.label}`}
-                      onClick={() =>
-                        void mutate({
-                          type: "update_router",
-                          routerId: router.id,
-                          orderedProfileIds: router.orderedProfileIds.filter(
-                            (id) => id !== profileId,
-                          ),
-                        })
-                      }
-                    >
-                      Remove from router
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-          {profiles
-            .filter((profile) => !router.orderedProfileIds.includes(profile.id))
-            .map((profile) => (
-              <button
-                key={profile.id}
-                className="button"
-                disabled={busy}
-                onClick={() =>
-                  void mutate({
-                    type: "update_router",
-                    routerId: router.id,
-                    orderedProfileIds: [
-                      ...router.orderedProfileIds,
-                      profile.id,
-                    ],
-                  })
-                }
-              >
-                Add {profile.label}
-              </button>
-            ))}
-          <div className="router-inline-actions">
+          </div>
+          <div className="router-setup-footer">
             <button
+              ref={cancelRemove}
+              type="button"
               className="button"
-              disabled={busy || !selected?.quotaRead}
-              onClick={() =>
-                void command("cli_router_refresh_quota", {
-                  routerId: router.id,
-                })
-              }
+              disabled={locked}
+              onClick={() => {
+                setRemovingRouter(false);
+                clearDraftError();
+              }}
             >
-              Refresh quota
+              Cancel
             </button>
             <button
-              className="button"
-              disabled={busy}
-              onClick={() =>
-                void mutate({ type: "remove_router", routerId: router.id })
-              }
+              type="button"
+              className="button button-danger"
+              disabled={locked || routeChanged}
+              onClick={async () => {
+                if (
+                  await mutate({
+                    type: "remove_router",
+                    routerId: routeDraft.id!,
+                  })
+                ) {
+                  setRemovingRouter(false);
+                  closeRoute();
+                }
+              }}
             >
               Remove router
             </button>
           </div>
-        </SettingsSection>
-      ))}
+        </Modal>
+      )}
+      {removing && (
+        <Modal
+          title={`Remove ${removing.label}?`}
+          className="router-settings-dialog"
+          role="alertdialog"
+          tone="danger"
+          protectTheme
+          initialFocus={cancelRemove}
+          closeDisabled={locked}
+          onClose={() => setRemoving(undefined)}
+        >
+          <div className="router-setup-body">
+            {modalError && (
+              <SettingsNotice tone="error">{modalError}</SettingsNotice>
+            )}
+            <p>
+              The saved key will be deleted. CLI login files stay; sign out in
+              the CLI first.
+            </p>
+            {profiles.find((profile) => profile.id === removing.id)
+              ?.revision !== removing.revision && (
+              <SettingsNotice tone="warning">
+                This account changed. Close and review it again.
+              </SettingsNotice>
+            )}
+          </div>
+          <div className="router-setup-footer">
+            <button
+              ref={cancelRemove}
+              type="button"
+              className="button"
+              disabled={locked}
+              onClick={() => setRemoving(undefined)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="button button-danger"
+              disabled={
+                locked ||
+                profiles.find((profile) => profile.id === removing.id)
+                  ?.revision !== removing.revision
+              }
+              onClick={async () => {
+                const reviewedDraft = routeDraft;
+                const reviewedRouter = snapshot?.routers.find(
+                  (router) => router.id === reviewedDraft?.id,
+                );
+                const next = await mutate({
+                  type: "remove_profile",
+                  profileId: removing.id,
+                });
+                const confirmed = next ?? readSnapshot();
+                const remaining = confirmed?.profiles.find(
+                  (profile) => profile.id === removing.id,
+                );
+                // Credential cleanup can fail after membership is revoked.
+                if (
+                  confirmed &&
+                  (next ||
+                    !remaining ||
+                    remaining.authState === "pending_remove")
+                ) {
+                  setRouteDraft((draft) => {
+                    if (!draft || draft !== reviewedDraft) return draft;
+                    const ids = draft.ids.filter((id) => id !== removing.id);
+                    const updated = confirmed.routers.find(
+                      (router) => router.id === draft.id,
+                    );
+                    const expectedIds =
+                      reviewedRouter?.orderedProfileIds.filter(
+                        (id) => id !== removing.id,
+                      );
+                    // Only adopt the revision for this exact local revocation.
+                    // Other changes must still invalidate the reviewed draft.
+                    const localRevocation =
+                      reviewedRouter &&
+                      reviewedRouter.revision === draft.revision &&
+                      updated &&
+                      updated.revision === reviewedRouter.revision + 1 &&
+                      updated.cli === reviewedRouter.cli &&
+                      updated.label === reviewedRouter.label &&
+                      updated.balanceRemainingQuota ===
+                        reviewedRouter.balanceRemainingQuota &&
+                      updated.enabled ===
+                        (reviewedRouter.enabled && !!expectedIds?.length) &&
+                      JSON.stringify(updated.orderedProfileIds) ===
+                        JSON.stringify(expectedIds);
+                    return {
+                      ...draft,
+                      ids,
+                      revision: localRevocation
+                        ? updated.revision
+                        : draft.revision,
+                    };
+                  });
+                }
+                if (next) {
+                  setRemoving(undefined);
+                  setAccountId(undefined);
+                  clearConnectionDraft(removing.id);
+                }
+              }}
+            >
+              Remove account
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -66,10 +66,6 @@ pub(crate) fn support(cli: TitleCli) -> Option<Compatibility> {
         TitleCli::Qwen => (Protocol::OpenAiChat,
             "https://github.com/QwenLM/qwen-code/tree/b12edec1401a28fc53cd9e714d5928b285071fc8/packages/cli/src/config",
             "Native OpenAI Chat backend; explicit main/fast/compaction/vision model and endpoint; private highest-priority system settings; project dotenv/settings absent; separate DashScope web-search disabled; API-file/image-generation/realtime workflows unsupported; native coding tools and permission prompts retained"),
-        // Source/artifact pin: Crush 0.97.1 / e0baf255be53f932042b377630e233d4c33c3b4b
-        TitleCli::Crush if cfg!(target_os = "macos") => (Protocol::Anthropic,
-            "https://github.com/charmbracelet/crush/tree/e0baf255be53f932042b377630e233d4c33c3b4b/internal/config",
-            "macOS native Crush only; one custom Anthropic provider with identical large/small models; default providers and discovery disabled; normal native permissions/tools retained; project JSON/crushrc and system policy must be absent; secret-free native release-check HTTP remains"),
         // Source/artifact pin: @anthropic-ai/claude-code 2.1.63 / npm sha1 fc4103d9e1041365c0a081273ea9af1ba53f979b
         TitleCli::Claude => (Protocol::Anthropic, "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.63.tgz",
             "Native Claude 2.1.63/2.1.287 apiKeyHelper/CLAUDE_CONFIG_DIR schema; private settings and local token only; managed policy may override endpoint and must be admitted before launch."),
@@ -97,10 +93,6 @@ pub(crate) fn support(cli: TitleCli) -> Option<Compatibility> {
         TitleCli::Kilo => (Protocol::OpenAiChat,
             "https://github.com/Kilo-Org/kilocode/blob/59f1428abb5fe782ee7bd4d258e72a08b74aadb4/packages/opencode/src/config/config.ts",
             "Kilo OpenCode-derived KILO_CONFIG_CONTENT schema; new private HOME/XDG state; attach to an existing daemon is forbidden."),
-        // Source/artifact pin: Cline CLI 3.0.68 / 241c1884a7461ef35f6c384a027a38e8d03b3b33
-        TitleCli::Cline => (Protocol::Anthropic,
-            "https://github.com/cline/cline/blob/241c1884a7461ef35f6c384a027a38e8d03b3b33/sdk/packages/core/src/services/llms/provider-settings.ts",
-            "Native Anthropic ProviderSettings.baseUrl and private --data-dir force local backend; isolated providers.json, no OAuth, private catalog only; tool approval explicitly false for native TTY prompts."),
         // Source/artifact pin: Hermes 0.21.5 / f97608f178d1ffeca59860195ab7da295f7c8e5f
         TitleCli::Hermes => (Protocol::Anthropic,
             "https://github.com/NousResearch/hermes-agent/blob/f97608f178d1ffeca59860195ab7da295f7c8e5f/agent/anthropic_adapter.py",
@@ -109,30 +101,6 @@ pub(crate) fn support(cli: TitleCli) -> Option<Compatibility> {
         TitleCli::Vibe => (Protocol::OpenAiChat,
             "https://github.com/mistralai/mistral-vibe/blob/7c19608af06f6c61d63f8f7a5c3430da73fba2ab/vibe/core/config/vibe_schema.py",
             "Native generic OpenAI-compatible provider; MISTRAL_API_KEY absent prevents managed remote configuration; selected provider/model and title model fixed locally."),
-        // Source/artifact pin: Goose 1.53.0 / 76da81c
-        TitleCli::Goose => (Protocol::OpenAiChat,
-            "https://github.com/block/goose/blob/v1.53.0/crates/goose/src/providers/openai.rs",
-            "Native OpenAI OPENAI_HOST + OPENAI_BASE_PATH; GOOSE_PATH_ROOT private, keyring disabled; /etc/goose/config.yaml must be absent; session naming disabled."),
-        // Source/artifact pin: aider-chat 0.86.2 / sdist sha256 f38a9d322f5609f0c13af82d50c6a11170185b3fdf26956e4a7e89ba19819159
-        TitleCli::Aider => (Protocol::OpenAiChat,
-            "https://pypi.org/project/aider-chat/0.86.2/#files",
-            "Released Python Aider LiteLLM OpenAI endpoint; main/weak/editor models fixed to the same local provider. Project dotenv/config/model overrides must pass admit_project; native edits and confirmations remain enabled."),
-        // Source/artifact pin: openhands 1.16.0 / sdist sha256 f3ac39c86b1c0fabcf4d88f9c65c353d9cf83e457063e6b87d67f9a94f832e97
-        TitleCli::Openhands => (Protocol::OpenAiChat,
-            "https://pypi.org/project/openhands/1.16.0/#files",
-            "Native openhands-cli family with --override-with-envs; agent and condenser share the selected LiteLLM endpoint. Private persistence and conversations; project dotenv must pass admit_project. Native interactive confirmations retained."),
-        // Source/artifact pin: open-interpreter 0.4.3 / sdist sha256 cd81d0a6bc5bc9bed6a3f35010da71421b435dc9479f4ac867db80fdc29fa11b
-        TitleCli::Interpreter => (Protocol::OpenAiChat,
-            "https://pypi.org/project/open-interpreter/0.4.3/#files",
-            "Released Python interpreter family, explicit private profile v0.2.5; offline prevents hosted-model fallback, both LLM and computer API bases local. Proprietary computer/browser service workflows are unavailable through the inference gateway; native code execution permissions retained."),
-        // Source/artifact pin: @continuedev/cli 1.5.47 / d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45
-        TitleCli::Continue => (Protocol::OpenAiChat,
-            "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/core/llm/llms/OpenAI.ts",
-            "Explicit owned local --config has highest precedence; OpenAI apiBase and useResponsesApi=false force Chat protocol. Fresh CONTINUE_GLOBAL_DIR; Continue control-plane base also local. Project dotenv must pass admit_project. Cloud sync/artifact workflows unavailable."),
-        // Source/artifact pin: deepagents-code 0.1.80 / sdist sha256 111db3f86ce9da8e366893943fc3d36a710322772edba19ea002ac1ed1a1761c
-        TitleCli::Deepagents => (Protocol::Anthropic,
-            "https://pypi.org/project/deepagents-code/0.1.80/#files",
-            "Native dcode/deepagents-code interactive family; NOT deployment-only deepagents-cli. Private DEEPAGENTS_HOME, exact Anthropic endpoints and one allowed main/summary/classifier model. Fixed OS managed config and project dotenv must pass admit_project; native permissions retained."),
         _ => return None,
     };
     Some(Compatibility {
@@ -142,22 +110,17 @@ pub(crate) fn support(cli: TitleCli) -> Option<Compatibility> {
         required_admission: match cli {
             TitleCli::Openclaw => "npm openclaw 2026.9.8; prepare_with_project required; admit_project before dispatch and final owner fence; embedded native runtime only",
             TitleCli::Qwen => "npm @qwen-code/qwen-code 0.24.7; admit_project before dispatch and final owner fence; no OAuth/login provider declaration",
-            TitleCli::Crush => "Native macOS Crush 0.97.1 executable family; admit_project before dispatch and final owner fence; fixed custom Anthropic provider and isolated workspace state",
-            TitleCli::Aider => "aider-chat 0.86.2 executable family; admit_project before dispatch and at final owner fence",
-            TitleCli::Openhands => "openhands CLI 1.16.0 / openhands-sdk 1.21.0 family; admit_project before dispatch and at final owner fence",
-            TitleCli::Interpreter => "open-interpreter 0.4.3 Python executable family and profile v0.2.5; fresh HOME and cleared environment",
-            TitleCli::Continue => "@continuedev/cli 1.5.47 / cn executable; admit_project before dispatch and final owner fence",
-            TitleCli::Deepagents => "deepagents-code 0.1.80 with Anthropic integration installed; dcode/deepagents-code executable family; admit_project before dispatch and final owner fence",
+
             TitleCli::Kimi => "Only source-pinned Python 1.52.0 or npm 2.1.1; family-specific configuration and flags",
             TitleCli::Grok => "Only the router-owned source-built artifact; PATH Grok installations are never admitted",
             TitleCli::Agy => "Native agy 1.2.16; machine/project provider overrides must be absent; API and subscription modes are distinct",
             _ => "Installed native executable must match the source-pinned endpoint/config schema; fresh HOME, cleared environment and ambient managed policy admitted",
         },
         native_family: match cli {
-            TitleCli::Openclaw => "npm openclaw embedded native TUI", TitleCli::Qwen => "npm @qwen-code/qwen-code", TitleCli::Crush => "Native macOS charmbracelet/crush", TitleCli::Claude => "npm @anthropic-ai/claude-code", TitleCli::Codex => "Native OpenAI codex-cli", TitleCli::Pi => "npm @mariozechner/pi-coding-agent or @earendil-works/pi-coding-agent", TitleCli::Kilo => "npm @kilocode/cli native platform binary", TitleCli::Opencode => "npm opencode-ai native platform binary", TitleCli::Cline => "npm @cline/cli native platform binary", TitleCli::Hermes => "Python hermes-agent", TitleCli::Vibe => "Python mistral-vibe", TitleCli::Goose => "Native aaif-goose/goose CLI", TitleCli::Kimi => "Python kimi-cli or npm @moonshot-ai/kimi-code", TitleCli::Aider => "Python aider-chat", TitleCli::Openhands => "Python openhands native CLI", TitleCli::Interpreter => "Python open-interpreter", TitleCli::Continue => "npm @continuedev/cli", TitleCli::Deepagents => "Python deepagents-code", TitleCli::Grok => "Lomi-owned Grok source-built native Responses artifact", TitleCli::Agy => "Official Antigravity agy native CLI", _ => "Native CLI family documented by source URL and gates",
+            TitleCli::Openclaw => "npm openclaw embedded native TUI", TitleCli::Qwen => "npm @qwen-code/qwen-code", TitleCli::Claude => "npm @anthropic-ai/claude-code", TitleCli::Codex => "Native OpenAI codex-cli", TitleCli::Pi => "npm @mariozechner/pi-coding-agent or @earendil-works/pi-coding-agent", TitleCli::Kilo => "npm @kilocode/cli native platform binary", TitleCli::Opencode => "npm opencode-ai native platform binary", TitleCli::Hermes => "Python hermes-agent", TitleCli::Vibe => "Python mistral-vibe", TitleCli::Kimi => "Python kimi-cli or npm @moonshot-ai/kimi-code", TitleCli::Grok => "Lomi-owned Grok source-built native Responses artifact", TitleCli::Agy => "Official Antigravity agy native CLI", _ => "Native CLI family documented by source URL and gates",
         },
         native_version: match cli {
-            TitleCli::Openclaw => Some("2026.9.8"), TitleCli::Qwen => Some("0.24.7"), TitleCli::Crush => Some("0.97.1"), TitleCli::Claude => Some("2.1.63"), TitleCli::Kimi => Some("1.52.0"), TitleCli::Pi => Some("0.73.1"), TitleCli::Kilo => Some("7.8.3"), TitleCli::Codex => Some("0.160.0"), TitleCli::Opencode => Some("1.18.34"), TitleCli::Cline => Some("3.0.68"), TitleCli::Hermes => Some("0.21.5"), TitleCli::Vibe => Some("2.25.8"), TitleCli::Goose => Some("1.53.0"), TitleCli::Aider => Some("0.86.2"), TitleCli::Openhands => Some("1.16.0"), TitleCli::Interpreter => Some("0.4.3"), TitleCli::Continue => Some("1.5.47"), TitleCli::Deepagents => Some("0.1.80"), TitleCli::Grok => Some("1.0.45"), TitleCli::Agy => Some("1.2.16"), _ => None,
+            TitleCli::Openclaw => Some("2026.9.8"), TitleCli::Qwen => Some("0.24.7"), TitleCli::Claude => Some("2.1.63"), TitleCli::Kimi => Some("1.52.0"), TitleCli::Pi => Some("0.73.1"), TitleCli::Kilo => Some("7.8.3"), TitleCli::Codex => Some("0.160.0"), TitleCli::Opencode => Some("1.18.34"), TitleCli::Hermes => Some("0.21.5"), TitleCli::Vibe => Some("2.25.8"), TitleCli::Grok => Some("1.0.45"), TitleCli::Agy => Some("1.2.16"), _ => None,
         },
     })
 }
@@ -178,12 +141,6 @@ pub(crate) fn admit_project(cli: TitleCli, cwd: &Path) -> Result<(), String> {
     if cli == TitleCli::Codex {
         super::codex::ambient_policy()?;
     }
-    if cli == TitleCli::Crush {
-        absent(Path::new("/etc/crush/crush.json"))?;
-    }
-    if cli == TitleCli::Goose {
-        absent(Path::new("/etc/goose/config.yaml"))?;
-    }
     if cli == TitleCli::Agy {
         absent(Path::new("/etc/antigravity/admin_settings.json"))?;
         #[cfg(target_os = "macos")]
@@ -194,19 +151,11 @@ pub(crate) fn admit_project(cli: TitleCli, cwd: &Path) -> Result<(), String> {
     let blocked: &[&str] = match cli {
         TitleCli::Openclaw => &[".env"],
         TitleCli::Qwen => &[".env", ".qwen/.env", ".qwen/settings.json"],
-        TitleCli::Crush => &[".crushrc", "crushrc", ".crush.json", "crush.json"],
-        TitleCli::Aider => &[
-            ".env",
-            ".aider.conf.yml",
-            ".aider.model.settings.yml",
-            ".aider.model.metadata.json",
-        ],
-        TitleCli::Openhands | TitleCli::Continue | TitleCli::Deepagents => &[".env"],
         TitleCli::Agy => &[".gemini/antigravity-cli/settings.json"],
         _ => &[],
     };
-    // Aider's git root can be an ancestor of cwd; python dotenv discovery may
-    // also walk ancestors. Check lexical and canonical chains, rejecting links
+    // Native config discovery may walk ancestors. Check lexical and
+    // canonical chains, rejecting links
     // and unreadable candidates as well as regular files without reading secrets.
     for chain in [cwd, canonical.as_path()] {
         for ancestor in chain.ancestors() {
@@ -235,14 +184,6 @@ pub(crate) fn admit_project(cli: TitleCli, cwd: &Path) -> Result<(), String> {
         } else {
             namespace
         }))?;
-    }
-    if cli == TitleCli::Deepagents {
-        #[cfg(target_os = "macos")]
-        absent(Path::new(
-            "/Library/Application Support/dcode/managed_config.toml",
-        ))?;
-        #[cfg(not(target_os = "macos"))]
-        absent(Path::new("/etc/dcode/managed_config.toml"))?;
     }
     Ok(())
 }
@@ -405,12 +346,6 @@ fn prepare_inner(
     if cli == TitleCli::Opencode {
         super::opencode::admission(root)?;
     }
-    if cli == TitleCli::Crush {
-        absent(Path::new("/etc/crush/crush.json"))?;
-    }
-    if cli == TitleCli::Goose {
-        absent(Path::new("/etc/goose/config.yaml"))?;
-    }
     if !root.is_absolute() || root.file_name().is_none() {
         return Err("Gateway profile storage must be an absolute new private directory.".into());
     }
@@ -510,26 +445,6 @@ fn prepare_inner(
                     native_model,
                 ],
             );
-        }
-        TitleCli::Crush => {
-            let config = root.join("crush-config");
-            let data = root.join("crush-data");
-            let workspace = root.join("crush-workspace");
-            for home in [&config, &data, &workspace] {
-                io.directory(home)?;
-            }
-            io.json_file(
-                &config.join("crush.json"),
-                &crush_profile(&workspace, native_model, &base),
-            )?;
-            env(&mut launch, "CRUSH_GLOBAL_CONFIG", config.as_os_str());
-            env(&mut launch, "CRUSH_GLOBAL_DATA", data.as_os_str());
-            env(
-                &mut launch,
-                "CRUSH_CACHE_DIR",
-                root.join("cache").as_os_str(),
-            );
-            env(&mut launch, "LOMI_CRUSH_API_KEY", ephemeral_client_token);
         }
         TitleCli::Claude => {
             let home = root.join("claude");
@@ -723,59 +638,6 @@ fn prepare_inner(
                 serde_json::to_string(&content).map_err(|_| "Cannot encode gateway provider.")?,
             );
         }
-        TitleCli::Cline => {
-            let home = root.join("cline");
-            io.directory(&home)?;
-            let data = home.join("data");
-            io.directory(&data)?;
-            let settings = data.join("settings");
-            io.directory(&settings)?;
-            io.json_file(
-                &settings.join("providers.json"),
-                &json!({"version":1,"lastUsedProvider":"anthropic",
-                "providers":{"anthropic":{"settings":{"provider":"anthropic","model":native_model,
-                "apiKey":ephemeral_client_token,"baseUrl":api,
-                "modelCatalog":{"loadLatestOnInit":false,"includeClineCloudModels":false,"loadPrivateOnAuth":false}},
-                "updatedAt":"2026-10-04T00:00:00.000Z","tokenSource":"manual"}}}),
-            )?;
-            io.json_file(
-                &settings.join("cline_mcp_settings.json"),
-                &json!({"mcpServers":{}}),
-            )?;
-            io.json_file(
-                &settings.join("global-settings.json"),
-                &json!({"telemetryOptOut":true,"autoUpdateEnabled":false}),
-            )?;
-            env(
-                &mut launch,
-                "CLINE_PROVIDER_SETTINGS_PATH",
-                settings.join("providers.json").as_os_str(),
-            );
-            env(&mut launch, "CLINE_DATA_DIR", data.as_os_str());
-            env(
-                &mut launch,
-                "CLINE_GLOBAL_SETTINGS_PATH",
-                settings.join("global-settings.json").as_os_str(),
-            );
-            env(
-                &mut launch,
-                "CLINE_MCP_SETTINGS_PATH",
-                settings.join("cline_mcp_settings.json").as_os_str(),
-            );
-            env(&mut launch, "ANTHROPIC_API_KEY", ephemeral_client_token);
-            launch.arguments.extend([
-                "--config".into(),
-                home.into_os_string(),
-                "--data-dir".into(),
-                data.into_os_string(),
-                "--provider".into(),
-                "anthropic".into(),
-                "--model".into(),
-                native_model.into(),
-                "--auto-approve".into(),
-                "false".into(),
-            ]);
-        }
         TitleCli::Hermes => {
             let home = root.join(".hermes");
             io.directory(&home)?;
@@ -806,159 +668,6 @@ fn prepare_inner(
             env(&mut launch, "VIBE_HOME", home.as_os_str());
             env(&mut launch, "VIBE_TEST_DISABLE_KEYRING", "1");
             env(&mut launch, "OPENAI_API_KEY", ephemeral_client_token);
-        }
-        TitleCli::Goose => {
-            io.json_file(
-                &root.join("config/config.yaml"),
-                &json!({"GOOSE_PROVIDER":"openai","GOOSE_MODEL":native_model}),
-            )?;
-            io.json_file(&root.join("config/secrets.yaml"), &json!({}))?;
-            env(&mut launch, "GOOSE_PATH_ROOT", root.as_os_str());
-            env(&mut launch, "GOOSE_PROVIDER", "openai");
-            env(&mut launch, "GOOSE_MODEL", native_model);
-            env(&mut launch, "GOOSE_DISABLE_KEYRING", "1");
-            env(&mut launch, "GOOSE_DISABLE_SESSION_NAMING", "true");
-            env(&mut launch, "OPENAI_HOST", &base);
-            env(&mut launch, "OPENAI_BASE_PATH", "v1/chat/completions");
-            env(&mut launch, "OPENAI_API_KEY", ephemeral_client_token);
-        }
-        TitleCli::Aider => {
-            let selected = format!("openai/{native_model}");
-            let config = root.join("aider.yml");
-            let dotenv = root.join("aider.env");
-            let settings = root.join("aider-model-settings.yml");
-            let metadata = root.join("aider-model-metadata.json");
-            io.json_file(
-                &config,
-                &json!({"model":selected,"weak-model":selected,"editor-model":selected,"openai-api-base":api,"analytics":false,"check-update":false,"show-release-notes":false}),
-            )?;
-            io.write(&dotenv, b"")?;
-            io.json_file(
-                &settings,
-                &json!([{"name":selected,"weak_model_name":selected,"editor_model_name":selected,"extra_params":{"api_base":api}}]),
-            )?;
-            io.json_file(&metadata, &json!({}))?;
-            env(&mut launch, "OPENAI_API_KEY", ephemeral_client_token);
-            env(&mut launch, "OPENAI_API_BASE", &api);
-            env(&mut launch, "OPENAI_BASE_URL", &api);
-            env(&mut launch, "AIDER_OPENAI_API_KEY", ephemeral_client_token);
-            env(&mut launch, "LITELLM_LOCAL_MODEL_COST_MAP", "True");
-            for (flag, path) in [
-                ("--config", &config),
-                ("--env-file", &dotenv),
-                ("--model-settings-file", &settings),
-                ("--model-metadata-file", &metadata),
-            ] {
-                launch.arguments.push(flag.into());
-                launch.arguments.push(path.as_os_str().into());
-            }
-            args(
-                &mut launch,
-                &[
-                    "--model",
-                    &selected,
-                    "--weak-model",
-                    &selected,
-                    "--editor-model",
-                    &selected,
-                    "--openai-api-base",
-                    &api,
-                    "--no-analytics",
-                    "--no-check-update",
-                    "--no-show-release-notes",
-                ],
-            );
-        }
-        TitleCli::Openhands => {
-            let persistence = root.join("openhands");
-            io.directory(&persistence)?;
-            env(
-                &mut launch,
-                "OPENHANDS_PERSISTENCE_DIR",
-                persistence.as_os_str(),
-            );
-            env(
-                &mut launch,
-                "OPENHANDS_CONVERSATIONS_DIR",
-                root.join("sessions").as_os_str(),
-            );
-            env(&mut launch, "LLM_MODEL", format!("openai/{native_model}"));
-            env(&mut launch, "LLM_BASE_URL", &api);
-            env(&mut launch, "LLM_API_KEY", ephemeral_client_token);
-            env(&mut launch, "LITELLM_LOCAL_MODEL_COST_MAP", "True");
-            args(&mut launch, &["--override-with-envs"]);
-        }
-        TitleCli::Interpreter => {
-            let profile = root.join("interpreter-profile.json");
-            let selected = format!("openai/{native_model}");
-            io.json_file(
-                &profile,
-                &json!({"version":"0.2.5","offline":true,"llm":{"model":selected,"api_base":api,"api_key":ephemeral_client_token},"computer":{"api_base":base}}),
-            )?;
-            env(&mut launch, "OPENAI_API_KEY", ephemeral_client_token);
-            env(&mut launch, "OPENAI_API_BASE", &api);
-            env(&mut launch, "OPENAI_BASE_URL", &api);
-            env(&mut launch, "DISABLE_TELEMETRY", "true");
-            args(&mut launch, &["--profile"]);
-            launch.arguments.push(profile.into_os_string());
-            args(
-                &mut launch,
-                &[
-                    "--model",
-                    &selected,
-                    "--api_base",
-                    &api,
-                    "--disable_telemetry",
-                ],
-            );
-        }
-        TitleCli::Continue => {
-            let home = root.join("continue");
-            io.directory(&home)?;
-            let config = home.join("config.yaml");
-            io.json_file(
-                &config,
-                &json!({"name":"Lomi gateway","version":"1.0.0","schema":"v1","models":[{"name":PROVIDER,"provider":"openai","model":native_model,"apiKey":ephemeral_client_token,"apiBase":format!("{api}/"),"useResponsesApi":false,"roles":["chat","edit","apply"]}]}),
-            )?;
-            env(&mut launch, "CONTINUE_GLOBAL_DIR", home.as_os_str());
-            env(&mut launch, "CONTINUE_API_BASE", format!("{base}/"));
-            env(&mut launch, "CONTINUE_CLI_ENABLE_TELEMETRY", "0");
-            args(&mut launch, &["--config"]);
-            launch.arguments.push(config.into_os_string());
-        }
-        TitleCli::Deepagents => {
-            let home = root.join("deepagents");
-            io.directory(&home)?;
-            let selected = format!("anthropic:{native_model}");
-            io.write(&home.join("config.toml"), format!("[models]\nallowed = [{m}]\ndefault = {m}\nsummarization_default = {m}\nauto_classifier = {m}\n[models.providers.anthropic]\napi_key_env = \"ANTHROPIC_API_KEY\"\nbase_url = {base}\n[update]\ncheck = false\nauto_update = false\nprices_auto_update = false\n[plugins]\nauto_update = false\n", m=quoted(&selected)?, base=quoted(&base)?).as_bytes())?;
-            env(&mut launch, "DEEPAGENTS_HOME", home.as_os_str());
-            for name in ["ANTHROPIC_API_KEY", "DEEPAGENTS_CODE_ANTHROPIC_API_KEY"] {
-                env(&mut launch, name, ephemeral_client_token);
-            }
-            for name in [
-                "ANTHROPIC_BASE_URL",
-                "ANTHROPIC_API_URL",
-                "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
-                "DEEPAGENTS_CODE_ANTHROPIC_API_URL",
-            ] {
-                env(&mut launch, name, &base);
-            }
-            env(&mut launch, "DEEPAGENTS_CODE_NO_UPDATE_CHECK", "1");
-            env(&mut launch, "DEEPAGENTS_CODE_AUTO_UPDATE", "false");
-            env(&mut launch, "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE", "false");
-            env(&mut launch, "LANGSMITH_TRACING", "false");
-            env(&mut launch, "LANGCHAIN_TRACING_V2", "false");
-            args(
-                &mut launch,
-                &[
-                    "--model",
-                    &selected,
-                    "--summarization-model",
-                    &selected,
-                    "--auto-classifier-model",
-                    &selected,
-                ],
-            );
         }
         _ => return Err("This native client has no gateway profile writer.".into()),
     }
@@ -991,14 +700,6 @@ fn qwen_profile(model: &str, api: &str) -> Value {
         "modelProviders":{"openai":[{"id":model,"envKey":"OPENAI_API_KEY","baseUrl":api,"wireApi":"chat-completions","generationConfig":{"maxRetries":0}}]},
         "fastModel":model,"compactionModel":model,"visionModel":model,"advisorModel":"",
         "tools":{"webSearch":{"enabled":false}},"telemetry":{"enabled":false}})
-}
-
-// Pinned Crush load.go resolves both large and small from this sole provider.
-// Keep native permission prompts/tools; do not import the managed text denial.
-fn crush_profile(workspace: &Path, model: &str, base: &str) -> Value {
-    let selected = json!({"provider":PROVIDER,"model":model,"max_tokens":8192,"think":false});
-    json!({"providers":{(PROVIDER):{"id":PROVIDER,"name":"Lomi gateway","type":"anthropic","base_url":base,"api_key":"$LOMI_CRUSH_API_KEY","discover_models":false,"models":[{"id":model,"name":model,"context_window":128000,"default_max_tokens":8192,"can_reason":false,"supports_attachments":false}]}},
-        "models":{"large":selected,"small":selected},"options":{"data_directory":workspace,"disable_provider_auto_update":true,"disable_default_providers":true,"disable_metrics":true}})
 }
 
 fn loopback_base(value: &str) -> Result<String, String> {
@@ -1516,31 +1217,12 @@ mod gateway_profile_fixtures {
         );
         assert_eq!(qwen["modelProviders"].as_object().unwrap().len(), 1);
         assert_eq!(qwen["tools"]["webSearch"]["enabled"], false);
-        let crush = crush_profile(
-            Path::new("/owned/workspace-state"),
-            "chosen-model",
-            "http://127.0.0.1:12345",
-        );
-        assert_eq!(crush["models"]["large"], crush["models"]["small"]);
-        assert_eq!(crush["providers"].as_object().unwrap().len(), 1);
-        assert_eq!(crush["options"]["disable_default_providers"], true);
-        assert_eq!(crush["providers"][PROVIDER]["discover_models"], false);
-        assert!(crush.get("permissions").is_none());
-        assert!(crush["options"].get("disabled_tools").is_none());
     }
 
-    #[test]
-    fn deployment_cli_is_not_the_interactive_deepagents_family() {
-        let candidate = support(TitleCli::Deepagents).unwrap();
-        assert_eq!(candidate.native_family, "Python deepagents-code");
-        assert_eq!(candidate.native_version, Some("0.1.80"));
-        assert!(candidate.gates.contains("NOT deployment-only"));
-    }
     #[test]
     fn native_config_discovery_cannot_replace_owned_gateway_routing() {
         for (cli, name) in [
             (TitleCli::Qwen, ".qwen/settings.json"),
-            (TitleCli::Crush, ".crushrc"),
             (TitleCli::Openclaw, ".env"),
         ] {
             let project = tempfile::tempdir().unwrap();
@@ -1557,14 +1239,15 @@ mod gateway_profile_fixtures {
         let project = tempfile::tempdir().unwrap();
         let child = project.path().join("child");
         fs::create_dir(&child).unwrap();
+        fs::create_dir(project.path().join(".qwen")).unwrap();
         fs::write(
-            project.path().join(".aider.model.settings.yml"),
+            project.path().join(".qwen/settings.json"),
             "not parsed by admission",
         )
         .unwrap();
-        let error = admit_project(TitleCli::Aider, &child).unwrap_err();
-        assert!(error.contains(".aider.model.settings.yml"));
-        assert!(admit_project(TitleCli::Aider, Path::new("relative-project")).is_err());
+        let error = admit_project(TitleCli::Qwen, &child).unwrap_err();
+        assert!(error.contains(".qwen/settings.json"));
+        assert!(admit_project(TitleCli::Qwen, Path::new("relative-project")).is_err());
     }
 
     #[cfg(unix)]
@@ -1576,12 +1259,7 @@ mod gateway_profile_fixtures {
         fs::write(project.join(".env"), "not parsed by admission").unwrap();
         let alias = storage.path().join("alias");
         std::os::unix::fs::symlink(&project, &alias).unwrap();
-        for cli in [
-            TitleCli::Aider,
-            TitleCli::Openhands,
-            TitleCli::Continue,
-            TitleCli::Deepagents,
-        ] {
+        for cli in [TitleCli::Qwen, TitleCli::Openclaw] {
             assert!(admit_project(cli, &alias).unwrap_err().contains(".env"));
         }
     }

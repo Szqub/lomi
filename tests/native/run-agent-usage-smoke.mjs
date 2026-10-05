@@ -36,7 +36,7 @@ await writeFile(join(offlineAgySettings, "settings.json"), "{}\n");
 await mkdir(join(directory, "shell-home"));
 await mkdir(appData, { recursive: true });
 // Native executable identities exercise process inspection without launching an AI request.
-for (const name of ["codex", "aider", "claude", "cursor-agent", "kimi"]) {
+for (const name of ["codex", "copilot", "claude", "cursor-agent", "kimi"]) {
   await copyFile("/bin/sleep", join(directory, name));
   execFileSync("/usr/bin/codesign", [
     "--force",

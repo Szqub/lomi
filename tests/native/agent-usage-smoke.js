@@ -486,11 +486,11 @@
     checkpoint = "unsupported agent";
     await invoke("write_terminal", {
       id,
-      data: `${quote(directory + "/aider")} 120\r`,
+      data: `${quote(directory + "/copilot")} 120\r`,
     });
     await wait(async () => {
       process = (await invoke("terminal_contexts"))[id]?.titleCli;
-      return process?.cli === "aider";
+      return process?.cli === "copilot";
     });
     const unsupported = await invoke("inspect_cli_usage", {
       targets: [{ id, process }],
@@ -501,7 +501,7 @@
         "A provider-dependent agent did not report unavailable quota",
       );
     offlineProviders.push({
-      cli: "aider",
+      cli: "copilot",
       status: unsupported.entries[0].status,
       numericWindows: unsupported.entries[0].windows.length,
     });

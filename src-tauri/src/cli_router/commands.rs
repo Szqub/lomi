@@ -83,6 +83,10 @@ enum Action {
         cli: TitleCli,
         label: String,
         ordered_profile_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        balance_remaining_quota: Option<bool>,
     },
     UpdateRouter {
         router_id: String,
@@ -177,6 +181,70 @@ fn ready_bindings(snapshot: &Snapshot, cli: TitleCli, ids: &[String]) -> usize {
     native.len().max(gateway.len()).max(native_profiles)
 }
 
+fn router_options(
+    snapshot: &Snapshot,
+    cli: TitleCli,
+    ids: &[String],
+    enabling: bool,
+    balance: bool,
+) -> Result<(), String> {
+    if enabling && ready_bindings(snapshot, cli, ids) < 2 {
+        return Err("Verify at least two distinct subscription bindings or configure two compatible API gateway bindings before enabling this router. Separate keys do not prove separate billing budgets.".into());
+    }
+    if balance && !adapters::adapter(cli).capability.balance {
+        return Err(
+            "This CLI has no qualified profile quota reader. New turns can use account order."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn create_router(
+    snapshot: &mut Snapshot,
+    cli: TitleCli,
+    name: &str,
+    ids: &[String],
+    enabled: bool,
+    balance: bool,
+) -> Result<(), String> {
+    pool(snapshot, cli, ids)?;
+    if snapshot.routers.len() >= 64 {
+        return Err("Remove an unused router before adding another.".into());
+    }
+    router_options(snapshot, cli, ids, enabled, balance)?;
+    snapshot.routers.push(Router {
+        id: super::new_id()?,
+        cli,
+        label: label(name)?,
+        enabled,
+        ordered_profile_ids: ids.to_vec(),
+        balance_remaining_quota: balance,
+        revision: 1,
+    });
+    Ok(())
+}
+
+fn router_reconfiguration(
+    snapshot: &Snapshot,
+    router: &Router,
+    enabled: Option<bool>,
+    balance: Option<bool>,
+    ids: Option<&[String]>,
+) -> Result<(), String> {
+    if let Some(ids) = ids {
+        pool(snapshot, router.cli, ids)?;
+    }
+    let enabling = enabled.unwrap_or(router.enabled) && (enabled.is_some() || ids.is_some());
+    router_options(
+        snapshot,
+        router.cli,
+        ids.unwrap_or(&router.ordered_profile_ids),
+        enabling,
+        balance == Some(true),
+    )
+}
+
 #[tauri::command]
 pub(crate) async fn cli_router_mutate(
     window: Window,
@@ -231,20 +299,13 @@ pub(crate) async fn cli_router_mutate(
                             if router.ordered_profile_ids.is_empty() { router.enabled = false; }
                         }
                     }
-                    Action::CreateRouter { cli, label: name, ordered_profile_ids } => {
-                        pool(snapshot, *cli, ordered_profile_ids)?;
-                        if snapshot.routers.len() >= 64 { return Err("Remove an unused router before adding another.".into()); }
-                        snapshot.routers.push(Router { id: super::new_id()?, cli: *cli, label: label(name)?, enabled: false, ordered_profile_ids: ordered_profile_ids.clone(), balance_remaining_quota: false, revision: 1 });
+                    Action::CreateRouter { cli, label: name, ordered_profile_ids, enabled, balance_remaining_quota } => {
+                        create_router(snapshot, *cli, name, ordered_profile_ids, enabled.unwrap_or(false), balance_remaining_quota.unwrap_or(false))?;
                     }
                     Action::UpdateRouter { router_id, label: name, enabled, balance_remaining_quota, ordered_profile_ids } => {
                         super::gateway_config::router_idle(snapshot, router_id)?;
                         let index = snapshot.routers.iter().position(|r| r.id == *router_id).ok_or("Router no longer exists.")?;
-                        if let Some(ids) = ordered_profile_ids { pool(snapshot, snapshot.routers[index].cli, ids)?; }
-                        let ids = ordered_profile_ids.as_ref().unwrap_or(&snapshot.routers[index].ordered_profile_ids);
-                        if (*enabled == Some(true) || (snapshot.routers[index].enabled && ordered_profile_ids.is_some())) && ready_bindings(snapshot, snapshot.routers[index].cli, ids) < 2 {
-                            return Err("Verify at least two distinct subscription bindings or configure two compatible API gateway bindings before enabling this router. Separate keys do not prove separate billing budgets.".into());
-                        }
-                        if *balance_remaining_quota == Some(true) && !adapters::adapter(snapshot.routers[index].cli).capability.balance { return Err("This CLI has no qualified profile quota reader. New turns can use account order.".into()); }
+                        router_reconfiguration(snapshot, &snapshot.routers[index], *enabled, *balance_remaining_quota, ordered_profile_ids.as_deref())?;
                         let router = &mut snapshot.routers[index];
                         if let Some(name) = name { router.label = label(name)?; }
                         if let Some(enabled) = enabled { router.enabled = *enabled; }
@@ -2111,6 +2172,103 @@ mod tests {
             assert_eq!(positive.windows[0].remaining_percent, Some(90.0));
             assert_eq!(unchanged, &baseline.quota[1]);
         }
+    }
+
+    #[test]
+    fn create_router_applies_reviewed_options_atomically() {
+        let mut snapshot = baseline(false);
+        snapshot.profiles[1].quota_group_key = Some("other".into());
+        let ids = vec!["b".into(), "a".into()];
+        create_router(
+            &mut snapshot,
+            TitleCli::Codex,
+            "  Daily  ",
+            &ids,
+            true,
+            true,
+        )
+        .unwrap();
+        let router = &snapshot.routers[0];
+        assert_eq!(router.label, "Daily");
+        assert_eq!(router.ordered_profile_ids, ids);
+        assert!(router.enabled);
+        assert!(router.balance_remaining_quota);
+        assert_eq!(router.revision, 1);
+    }
+
+    #[test]
+    fn create_router_rejects_unqualified_options_without_creating_a_router() {
+        let mut snapshot = baseline(false);
+        let before = serde_json::to_value(&snapshot).unwrap();
+        let ids = vec!["a".into(), "b".into()];
+        assert!(create_router(&mut snapshot, TitleCli::Codex, "Daily", &ids, true, false).is_err());
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+        assert!(create_router(
+            &mut snapshot,
+            TitleCli::Codex,
+            "Daily",
+            &["a".into()],
+            true,
+            false
+        )
+        .is_err());
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+
+        for profile in &mut snapshot.profiles {
+            profile.cli = TitleCli::Pi;
+        }
+        let before = serde_json::to_value(&snapshot).unwrap();
+        assert!(create_router(&mut snapshot, TitleCli::Pi, "Daily", &ids, false, true).is_err());
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+        assert!(
+            create_router(&mut snapshot, TitleCli::Codex, "Daily", &ids, false, false).is_err()
+        );
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_router_creation_defaults_to_disabled_account_order() {
+        let payload = serde_json::json!({
+            "type": "create_router",
+            "cli": "codex",
+            "label": "Draft",
+            "orderedProfileIds": ["a"]
+        });
+        let action: Action = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&action).unwrap(), payload);
+        let Action::CreateRouter {
+            cli,
+            label,
+            ordered_profile_ids,
+            enabled,
+            balance_remaining_quota,
+        } = action
+        else {
+            panic!("Expected a create-router action");
+        };
+        let mut snapshot = baseline(false);
+        create_router(
+            &mut snapshot,
+            cli,
+            &label,
+            &ordered_profile_ids,
+            enabled.unwrap_or(false),
+            balance_remaining_quota.unwrap_or(false),
+        )
+        .unwrap();
+        assert!(!snapshot.routers[0].enabled);
+        assert!(!snapshot.routers[0].balance_remaining_quota);
+    }
+
+    #[test]
+    fn disabling_allows_shrinking_a_pool_without_weakening_enable_checks() {
+        let snapshot = terminal_pool();
+        let router = &snapshot.routers[0];
+        let ids = vec!["a".into()];
+        assert!(router_reconfiguration(&snapshot, router, Some(false), None, Some(&ids)).is_ok());
+        assert!(router_reconfiguration(&snapshot, router, Some(true), None, Some(&ids)).is_err());
+        assert!(router_reconfiguration(&snapshot, router, None, None, Some(&ids)).is_err());
+        assert!(router_reconfiguration(&snapshot, router, Some(false), None, Some(&[])).is_err());
     }
 
     #[test]

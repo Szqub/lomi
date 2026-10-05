@@ -70,27 +70,12 @@ fn identify_name(name: &str) -> Option<TitleCli> {
         "openclaw" => TitleCli::Openclaw,
         "hermes" => TitleCli::Hermes,
         "pi" => TitleCli::Pi,
-        "aider" => TitleCli::Aider,
-        "goose" => TitleCli::Goose,
-        "cline" => TitleCli::Cline,
         "kilo" | "kilocode" => TitleCli::Kilo,
         "qwen" => TitleCli::Qwen,
         "kiro-cli" => TitleCli::Kiro,
-        "droid" => TitleCli::Droid,
-        "openhands" => TitleCli::Openhands,
-        "cn" => TitleCli::Continue,
-        "amp" => TitleCli::Amp,
-        "auggie" => TitleCli::Auggie,
-        "crush" => TitleCli::Crush,
         "vibe" => TitleCli::Vibe,
         "kimi" => TitleCli::Kimi,
-        "interpreter" => TitleCli::Interpreter,
         "grok" => TitleCli::Grok,
-        "junie" => TitleCli::Junie,
-        "deepagents" | "deepagents-code" | "dcode" => TitleCli::Deepagents,
-        "freebuff" => TitleCli::Freebuff,
-        "trae-cli" => TitleCli::Trae,
-        "sweagent" => TitleCli::Sweagent,
         _ => return None,
     })
 }
@@ -118,7 +103,6 @@ fn identify_script(script: &Path) -> Option<TitleCli> {
         ("opencode-ai/bin/opencode", TitleCli::Opencode),
         ("opencode/bin/opencode", TitleCli::Opencode),
         ("openclaw/openclaw.mjs", TitleCli::Openclaw),
-        ("freebuff/index.js", TitleCli::Freebuff),
         ("@mariozechner/pi-coding-agent/dist/cli.js", TitleCli::Pi),
         (
             "@earendil-works/pi-coding-agent/dist/bundle/cli.js",
@@ -127,8 +111,6 @@ fn identify_script(script: &Path) -> Option<TitleCli> {
         ("@qwen-code/qwen-code/dist/index.js", TitleCli::Qwen),
         ("@qwen-code/qwen-code/cli-entry.js", TitleCli::Qwen),
         ("qwen-code/lib/cli.js", TitleCli::Qwen),
-        ("@continuedev/cli/dist/cn.js", TitleCli::Continue),
-        ("@augmentcode/auggie/augment.mjs", TitleCli::Auggie),
         ("@kilocode/cli/bin/kilo", TitleCli::Kilo),
     ] {
         if script.ends_with(suffix) {
@@ -196,13 +178,7 @@ fn python_invocation<'a>(argv: &'a [&'a [u8]]) -> Option<PythonInvocation<'a>> {
             b"-m" => {
                 let module = argv.get(index + 1).copied()?;
                 let cli = match module {
-                    b"aider" | b"aider.main" => TitleCli::Aider,
                     b"hermes_cli" | b"hermes_cli.main" => TitleCli::Hermes,
-                    b"openhands_cli" => TitleCli::Openhands,
-                    b"interpreter" => TitleCli::Interpreter,
-                    b"sweagent" | b"sweagent.run.run" => TitleCli::Sweagent,
-                    b"trae_agent" | b"trae_agent.cli" => TitleCli::Trae,
-                    b"deepagents_cli" | b"deepagents_code" => TitleCli::Deepagents,
                     b"kimi_cli" | b"kimi_code" => TitleCli::Kimi,
                     _ => return None,
                 };
@@ -1740,28 +1716,12 @@ mod tests {
             ("openclaw", TitleCli::Openclaw),
             ("hermes", TitleCli::Hermes),
             ("pi", TitleCli::Pi),
-            ("aider", TitleCli::Aider),
-            ("goose", TitleCli::Goose),
-            ("cline", TitleCli::Cline),
             ("kilo", TitleCli::Kilo),
             ("qwen", TitleCli::Qwen),
             ("kiro-cli", TitleCli::Kiro),
-            ("droid", TitleCli::Droid),
-            ("openhands", TitleCli::Openhands),
-            ("cn", TitleCli::Continue),
-            ("amp", TitleCli::Amp),
-            ("auggie", TitleCli::Auggie),
-            ("crush", TitleCli::Crush),
             ("vibe", TitleCli::Vibe),
             ("kimi", TitleCli::Kimi),
-            ("interpreter", TitleCli::Interpreter),
             ("grok", TitleCli::Grok),
-            ("junie", TitleCli::Junie),
-            ("dcode", TitleCli::Deepagents),
-            ("deepagents-code", TitleCli::Deepagents),
-            ("freebuff", TitleCli::Freebuff),
-            ("trae-cli", TitleCli::Trae),
-            ("sweagent", TitleCli::Sweagent),
         ] {
             assert_eq!(
                 super::identify(&Path::new("/opt/bin").join(binary), &[]),
@@ -1793,7 +1753,6 @@ mod tests {
                 TitleCli::Pi,
             ),
             ("openclaw/openclaw.mjs", TitleCli::Openclaw),
-            ("freebuff/index.js", TitleCli::Freebuff),
         ] {
             let script = format!("/usr/lib/node_modules/{script}");
             assert_eq!(
@@ -1818,21 +1777,21 @@ mod tests {
         assert_eq!(
             super::identify(
                 Path::new("/usr/bin/python3"),
-                &[b"python3", b"-m", b"aider", b"--message", b"qwen"]
+                &[b"python3", b"-m", b"hermes_cli", b"--message", b"qwen"]
             ),
-            Some(TitleCli::Aider)
+            Some(TitleCli::Hermes)
         );
         assert_eq!(
             super::identify(
                 Path::new("/usr/bin/python3"),
-                &[b"python3", b"-c", b"/opt/bin/aider"]
+                &[b"python3", b"-c", b"/opt/bin/hermes"]
             ),
             None
         );
         assert_eq!(
             super::identify(
                 Path::new("/usr/bin/python3"),
-                &[b"python3", b"-m", b"other", b"aider"]
+                &[b"python3", b"-m", b"other", b"hermes_cli"]
             ),
             None
         );
@@ -1856,16 +1815,16 @@ mod tests {
             "--profile",
         ] {
             assert!(check_configuration_arguments(
-                TitleCli::Amp,
-                Path::new("/opt/bin/amp"),
-                &[b"amp", flag.as_bytes()]
+                TitleCli::Gemini,
+                Path::new("/opt/bin/gemini"),
+                &[b"gemini", flag.as_bytes()]
             )
             .is_err());
         }
         assert!(check_configuration_arguments(
-            TitleCli::Amp,
-            Path::new("/opt/bin/amp"),
-            &[b"amp", b"--", b"--settings-file"]
+            TitleCli::Gemini,
+            Path::new("/opt/bin/gemini"),
+            &[b"gemini", b"--", b"--settings-file"]
         )
         .is_ok());
         assert!(check_configuration_arguments(
@@ -1883,11 +1842,11 @@ mod tests {
         let node_args = [
             b"node".as_slice(),
             b"--",
-            b"/opt/bin/cline",
+            b"/opt/bin/gemini",
             b"--data-dir=/custom",
         ];
-        assert_eq!(identify(node, &node_args), Some(TitleCli::Cline));
-        assert!(check_mcp_configuration_arguments(TitleCli::Cline, node, &node_args).is_err());
+        assert_eq!(identify(node, &node_args), Some(TitleCli::Gemini));
+        assert!(check_mcp_configuration_arguments(TitleCli::Gemini, node, &node_args).is_err());
 
         let python = Path::new("/usr/bin/python3");
         let python_script_args = [
@@ -1923,11 +1882,11 @@ mod tests {
         let node_payload = [
             b"node".as_slice(),
             b"--",
-            b"/opt/bin/cline",
+            b"/opt/bin/gemini",
             b"--",
             b"--data-dir=/payload",
         ];
-        assert!(check_mcp_configuration_arguments(TitleCli::Cline, node, &node_payload).is_ok());
+        assert!(check_mcp_configuration_arguments(TitleCli::Gemini, node, &node_payload).is_ok());
 
         let python_payload = [
             b"python3".as_slice(),
@@ -2658,7 +2617,7 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("bin")).unwrap();
-        let script = dir.path().join("bin/aider");
+        let script = dir.path().join("bin/hermes");
         fs::write(
             &script,
             "import time\nprint('ready', flush=True)\ntime.sleep(30)\n",
@@ -2688,7 +2647,7 @@ mod tests {
         let _ = child.wait();
         result.unwrap();
         assert_eq!(ready.trim(), "ready");
-        assert_eq!(detected.map(|process| process.cli), Some(TitleCli::Aider));
+        assert_eq!(detected.map(|process| process.cli), Some(TitleCli::Hermes));
     }
     #[test]
     fn commented_settings_support_mcp_and_title_setup_in_custom_qwen_home() {
@@ -2734,9 +2693,9 @@ mod tests {
         )
         .is_err());
         assert!(check_mcp_configuration_arguments(
-            TitleCli::Cline,
-            Path::new("/opt/bin/cline"),
-            &[b"cline", b"--data-dir=/custom"]
+            TitleCli::Gemini,
+            Path::new("/opt/bin/gemini"),
+            &[b"gemini", b"--data-dir=/custom"]
         )
         .is_err());
         assert!(check_mcp_configuration_arguments(

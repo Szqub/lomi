@@ -9,7 +9,44 @@ import RunDataGrant from "./RunDataGrant";
 import CodingApproval from "./CodingApproval";
 import NativeApproval from "./NativeApproval";
 import NativeHandoff from "./NativeHandoff";
+import {
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  FileCode,
+  Folder,
+  Globe,
+  MessageSquare,
+  Play,
+  Plus,
+  RotateCcw,
+  Terminal,
+} from "../icons";
+import { runStateLabels } from "./presentation";
 import "./router.css";
+import "./router-launch.css";
+const launchModes = {
+  text: {
+    label: "Chat",
+    hint: "Messages only · no files or tools",
+    Icon: MessageSquare,
+  },
+  coding: {
+    label: "Edit files",
+    hint: "Approve each write · no shell",
+    Icon: FileCode,
+  },
+  gateway: {
+    label: "API terminal",
+    hint: "API keys · CLI tools and permissions",
+    Icon: Globe,
+  },
+  native: {
+    label: "CLI account",
+    hint: "CLI login · permission requests in Lomi",
+    Icon: Terminal,
+  },
+};
 export default function RouterRunDialog({
   cwd,
   shellProfileId,
@@ -22,6 +59,11 @@ export default function RouterRunDialog({
   onOpenRun?: (run: CliRun) => void;
 }) {
   const [selectedRun, setSelectedRun] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [step, setStep] = useState<0 | 1 | 2>(0);
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const [pendingRunId, setPendingRunId] = useState<string>();
+  const completedCreation = useRef<string | undefined>(undefined);
   const [routerId, setRouterId] = useState("");
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("");
@@ -116,6 +158,45 @@ export default function RouterRunDialog({
     (executionMode === "coding" && codingAvailable) ||
     (executionMode === "native" && !!capability?.nativeTurns) ||
     (executionMode === "gateway" && !!capability?.gatewayTerminal);
+  const routeReady = routers.some((item) => item.id === routerId);
+  const availableModes = (
+    Object.keys(launchModes) as (keyof typeof launchModes)[]
+  ).filter((mode) =>
+    mode === "text"
+      ? capability?.managedTurns
+      : mode === "coding"
+        ? codingAvailable
+        : mode === "gateway"
+          ? capability?.gatewayTerminal
+          : capability?.nativeTurns,
+  );
+  useEffect(() => {
+    if (historyOpen) return;
+    if (step > 0 && !routeReady) setStep(0);
+    else if (step === 2 && !terminalMode && !validExecution) setStep(1);
+  }, [historyOpen, step, routeReady, terminalMode, validExecution]);
+  useEffect(() => {
+    if (!historyOpen) stepHeading.current?.focus();
+  }, [step, historyOpen]);
+  useEffect(() => {
+    if (!pendingRunId || busy) return;
+    const created = snapshot?.runs.find(
+      (item) => item.id === pendingRunId && item.cwd === cwd,
+    );
+    if (!created || completedCreation.current === created.id) return;
+    completedCreation.current = created.id;
+    setPendingRunId(undefined);
+    if (onOpenRun) onOpenRun(created);
+    else {
+      setSelectedRun(created.id);
+      setHistoryOpen(true);
+    }
+  }, [pendingRunId, snapshot, busy, cwd, onOpenRun]);
+  function nextStep() {
+    if (busy) return;
+    if (step === 0 && routeReady) setStep(terminalMode ? 2 : 1);
+    else if (step === 1 && validExecution) setStep(2);
+  }
   const coding = run?.executionMode === "coding";
   const canSend = native
     ? capability?.nativeTurns
@@ -198,32 +279,117 @@ export default function RouterRunDialog({
         </Modal>
       )}
       <Modal
-        title="Routed CLI runs"
+        title={historyOpen ? "Run history" : "New run"}
+        className="router-dialog router-launch-dialog"
         wide
         onClose={onClose}
         closeDisabled={busy}
       >
         <div className="dialog-form router-run-form" aria-busy={busy}>
-          <p className="settings-help">
-            Working folder: {cwd}. Closing this dialog keeps active work
-            running.
-          </p>
+          <div className="router-context" title={cwd}>
+            <Folder size={14} aria-hidden="true" />
+            <span>{cwd.split(/[\\/]/).filter(Boolean).at(-1) || cwd}</span>
+          </div>
+          <div
+            className="router-view-switch"
+            role="group"
+            aria-label="Router views"
+          >
+            <button
+              type="button"
+              className="button"
+              aria-pressed={!historyOpen}
+              disabled={busy}
+              onClick={() => {
+                setHistoryOpen(false);
+                setSelectedRun("");
+                setStep(0);
+              }}
+            >
+              <Plus size={14} aria-hidden="true" /> New run
+            </button>
+            <button
+              type="button"
+              className="button"
+              aria-pressed={historyOpen}
+              disabled={busy}
+              onClick={() => {
+                setHistoryOpen(true);
+                if (!selectedRun) setSelectedRun(runs[0]?.id ?? "");
+              }}
+            >
+              <RotateCcw size={14} aria-hidden="true" /> History
+              <span className="router-count">{runs.length}</span>
+            </button>
+          </div>
           {error && <SettingsNotice tone="error">{error}</SettingsNotice>}
           {!snapshot && !error && <p role="status">Loading runs…</p>}
-          <label>
-            Run history
-            <select
-              value={selectedRun}
-              onChange={(event) => setSelectedRun(event.target.value)}
-            >
-              <option value="">New run</option>
-              {runs.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title} · {item.state.replaceAll("_", " ")}
-                </option>
-              ))}
-            </select>
-          </label>
+          {historyOpen && runs.length > 0 && (
+            <>
+              <div
+                className="router-launch-history"
+                role="group"
+                aria-label="Saved runs"
+              >
+                {runs.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className="router-launch-history-row"
+                    aria-pressed={selectedRun === item.id}
+                    disabled={busy}
+                    onClick={() => setSelectedRun(item.id)}
+                  >
+                    <RotateCcw size={16} aria-hidden="true" />
+                    <span>{item.title}</span>
+                    <span className="router-state" data-state={item.state}>
+                      {runStateLabels[item.state]}
+                    </span>
+                    <ChevronRight size={14} aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+              <details className="router-disclosure router-launch-history-selector">
+                <summary>All runs</summary>
+
+                <label>
+                  Run history
+                  <select
+                    value={selectedRun}
+                    onChange={(event) => setSelectedRun(event.target.value)}
+                  >
+                    <option value="">Choose a saved run</option>
+                    {runs.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title} · {runStateLabels[item.state]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </details>
+            </>
+          )}
+          {historyOpen && !run && (
+            <div className="router-empty-state">
+              <strong>
+                {runs.length ? "Choose a saved run" : "No saved runs yet"}
+              </strong>
+              <p className="settings-help">
+                Your runs in this folder will appear here.
+              </p>
+              <button
+                type="button"
+                className="button"
+                onClick={() => {
+                  setHistoryOpen(false);
+                  setSelectedRun("");
+                  setStep(0);
+                }}
+              >
+                New run
+              </button>
+            </div>
+          )}
           {run && onOpenRun && (
             <button
               className="button button-primary"
@@ -233,11 +399,16 @@ export default function RouterRunDialog({
               Open saved run in workspace
             </button>
           )}
-          {!run ? (
+          {!historyOpen ? (
             <form
-              className="router-run-form"
+              className="router-run-form router-launch-flow"
               onSubmit={async (event) => {
                 event.preventDefault();
+                if (busy) return;
+                if (step !== 2) {
+                  nextStep();
+                  return;
+                }
                 if (!routerId || !routers.some((item) => item.id === routerId))
                   return;
                 if (terminalMode) {
@@ -253,6 +424,7 @@ export default function RouterRunDialog({
                 }
                 if (!validModel || !validReasoning || !validExecution) return;
                 const requestId = crypto.randomUUID();
+                setPendingRunId(requestId);
                 const next = await command("cli_run_start", {
                   request: {
                     requestId,
@@ -268,55 +440,261 @@ export default function RouterRunDialog({
                 const created = next?.runs.find(
                   (item) => item.id === requestId && item.cwd === cwd,
                 );
-                if (created) {
+                if (created && completedCreation.current !== created.id) {
+                  completedCreation.current = created.id;
+                  setPendingRunId(undefined);
                   if (onOpenRun) onOpenRun(created);
-                  else setSelectedRun(created.id);
+                  else {
+                    setSelectedRun(created.id);
+                    setHistoryOpen(true);
+                  }
                 }
               }}
             >
-              <label>
-                Router
-                <select
-                  required
-                  value={routerId}
-                  onChange={(event) => setRouterId(event.target.value)}
+              <ol className="router-launch-progress" aria-label="Launch steps">
+                {(terminalMode
+                  ? ["Route", "Launch"]
+                  : ["Route", "Work", "Model"]
+                ).map((label, index) => {
+                  const current = terminalMode && step === 2 ? 1 : step;
+                  return (
+                    <li
+                      key={label}
+                      aria-current={index === current ? "step" : undefined}
+                      data-complete={index < current}
+                    >
+                      <span>
+                        {index < current ? (
+                          <Check size={12} aria-hidden="true" />
+                        ) : (
+                          index + 1
+                        )}
+                      </span>
+                      {label}
+                    </li>
+                  );
+                })}
+              </ol>
+              <h2
+                className="router-launch-heading"
+                ref={stepHeading}
+                tabIndex={-1}
+              >
+                {step === 0
+                  ? "Choose a route"
+                  : step === 1
+                    ? "How will you work?"
+                    : terminalMode
+                      ? "Ready to open"
+                      : "Choose a model"}
+              </h2>
+              {step === 0 && (
+                <div
+                  className="router-launch-choices"
+                  role="radiogroup"
+                  aria-label="Router"
                 >
-                  <option value="">Choose a router</option>
                   {routers.map((router) => (
-                    <option key={router.id} value={router.id}>
-                      {router.label}
-                    </option>
+                    <label className="router-launch-choice" key={router.id}>
+                      <input
+                        type="radio"
+                        name="launch-router"
+                        value={router.id}
+                        aria-label={router.label}
+                        checked={routerId === router.id}
+                        disabled={busy}
+                        onChange={() => {
+                          setRouterId(router.id);
+                          setModel("");
+                          setReasoningEffort("");
+                        }}
+                      />
+                      <Terminal size={20} aria-hidden="true" />
+                      <span>
+                        <strong>{router.label}</strong>
+                        <small>
+                          {snapshot?.capabilities.find(
+                            (item) => item.cli === router.cli,
+                          )?.name ||
+                            cliNames[router.cli as CliAgent] ||
+                            router.cli}{" "}
+                          · {router.orderedProfileIds.length} accounts
+                        </small>
+                      </span>
+                      {routerId === router.id ? (
+                        <Check size={16} aria-hidden="true" />
+                      ) : (
+                        <ChevronRight size={16} aria-hidden="true" />
+                      )}
+                    </label>
                   ))}
-                </select>
-              </label>
-              {!routers.length && snapshot && (
-                <SettingsNotice>
-                  Create and enable a supported router in Settings → Agent
-                  control → Router.
-                </SettingsNotice>
+                  {!routers.length && snapshot && (
+                    <SettingsNotice>
+                      Create and enable a route in Agent control settings.
+                    </SettingsNotice>
+                  )}
+                </div>
               )}
-              {activeRouter && (
+              {step === 1 && activeRouter && (
                 <>
-                  <SettingsNotice>
-                    {terminalMode
-                      ? "The router chooses an account for a new CLI terminal. Existing terminals keep their accounts; running CLI sessions never switch accounts."
-                      : gateway
-                        ? "Gateway runs the native CLI in a terminal and forwards its native context to approved API accounts. The CLI uses its own tools and permission prompts; Lomi’s file approval broker does not apply. Open the run in the workspace, then explicitly choose Start CLI."
-                        : native
-                          ? "Native coding uses CLI-managed login, built-in tools and native conversation state. Permission requests appear in Lomi; native file and shell operations follow the CLI’s own policies. Unknown tool outcomes stop automatic continuation."
-                          : executionMode === "coding"
-                            ? "Coding retains native conversation history. Four bounded project tools can list, read, write and apply structured patches. Every write or patch requires your explicit approval. Native shell execution is unavailable."
-                            : "Text-only CLI run. Project files and tools are unavailable. Every turn starts a fresh conversation."}
-                  </SettingsNotice>
-                  <p className="settings-help" role="status">
-                    {cliName}
-                    {capability?.reason ? ` · ${capability.reason}` : ""}
-                  </p>
-                  {capability?.nativeAccountTerminal && (
+                  <div
+                    className="router-launch-choices router-launch-mode-choices"
+                    role="radiogroup"
+                    aria-label="Execution mode"
+                  >
+                    {availableModes.map((mode) => {
+                      const { Icon, label, hint } = launchModes[mode];
+                      return (
+                        <label className="router-launch-choice" key={mode}>
+                          <input
+                            type="radio"
+                            name="launch-mode"
+                            value={mode}
+                            aria-label={label}
+                            checked={executionMode === mode}
+                            disabled={busy}
+                            onChange={() => {
+                              setExecutionMode(mode);
+                              setModel("");
+                              setReasoningEffort("");
+                            }}
+                          />
+                          <Icon size={22} aria-hidden="true" />
+                          <span>
+                            <strong>{label}</strong>
+                            <small>{hint}</small>
+                          </span>
+                          {executionMode === mode && (
+                            <Check size={16} aria-hidden="true" />
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {!validExecution && !!executionMode && (
+                    <SettingsNotice tone="warning">
+                      Choose an available work mode.
+                    </SettingsNotice>
+                  )}
+                </>
+              )}
+              {step === 2 && activeRouter && (
+                <>
+                  <div className="router-launch-selection">
+                    <Terminal size={14} aria-hidden="true" />
+                    <span>{activeRouter.label}</span>
+                    <span>
+                      {terminalMode
+                        ? "Terminal"
+                        : executionMode && launchModes[executionMode].label}
+                    </span>
+                  </div>
+                  {terminalMode ? (
+                    <p className="settings-help">
+                      Uses the next routed account. Existing sessions keep their
+                      accounts.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="router-model-fields">
+                        <label>
+                          Model
+                          {modelChoices ? (
+                            <select
+                              required
+                              value={model}
+                              onChange={(event) => {
+                                setModel(event.target.value);
+                                setReasoningEffort("");
+                              }}
+                            >
+                              <option value="">Choose a model</option>
+                              {modelChoices.map((choice) => (
+                                <option key={choice.id} value={choice.id}>
+                                  {choice.id}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              required
+                              value={model}
+                              onChange={(event) => {
+                                setModel(event.target.value);
+                                setReasoningEffort("");
+                              }}
+                              placeholder="Model supported by this CLI"
+                              maxLength={120}
+                            />
+                          )}
+                        </label>
+                        {requiresReasoning && (
+                          <label>
+                            Reasoning effort
+                            {modelChoices ? (
+                              <select
+                                required
+                                disabled={!selectedModel}
+                                value={reasoningEffort}
+                                onChange={(event) =>
+                                  setReasoningEffort(event.target.value)
+                                }
+                              >
+                                <option value="">
+                                  Choose reasoning effort
+                                </option>
+                                {reasoningChoices.map((effort) => (
+                                  <option key={effort} value={effort}>
+                                    {effort}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                required
+                                value={reasoningEffort}
+                                onChange={(event) =>
+                                  setReasoningEffort(event.target.value)
+                                }
+                                placeholder="Reasoning effort supported by this model"
+                                maxLength={40}
+                              />
+                            )}
+                          </label>
+                        )}
+                      </div>
+
+                      <details className="router-disclosure">
+                        <summary>Name this run</summary>
+                        <label>
+                          Run name
+                          <input
+                            value={title}
+                            onChange={(event) => setTitle(event.target.value)}
+                            maxLength={120}
+                            placeholder="CLI run"
+                          />
+                        </label>
+                      </details>
+                    </>
+                  )}
+                </>
+              )}
+              {activeRouter && step > 0 && capability?.reason && (
+                <details className="router-disclosure">
+                  <summary>CLI support details</summary>
+                  <p className="settings-help">{capability.reason}</p>
+                </details>
+              )}
+              {activeRouter &&
+                step === 1 &&
+                capability?.nativeAccountTerminal && (
+                  <details className="router-disclosure">
+                    <summary>Open a terminal instead</summary>
                     <button
                       type="button"
                       className="button"
-                      disabled={busy}
+                      disabled={busy || !routeReady}
                       onClick={async () => {
                         if (
                           await command("cli_router_open_terminal", {
@@ -330,198 +708,106 @@ export default function RouterRunDialog({
                     >
                       Open native account terminal
                     </button>
-                  )}
-                </>
-              )}
-              {!terminalMode && (
-                <>
-                  <label>
-                    Execution mode
-                    <select
-                      value={executionMode}
-                      onChange={(event) =>
-                        setExecutionMode(
-                          event.target.value as
-                            "" | "text" | "coding" | "gateway" | "native",
-                        )
-                      }
-                    >
-                      <option value="">Choose an execution mode</option>
-                      {capability?.managedTurns && (
-                        <option value="text">Text</option>
-                      )}
-                      {codingAvailable && (
-                        <option value="coding">Coding</option>
-                      )}
-                      {capability?.gatewayTerminal && (
-                        <option value="gateway">Gateway CLI terminal</option>
-                      )}
-                      {capability?.nativeTurns && (
-                        <option value="native">
-                          Native subscription coding
-                        </option>
-                      )}
-                    </select>
-                  </label>
-                  {!validExecution && (
-                    <SettingsNotice tone="warning">
-                      {executionMode === "coding"
-                        ? "Coding is no longer available for this router. Select Text or another supported router."
-                        : "Choose an available execution mode for this router."}
-                    </SettingsNotice>
-                  )}
-                  <label>
-                    Model
-                    {modelChoices ? (
-                      <select
-                        required
-                        value={model}
-                        onChange={(event) => {
-                          setModel(event.target.value);
-                          setReasoningEffort("");
-                        }}
-                      >
-                        <option value="">Choose a model</option>
-                        {modelChoices.map((choice) => (
-                          <option key={choice.id} value={choice.id}>
-                            {choice.id}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        required
-                        value={model}
-                        onChange={(event) => {
-                          setModel(event.target.value);
-                          setReasoningEffort("");
-                        }}
-                        placeholder="Model supported by this CLI"
-                        maxLength={120}
-                      />
-                    )}
-                  </label>
-                  <label>
-                    Run name
-                    <input
-                      value={title}
-                      onChange={(event) => setTitle(event.target.value)}
-                      maxLength={120}
-                    />
-                  </label>
-                  {requiresReasoning && (
-                    <label>
-                      Reasoning effort
-                      {modelChoices ? (
-                        <select
-                          required
-                          disabled={!selectedModel}
-                          value={reasoningEffort}
-                          onChange={(event) =>
-                            setReasoningEffort(event.target.value)
-                          }
-                        >
-                          <option value="">Choose reasoning effort</option>
-                          {reasoningChoices.map((effort) => (
-                            <option key={effort} value={effort}>
-                              {effort}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          required
-                          value={reasoningEffort}
-                          onChange={(event) =>
-                            setReasoningEffort(event.target.value)
-                          }
-                          placeholder="Reasoning effort supported by this model"
-                          maxLength={40}
-                        />
-                      )}
-                    </label>
-                  )}
-                </>
-              )}
-              {!terminalMode && activeRouter && (
-                <p className="settings-help">
-                  {requiresReasoning
-                    ? "Choose a model and its reasoning effort to start."
-                    : "Choose a model to start."}
-                </p>
-              )}
-              <div className="dialog-actions">
-                <button
-                  className="button button-primary"
-                  disabled={
-                    busy ||
-                    !routerId ||
-                    (!terminalMode &&
-                      (!validModel || !validReasoning || !validExecution))
-                  }
-                >
-                  {terminalMode ? "Open routed terminal" : "Start run"}
-                </button>
+                  </details>
+                )}
+              <div className="dialog-actions router-launch-actions">
+                {step > 0 && (
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={busy}
+                    onClick={() => setStep(step === 2 && !terminalMode ? 1 : 0)}
+                  >
+                    <ArrowLeft size={14} aria-hidden="true" /> Back
+                  </button>
+                )}
+                {step < 2 ? (
+                  <button
+                    key="next-step"
+                    type="button"
+                    className="button button-primary"
+                    disabled={
+                      busy || (step === 0 ? !routeReady : !validExecution)
+                    }
+                    onClick={nextStep}
+                  >
+                    Next <ChevronRight size={14} aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button
+                    key="start-run"
+                    type="submit"
+                    className="button button-primary"
+                    disabled={
+                      busy ||
+                      !routeReady ||
+                      (!terminalMode &&
+                        (!validModel || !validReasoning || !validExecution))
+                    }
+                  >
+                    <Play size={14} aria-hidden="true" />
+                    {terminalMode ? "Open routed terminal" : "Start run"}
+                  </button>
+                )}
               </div>
             </form>
-          ) : (
+          ) : run ? (
             <>
-              <p role="status">
-                {run.title} · {cliName ?? "CLI"} ·{" "}
-                {run.state.replaceAll("_", " ")}
-                {run.statusMessage ? ` · ${run.statusMessage}` : ""}
-              </p>
-              <label>
-                Account
-                <select
-                  value={run.pinnedProfileId ?? ""}
-                  disabled={busy || running}
-                  onChange={(event) =>
-                    void command("cli_run_pin", {
-                      runId: run.id,
-                      profileId: event.target.value || null,
-                    })
-                  }
-                >
-                  <option value="">Automatic account order</option>
-                  {run.allowedProfileIds.map((profileId) => (
-                    <option key={profileId} value={profileId}>
-                      {snapshot?.profiles.find(
-                        (profile) => profile.id === profileId,
-                      )?.label ?? "Unavailable account"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {snapshot && (
-                <RunDataGrant
-                  snapshot={snapshot}
-                  run={run}
-                  disabled={busy || running}
-                  busy={busy}
-                  error={error}
-                  command={command}
-                />
+              <div className="router-run-summary" role="status">
+                <strong>{run.title}</strong>
+                <span className="router-state" data-state={run.state}>
+                  {runStateLabels[run.state]}
+                </span>
+                <span className="router-selection-meta">
+                  {cliName ?? "CLI"}
+                </span>
+              </div>
+              {run.statusMessage && (
+                <SettingsNotice>{run.statusMessage}</SettingsNotice>
               )}
-              {coding && (
-                <>
-                  <p className="settings-help">
-                    Native history is retained. Four bounded project tools list,
-                    read, write and apply structured patches; every write or
-                    patch needs explicit approval. Native shell execution is
-                    unavailable.
-                  </p>
-                  <CodingApproval runId={run.id} />
-                </>
-              )}
-              {native && snapshot && (
-                <NativeHandoff
-                  key={run.id}
-                  snapshot={snapshot}
-                  run={run}
-                  disabled={busy || running}
-                />
-              )}
+              <div className="router-run-controls router-pane-toolbar">
+                <label>
+                  Account
+                  <select
+                    value={run.pinnedProfileId ?? ""}
+                    disabled={busy || running}
+                    onChange={(event) =>
+                      void command("cli_run_pin", {
+                        runId: run.id,
+                        profileId: event.target.value || null,
+                      })
+                    }
+                  >
+                    <option value="">Automatic account order</option>
+                    {run.allowedProfileIds.map((profileId) => (
+                      <option key={profileId} value={profileId}>
+                        {snapshot?.profiles.find(
+                          (profile) => profile.id === profileId,
+                        )?.label ?? "Unavailable account"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {snapshot && (
+                  <RunDataGrant
+                    snapshot={snapshot}
+                    run={run}
+                    disabled={busy || running}
+                    busy={busy}
+                    error={error}
+                    command={command}
+                  />
+                )}
+                {native && snapshot && (
+                  <NativeHandoff
+                    key={run.id}
+                    snapshot={snapshot}
+                    run={run}
+                    disabled={busy || running}
+                  />
+                )}
+              </div>
+              {coding && <CodingApproval runId={run.id} />}
               {native && <NativeApproval runId={run.id} />}
               {canAcknowledge && (
                 <button
@@ -576,12 +862,8 @@ export default function RouterRunDialog({
               )}
               {gateway && (
                 <SettingsNotice>
-                  Gateway uses the native CLI’s tools and permission prompts and
-                  sends native context to approved APIs. Open this saved run in
-                  the workspace, then choose Start CLI. Restored views never
-                  start a terminal automatically. A previously launched session
-                  retains private native history and requires a new run for
-                  another launch.
+                  Open in your workspace to start the CLI. Approved API accounts
+                  and CLI permissions apply.
                 </SettingsNotice>
               )}
               {run.output && (
@@ -605,10 +887,10 @@ export default function RouterRunDialog({
                   }
                 >
                   {native
-                    ? "Resume requires a settled checkpoint in the original account. Review uncertain file changes and tool results in the exact saved native session; the original task is not replayed automatically."
+                    ? "Review uncertain file changes in the original account before resuming."
                     : coding
-                      ? "Continue retains native history and recorded tool results without resending the original task. Unknown dispatches or effects remain blocked until recovered. Acknowledge recorded completion returns a fully completed input to idle without launching a turn."
-                      : "The saved task may have produced partial output. Continuing starts a fresh CLI attempt using saved context and the selected account policy; review completed work first."}
+                      ? "Recover uncertain changes before continuing with saved history and tool results."
+                      : "Review partial output before a new attempt with approved saved context."}
                 </SettingsNotice>
               )}
               {!gateway && native && recovery && (
@@ -638,6 +920,7 @@ export default function RouterRunDialog({
                     <textarea
                       maxLength={textLimit}
                       value={text}
+                      placeholder="What would you like to do?"
                       onChange={(event) => setText(event.target.value)}
                       disabled={busy || running || recovery || !canSend}
                     />
@@ -708,7 +991,7 @@ export default function RouterRunDialog({
                 </button>
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </Modal>
     </>
