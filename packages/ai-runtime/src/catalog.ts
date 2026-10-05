@@ -81,7 +81,11 @@ export async function catalog(
           !item.architecture.output_modalities.includes("text")
         )
           return [];
-        const id = (item.id ?? item.name ?? "").replace(/^models\//, "");
+        const modelId = item.id ?? item.name ?? "";
+        const id =
+          input.provider === "google"
+            ? modelId.replace(/^models\//, "")
+            : modelId;
         return /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(id) ? [id] : [];
       })
       .slice(0, 1000)

@@ -306,7 +306,9 @@ for (const apiFormat of [
                 : `Bearer ${apiKey}`
               : null,
           );
-          return Response.json({ data: [{ id: "local/model" }] });
+          return Response.json({
+            data: [{ id: "local/model" }, { id: "models/custom-model" }],
+          });
         },
       );
       const events: Event[] = [];
@@ -314,7 +316,10 @@ for (const apiFormat of [
         events.push(event);
       });
       assert.equal(events.at(-1)?.type, "completed");
-      assert.deepEqual((events[0].payload as any).models, ["local/model"]);
+      assert.deepEqual((events[0].payload as any).models, [
+        "local/model",
+        "models/custom-model",
+      ]);
       t.mock.restoreAll();
     }
   });
