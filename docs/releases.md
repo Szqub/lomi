@@ -20,9 +20,12 @@ packages via `packages_run_id`, preserving the package commit in the new reports
 
 The qualification installs and removes DEB, NSIS and MSI packages, and copies
 the app from a verified DMG. Each installed app must show a native window.
-RPM and AppImage payloads are extracted and checked. AppImage also runs its
-native helper through the extract-and-run launcher; this does not test an RPM
-package-manager transaction or the AppImage FUSE launcher. Every payload must
+RPM is additionally installed, verified, started through its native helper and
+removed in Fedora 44. Its extracted runtime is checked on Ubuntu; libarchive
+reads the payload after RPM digest verification because Ubuntu 22.04's rpm2cpio
+requires a size tag omitted by Tauri's RPM writer. AppImage runs its native
+helper through the extract-and-run launcher and its extracted runtime is checked.
+This does not test the AppImage FUSE launcher or the Fedora GUI. Every payload must
 include the verified AI and remote-terminal bundles, notices and pinned Node.
 The packaged Node runs without system PATH and streams all three Custom API
 formats through a loopback fixture, with and without a test key. No paid API is

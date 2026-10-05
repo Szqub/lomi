@@ -60,7 +60,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm cpio xvfb xdotool dbus-x11
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm libarchive-tools xvfb xdotool dbus-x11
       - run: pnpm install --frozen-lockfile
         if: inputs.packages_run_id == ''
       - name: Reuse previously built qualification packages

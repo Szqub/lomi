@@ -30,11 +30,21 @@ sudo apt-get remove -y lomi
 test ! -e /usr/bin/lomi
 rpm -qip "${rpm[0]}" > installer-results/rpm-metadata.txt
 rpm -qpR "${rpm[0]}" > installer-results/rpm-dependencies.txt
+rpm --checksig "${rpm[0]}" > installer-results/rpm-integrity.txt
 mkdir "$scratch/rpm"
-rpm2cpio "${rpm[0]}" > "$scratch/package.cpio"
-(cd "$scratch/rpm" && cpio -idm --quiet < "$scratch/package.cpio")
+# rpm2cpio 4.17 requires LONGARCHIVESIZE, which Tauri's RPM writer omits.
+# Verify RPM digests first, then use libarchive's RPM reader.
+bsdtar -xf "${rpm[0]}" -C "$scratch/rpm"
 resource=$(find "$scratch/rpm" -path '*/ai-runtime/index.cjs' -printf '%h\n')
 node scripts/qualify-installers-runtime.mjs "$scratch/rpm/usr/bin/lomi" "$(dirname "$resource")" rpm-extracted
+docker run --rm -v "$PWD/src-tauri/target/release/bundle/rpm:/packages:ro" fedora:44 bash -euc '
+  dnf install -y /packages/*.rpm
+  rpm --verify lomi
+  /usr/bin/lomi --mcp --version
+  /usr/bin/lomi-node --version
+  dnf remove -y lomi
+  test ! -e /usr/bin/lomi
+' > installer-results/rpm-fedora-install.log 2>&1
 image="$PWD/${appimage[0]}"
 chmod +x "$image"
 "$image" --appimage-extract-and-run --mcp --version > installer-results/appimage-launcher.txt
@@ -43,4 +53,4 @@ mkdir "$scratch/appimage"
 (cd "$scratch/appimage" && "$image" --appimage-extract > "$root/installer-results/appimage-files.txt")
 resource=$(find "$scratch/appimage/squashfs-root" -path '*/ai-runtime/index.cjs' -printf '%h\n')
 node scripts/qualify-installers-runtime.mjs "$scratch/appimage/squashfs-root/usr/bin/lomi" "$(dirname "$resource")" appimage-extracted
-printf '%s\n' 'DEB install, visible GUI and uninstall passed; RPM and AppImage extracted payloads passed.' > installer-results/linux.txt
+printf '%s\n' 'DEB install, visible GUI and uninstall passed; Fedora RPM install, file verification, native helper and uninstall passed; RPM and AppImage extracted runtimes and AppImage extraction launcher passed.' > installer-results/linux.txt
