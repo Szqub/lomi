@@ -312,7 +312,8 @@ try {
     label,
     target,
     node: metadata.version,
-    sha: process.env.GITHUB_SHA ?? "local",
+    sha: process.env.LOMI_PACKAGE_SHA ?? process.env.GITHUB_SHA ?? "local",
+    qualificationSha: process.env.GITHUB_SHA ?? "local",
     checks: [
       "resource integrity",
       "native binary load",

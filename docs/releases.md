@@ -15,10 +15,13 @@ x64, Windows x64, macOS ARM64 and macOS Intel. Its temporary configuration
 disables updater artifacts and uses ad-hoc macOS signing. It does not read
 release signing secrets or publish releases. Test installers and reports are
 retained as Actions artifacts for seven days.
+After a qualification-script correction, manual dispatch can reuse those exact
+packages via `packages_run_id`, preserving the package commit in the new reports.
 
 The qualification installs and removes DEB, NSIS and MSI packages, and copies
 the app from a verified DMG. Each installed app must show a native window.
-RPM and AppImage payloads are extracted and checked; this does not test an RPM
+RPM and AppImage payloads are extracted and checked. AppImage also runs its
+native helper through the extract-and-run launcher; this does not test an RPM
 package-manager transaction or the AppImage FUSE launcher. Every payload must
 include the verified AI and remote-terminal bundles, notices and pinned Node.
 The packaged Node runs without system PATH and streams all three Custom API

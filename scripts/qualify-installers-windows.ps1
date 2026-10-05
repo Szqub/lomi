@@ -15,7 +15,9 @@ foreach ($format in @('nsis', 'msi')) {
     $packages = @(Get-ChildItem "src-tauri/target/release/bundle/$format/*.$extension")
     if ($packages.Count -ne 1) { throw "Expected exactly one $format installer" }
     $package = $packages[0].FullName
-    $destination = Join-Path $scratch $format
+    # Tauri remembers the previous install directory across uninstallers.
+    # Exercise both formats in that same location, including NSIS -> MSI.
+    $destination = Join-Path $scratch 'installed'
     $log = Join-Path $root "installer-results/$format-install.log"
     if ($format -eq 'nsis') {
         Run-Installer $package "/S /D=$destination"

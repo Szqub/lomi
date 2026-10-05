@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'printf "Installer check failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 mkdir -p installer-results
 root="$PWD"
 scratch=$(mktemp -d)
@@ -30,11 +31,14 @@ test ! -e /usr/bin/lomi
 rpm -qip "${rpm[0]}" > installer-results/rpm-metadata.txt
 rpm -qpR "${rpm[0]}" > installer-results/rpm-dependencies.txt
 mkdir "$scratch/rpm"
-rpm2cpio "${rpm[0]}" | (cd "$scratch/rpm" && cpio -idm --quiet)
+rpm2cpio "${rpm[0]}" > "$scratch/package.cpio"
+(cd "$scratch/rpm" && cpio -idm --quiet < "$scratch/package.cpio")
 resource=$(find "$scratch/rpm" -path '*/ai-runtime/index.cjs' -printf '%h\n')
 node scripts/qualify-installers-runtime.mjs "$scratch/rpm/usr/bin/lomi" "$(dirname "$resource")" rpm-extracted
 image="$PWD/${appimage[0]}"
 chmod +x "$image"
+"$image" --appimage-extract-and-run --mcp --version > installer-results/appimage-launcher.txt
+grep -q '^lomi-mcp .* (control API 1.0, IPC 1)' installer-results/appimage-launcher.txt
 mkdir "$scratch/appimage"
 (cd "$scratch/appimage" && "$image" --appimage-extract > "$root/installer-results/appimage-files.txt")
 resource=$(find "$scratch/appimage/squashfs-root" -path '*/ai-runtime/index.cjs' -printf '%h\n')
